@@ -1,0 +1,25 @@
+# Build artifacts
+_build/
+deps/
+*.beam
+*.plt
+erl_crash.dump
+
+# Rebar3
+.rebar3/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
