@@ -350,8 +350,8 @@ stream_python(AppPath, Action, Args, Kwargs) ->
             %% Return a generator function
             GenFun = fun() ->
                 case py:call(hornbeam_hooks_runner, stream_next, [GenId]) of
+                    {ok, done} -> done;
                     {ok, Value} -> {value, Value};
-                    done -> done;
                     {error, Reason} -> {error, Reason}
                 end
             end,
@@ -367,8 +367,8 @@ stream_python_registered(AppPath, Action, Args, Kwargs) ->
             %% Return a generator function
             GenFun = fun() ->
                 case py:call(hornbeam_hooks_runner, stream_next, [GenId]) of
+                    {ok, done} -> done;
                     {ok, Value} -> {value, Value};
-                    done -> done;
                     {error, Reason} -> {error, Reason}
                 end
             end,

@@ -132,17 +132,14 @@ start(AppSpec, Options) ->
     end.
 
 %% @doc Stop hornbeam server.
--spec stop() -> ok | {error, term()}.
+-spec stop() -> ok.
 stop() ->
     %% Run lifespan shutdown first
     _ = hornbeam_lifespan:shutdown(),
 
     %% Stop the HTTP listener
-    case ranch:stop_listener(hornbeam_http) of
-        ok -> ok;
-        {error, not_found} -> ok;
-        Error -> Error
-    end.
+    _ = ranch:stop_listener(hornbeam_http),
+    ok.
 
 %% @doc Register an Erlang function to be callable from Python.
 %% The function should accept a list of arguments and return a term.

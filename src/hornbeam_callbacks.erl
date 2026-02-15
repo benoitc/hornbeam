@@ -135,7 +135,7 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 handle_cast({cast, Name, Args}, #state{callbacks = Callbacks} = State) ->
-    case maps:get(Name, Callbacks, undefined) of
+    _ = case maps:get(Name, Callbacks, undefined) of
         undefined ->
             ok;
         {fun_wrapper, Fun} ->

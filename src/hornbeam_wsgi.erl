@@ -188,16 +188,16 @@ get_forwarded_addr(_Headers, []) ->
 %% @private
 format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
 format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
-format_protocol('HTTP/2') -> <<"HTTP/2">>;
-format_protocol(_) -> <<"HTTP/1.1">>.
+format_protocol('HTTP/2') -> <<"HTTP/2">>.
 
 %% @private
+%% IPv4
 format_ip({A, B, C, D}) ->
     iolist_to_binary(io_lib:format("~B.~B.~B.~B", [A, B, C, D]));
-format_ip(Ip) when is_binary(Ip) ->
-    Ip;
-format_ip(Ip) when is_list(Ip) ->
-    list_to_binary(Ip).
+%% IPv6
+format_ip({A, B, C, D, E, F, G, H}) ->
+    iolist_to_binary(io_lib:format("~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B",
+                                   [A, B, C, D, E, F, G, H])).
 
 %% @private
 add_http_headers(Headers, Environ) ->

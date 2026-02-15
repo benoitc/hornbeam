@@ -184,18 +184,11 @@ handle_call({spawn, Name, Args, Opts}, _From, #state{handlers = Handlers} = Stat
     %% Start the task
     case maps:get(Name, Handlers, undefined) of
         undefined ->
-            %% Try registered Erlang function
-            case py:get_registered_function(Name) of
-                undefined ->
-                    %% No handler found, mark as failed
-                    ets:update_element(?TABLE, TaskId,
-                                       [{#task.status + 1, failed},
-                                        {#task.result + 1, {error, handler_not_found}}]),
-                    {reply, {error, handler_not_found}, State};
-                Handler ->
-                    start_task(TaskId, Handler, Args, Opts),
-                    {reply, {ok, TaskId}, State}
-            end;
+            %% No handler found, mark as failed
+            ets:update_element(?TABLE, TaskId,
+                               [{#task.status + 1, failed},
+                                {#task.result + 1, {error, handler_not_found}}]),
+            {reply, {error, handler_not_found}, State};
         Handler ->
             start_task(TaskId, Handler, Args, Opts),
             {reply, {ok, TaskId}, State}
