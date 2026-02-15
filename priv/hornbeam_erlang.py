@@ -40,9 +40,9 @@ Example:
 
 from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Union
 
-# Try to import erlang_python
+# Try to import erlang module (provided by erlang_python when embedded)
 try:
-    import erlang_python as erl
+    import erlang as erl
     HAS_ERLANG = True
 except ImportError:
     HAS_ERLANG = False
@@ -50,11 +50,11 @@ except ImportError:
 ErlValue = Union[str, int, float, bytes, bool, list, dict, None]
 
 
-def _call_erlang(module: str, function: str, args: list) -> Any:
-    """Call an Erlang function."""
+def _call_erlang(name: str, *args) -> Any:
+    """Call a registered Erlang function."""
     if not HAS_ERLANG:
-        raise RuntimeError("erlang_python not available")
-    return erl.call(module, function, args)
+        raise RuntimeError("erlang module not available")
+    return erl.call(name, *args)
 
 
 # =============================================================================
@@ -135,8 +135,8 @@ def execute(app_path: str, action: str, *args, **kwargs) -> Any:
     Example:
         result = execute("myapp.ml:MLService", "inference", data, model="gpt-4")
     """
-    result = _call_erlang('hornbeam_hooks', 'execute',
-                          [app_path, action, list(args), kwargs])
+    result = _call_erlang('hornbeam_hooks_execute',
+                          app_path, action, list(args), kwargs)
     if isinstance(result, tuple):
         if result[0] == 'ok':
             return result[1]
@@ -164,8 +164,8 @@ def execute_async(app_path: str, action: str, *args, **kwargs) -> str:
         # ... do other work ...
         result = await_result(task_id)
     """
-    result = _call_erlang('hornbeam_hooks', 'execute_async',
-                          [app_path, action, list(args), kwargs])
+    result = _call_erlang('hornbeam_hooks_execute_async',
+                          app_path, action, list(args), kwargs)
     if isinstance(result, tuple):
         if result[0] == 'ok':
             return result[1]
@@ -187,7 +187,7 @@ def await_result(task_id: str, timeout_ms: int = 30000) -> Any:
     Raises:
         RuntimeError: If task failed or timed out
     """
-    result = _call_erlang('hornbeam_hooks', 'await_result', [task_id, timeout_ms])
+    result = _call_erlang('hornbeam_hooks_await_result', task_id, timeout_ms)
     if isinstance(result, tuple):
         if result[0] == 'ok':
             return result[1]
@@ -263,28 +263,28 @@ async def stream_async(app_path: str, action: str, *args, **kwargs):
 
 def state_get(key: ErlValue) -> Optional[ErlValue]:
     """Get value from ETS. Returns None if not found."""
-    result = _call_erlang('hornbeam_state', 'get', [key])
+    result = _call_erlang('hornbeam_state_get', key)
     return None if result == 'undefined' else result
 
 
 def state_set(key: ErlValue, value: ErlValue) -> None:
     """Set value in ETS."""
-    _call_erlang('hornbeam_state', 'set', [key, value])
+    _call_erlang('hornbeam_state_set', key, value)
 
 
 def state_delete(key: ErlValue) -> None:
     """Delete key from ETS."""
-    _call_erlang('hornbeam_state', 'delete', [key])
+    _call_erlang('hornbeam_state_delete', key)
 
 
 def state_incr(key: ErlValue, delta: int = 1) -> int:
     """Atomically increment counter. Returns new value."""
-    return _call_erlang('hornbeam_state', 'incr', [key, delta])
+    return _call_erlang('hornbeam_state_incr', key, delta)
 
 
 def state_decr(key: ErlValue, delta: int = 1) -> int:
     """Atomically decrement counter."""
-    return _call_erlang('hornbeam_state', 'decr', [key, delta])
+    return _call_erlang('hornbeam_state_decr', key, delta)
 
 
 def state_get_multi(keys: List[ErlValue]) -> Dict[ErlValue, ErlValue]:

@@ -132,28 +132,26 @@ all() ->
 execute(AppPath, Action, Args, Kwargs) when is_binary(AppPath), is_binary(Action) ->
     case find(AppPath) of
         not_found ->
-            %% No Erlang handler, call Python
             execute_python(AppPath, Action, Args, Kwargs);
         {ok, {fun_handler, Handler}} ->
             execute_fun(Handler, Action, Args, Kwargs);
         {ok, {mfa, Module, Function}} ->
             execute_mfa(Module, Function, Action, Args, Kwargs);
         {ok, {python_handler}} ->
-            %% Registered Python handler, call back into Python
             execute_python_registered(AppPath, Action, Args, Kwargs)
     end.
 
-%% @doc Execute async - returns task ID.
+%% @doc Execute async - returns task ID (binary for Python round-trip compatibility).
 -spec execute_async(AppPath :: binary(), Action :: binary(), Args :: list(), Kwargs :: map()) ->
-    {ok, reference()} | {error, term()}.
+    {ok, binary()} | {error, term()}.
 execute_async(AppPath, Action, Args, Kwargs) when is_binary(AppPath), is_binary(Action) ->
     gen_server:call(?SERVER, {execute_async, AppPath, Action, Args, Kwargs}).
 
 %% @doc Wait for async task result.
--spec await_result(TaskRef :: reference(), Timeout :: integer()) ->
+-spec await_result(TaskId :: binary(), Timeout :: integer()) ->
     {ok, term()} | {error, term()}.
-await_result(TaskRef, Timeout) ->
-    gen_server:call(?SERVER, {await_result, TaskRef, Timeout}, infinity).
+await_result(TaskId, Timeout) ->
+    gen_server:call(?SERVER, {await_result, TaskId, Timeout}, infinity).
 
 %% @doc Stream execution - returns a generator function.
 %% Call the returned function repeatedly until it returns 'done'.
@@ -210,14 +208,15 @@ handle_call({unreg, AppPath}, _From, State) ->
 
 handle_call({execute_async, AppPath, Action, Args, Kwargs}, _From,
             #state{tasks = Tasks} = State) ->
-    TaskRef = make_ref(),
+    %% Use binary task ID for Python round-trip compatibility
+    TaskId = list_to_binary(erlang:ref_to_list(make_ref())),
     Self = self(),
     _Pid = spawn_link(fun() ->
         Result = execute(AppPath, Action, Args, Kwargs),
-        Self ! {task_result, TaskRef, Result}
+        Self ! {task_result, TaskId, Result}
     end),
-    NewTasks = Tasks#{TaskRef => running},
-    {reply, {ok, TaskRef}, State#state{tasks = NewTasks}};
+    NewTasks = Tasks#{TaskId => running},
+    {reply, {ok, TaskId}, State#state{tasks = NewTasks}};
 
 handle_call({await_result, TaskRef, Timeout}, From, #state{tasks = Tasks} = State) ->
     case maps:get(TaskRef, Tasks, undefined) of
