@@ -21,16 +21,57 @@ support for streaming responses, informational responses, and trailers.
 import asyncio
 import importlib
 import sys
+import threading
 from typing import List, Dict, Any, Optional
 
 
+# Thread-safe app cache to avoid race conditions under concurrent load
+_app_cache: Dict[tuple, Any] = {}
+_app_cache_lock = threading.Lock()
+
+
 def load_app(module_name: str, callable_name: str):
-    """Load an ASGI application (no caching to handle reloads)."""
-    # Force reload if already imported to handle path changes
-    if module_name in sys.modules:
-        del sys.modules[module_name]
-    module = importlib.import_module(module_name)
-    return getattr(module, callable_name)
+    """Load an ASGI application with thread-safe caching."""
+    cache_key = (module_name, callable_name)
+
+    # Fast path: check cache without lock
+    if cache_key in _app_cache:
+        return _app_cache[cache_key]
+
+    # Slow path: acquire lock and load
+    with _app_cache_lock:
+        # Double-check after acquiring lock
+        if cache_key in _app_cache:
+            return _app_cache[cache_key]
+
+        # Import module (don't delete from sys.modules - causes race conditions)
+        if module_name not in sys.modules:
+            module = importlib.import_module(module_name)
+        else:
+            module = sys.modules[module_name]
+
+        app = getattr(module, callable_name)
+        _app_cache[cache_key] = app
+        return app
+
+
+def reload_app(module_name: str, callable_name: str):
+    """Force reload an ASGI application.
+
+    Use this when the application code has changed on disk.
+    """
+    cache_key = (module_name, callable_name)
+    with _app_cache_lock:
+        # Remove from cache
+        _app_cache.pop(cache_key, None)
+        # Reload module
+        if module_name in sys.modules:
+            module = importlib.reload(sys.modules[module_name])
+        else:
+            module = importlib.import_module(module_name)
+        app = getattr(module, callable_name)
+        _app_cache[cache_key] = app
+        return app
 
 
 class ASGIResponse:
@@ -152,8 +193,15 @@ def run_asgi(module_name: str, callable_name: str,
     Returns:
         Dict with status, headers, body, and optional early_hints/trailers
     """
-    # Run in asyncio event loop
-    return asyncio.run(_run_asgi_async(module_name, callable_name, scope, body))
+    # Create a new event loop for this request
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(
+            _run_asgi_async(module_name, callable_name, scope, body)
+        )
+    finally:
+        loop.close()
 
 
 # Streaming support for real-time responses

@@ -75,6 +75,8 @@ handle_wsgi(Req, State) ->
         case Result of
             {ok, Response} ->
                 send_wsgi_response(Req, Response, State);
+            {error, {overloaded, Current, Max}} ->
+                overload_response(Req, Current, Max, State);
             {error, Error} ->
                 error_response(Req, Error, State)
         end
@@ -153,6 +155,8 @@ handle_asgi(Req, State) ->
         case Result of
             {ok, Response} ->
                 send_asgi_response(Req2, Response, State);
+            {error, {overloaded, Current, Max}} ->
+                overload_response(Req2, Current, Max, State);
             {error, Error} ->
                 error_response(Req2, Error, State)
         end
@@ -193,6 +197,18 @@ error_response(Req, Error, State) ->
     ErrorMsg = io_lib:format("Internal Server Error: ~p", [Error]),
     Req2 = cowboy_req:reply(500,
                             #{<<"content-type">> => <<"text/plain">>},
+                            iolist_to_binary(ErrorMsg),
+                            Req),
+    {ok, Req2, State}.
+
+%% @private
+%% Return 503 Service Unavailable when Python workers are overloaded
+overload_response(Req, Current, Max, State) ->
+    ErrorMsg = io_lib:format("Service temporarily unavailable: ~p/~p workers busy",
+                             [Current, Max]),
+    Req2 = cowboy_req:reply(503,
+                            #{<<"content-type">> => <<"text/plain">>,
+                              <<"retry-after">> => <<"1">>},
                             iolist_to_binary(ErrorMsg),
                             Req),
     {ok, Req2, State}.

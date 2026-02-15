@@ -22,6 +22,7 @@ import importlib
 import io
 import logging
 import sys
+import threading
 
 # Set up logging for wsgi.errors
 logger = logging.getLogger('hornbeam.wsgi')
@@ -181,6 +182,11 @@ class Response:
         return None
 
 
+# Thread-safe app cache to avoid race conditions under concurrent load
+_app_cache = {}
+_app_cache_lock = threading.Lock()
+
+
 def load_app(module_name, callable_name):
     """Load a WSGI application.
 
@@ -191,11 +197,46 @@ def load_app(module_name, callable_name):
     Returns:
         The WSGI application callable
     """
-    # Force reload if already imported to handle path changes
-    if module_name in sys.modules:
-        del sys.modules[module_name]
-    module = importlib.import_module(module_name)
-    return getattr(module, callable_name)
+    cache_key = (module_name, callable_name)
+
+    # Fast path: check cache without lock
+    if cache_key in _app_cache:
+        return _app_cache[cache_key]
+
+    # Slow path: acquire lock and load
+    with _app_cache_lock:
+        # Double-check after acquiring lock
+        if cache_key in _app_cache:
+            return _app_cache[cache_key]
+
+        # Import module (don't delete from sys.modules - causes race conditions)
+        if module_name not in sys.modules:
+            module = importlib.import_module(module_name)
+        else:
+            module = sys.modules[module_name]
+
+        app = getattr(module, callable_name)
+        _app_cache[cache_key] = app
+        return app
+
+
+def reload_app(module_name, callable_name):
+    """Force reload a WSGI application.
+
+    Use this when the application code has changed on disk.
+    """
+    cache_key = (module_name, callable_name)
+    with _app_cache_lock:
+        # Remove from cache
+        _app_cache.pop(cache_key, None)
+        # Reload module
+        if module_name in sys.modules:
+            module = importlib.reload(sys.modules[module_name])
+        else:
+            module = importlib.import_module(module_name)
+        app = getattr(module, callable_name)
+        _app_cache[cache_key] = app
+        return app
 
 
 def create_environ(raw_environ):

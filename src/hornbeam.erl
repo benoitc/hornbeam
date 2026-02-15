@@ -60,6 +60,7 @@
     timeout => pos_integer(),
     keepalive => pos_integer(),
     max_requests => pos_integer(),
+    max_concurrent => pos_integer(),
     preload_app => boolean(),
     pythonpath => [string() | binary()],
     lifespan => auto | on | off,
@@ -86,6 +87,7 @@ start(AppSpec) ->
 %%   <li>`timeout' - Request timeout in ms (default: 30000)</li>
 %%   <li>`keepalive' - Keep-alive timeout in seconds (default: 2)</li>
 %%   <li>`max_requests' - Max requests per worker before restart (default: 1000)</li>
+%%   <li>`max_concurrent' - Max concurrent requests queued (default: 10000)</li>
 %%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
@@ -105,6 +107,13 @@ start(AppSpec, Options) ->
                 app_callable => Callable
             },
             hornbeam_config:set_config(Config1),
+
+            %% Register hornbeam functions for Python callbacks
+            register_python_callbacks(),
+
+            %% Configure max concurrent requests
+            MaxConcurrent = maps:get(max_concurrent, Config1),
+            py_semaphore:set_max_concurrent(MaxConcurrent),
 
             %% Setup Python paths
             setup_python_paths(Config1),
@@ -173,6 +182,7 @@ default_config() ->
         timeout => 30000,
         keepalive => 2,
         max_requests => 1000,
+        max_concurrent => 10000,  % High limit for concurrent requests queued
         preload_app => false,
         pythonpath => [<<".">>, <<"examples">>],
         lifespan => auto,
@@ -277,3 +287,30 @@ parse_ip(Ip) ->
 ensure_binary(V) when is_binary(V) -> V;
 ensure_binary(V) when is_list(V) -> list_to_binary(V);
 ensure_binary(V) when is_atom(V) -> atom_to_binary(V, utf8).
+
+%% Register hornbeam functions so Python can call them via erlang.call()
+register_python_callbacks() ->
+    %% Hook execution
+    py:register_function(hornbeam_hooks_execute, fun([AppPath, Action, Args, Kwargs]) ->
+        hornbeam_hooks:execute(AppPath, Action, Args, Kwargs)
+    end),
+    py:register_function(hornbeam_hooks_execute_async, fun([AppPath, Action, Args, Kwargs]) ->
+        hornbeam_hooks:execute_async(AppPath, Action, Args, Kwargs)
+    end),
+    %% State functions
+    py:register_function(hornbeam_state_get, fun([Key]) ->
+        hornbeam_state:get(Key)
+    end),
+    py:register_function(hornbeam_state_set, fun([Key, Value]) ->
+        hornbeam_state:set(Key, Value)
+    end),
+    py:register_function(hornbeam_state_delete, fun([Key]) ->
+        hornbeam_state:delete(Key)
+    end),
+    py:register_function(hornbeam_state_incr, fun([Key, Delta]) ->
+        hornbeam_state:incr(Key, Delta)
+    end),
+    py:register_function(hornbeam_state_decr, fun([Key, Delta]) ->
+        hornbeam_state:decr(Key, Delta)
+    end),
+    ok.
