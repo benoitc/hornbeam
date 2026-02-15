@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="ExDoc v0.39.1">
+    <meta name="project" content="hornbeam v1.0.0">
+
+
+    <title>websocket-chat — hornbeam v1.0.0</title>
+
+    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+
+    <script defer src="dist/sidebar_items-DCB24D7B.js"></script>
+    <script defer src="docs_config.js"></script>
+    <script defer src="dist/html-HBZYRXZS.js"></script>
+
+  </head>
+  <body>
+    <script>(()=>{var t="ex_doc:settings",e="dark";var o="dark",s="light";var E="sidebar_state",n="closed";var r="sidebar_width";var a="sidebar-open";var i=new URLSearchParams(window.location.search),S=i.get("theme")||JSON.parse(localStorage.getItem(t)||"{}").theme;(S===o||S!==s&&window.matchMedia("(prefers-color-scheme: dark)").matches)&&document.body.classList.add(e);var d=sessionStorage.getItem(E),A=d!==n&&!window.matchMedia(`screen and (max-width: ${768}px)`).matches;document.body.classList.toggle(a,A);var c=sessionStorage.getItem(r);c&&document.body.style.setProperty("--sidebarWidth",`${c}px`);var p=/(Macintosh|iPhone|iPad|iPod)/.test(window.navigator.userAgent);document.documentElement.classList.toggle("apple-os",p);})();
+</script>
+
+<div class="body-wrapper">
+
+<button id="sidebar-menu" class="sidebar-button sidebar-toggle" aria-label="toggle sidebar" aria-controls="sidebar">
+  <i class="ri-menu-line ri-lg" title="Collapse/expand sidebar"></i>
+</button>
+
+<nav id="sidebar" class="sidebar">
+
+  <div class="sidebar-header">
+    <div class="sidebar-projectInfo">
+
+      <div>
+        <a href="https://hornbeam.dev" class="sidebar-projectName" translate="no">
+hornbeam
+        </a>
+        <div class="sidebar-projectVersion" translate="no">
+          v1.0.0
+        </div>
+      </div>
+    </div>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+  </div>
+</nav>
+
+<output role="status" id="toast"></output>
+
+<main class="content page-extra" id="main" data-type="extras">
+  <div id="content" class="content-inner">
+    <div class="top-search">
+      <div class="search-settings">
+        <form class="search-bar" action="search.html">
+          <label class="search-label">
+            <span class="sr-only">Search documentation of hornbeam</span>
+            <div class="search-input-wrapper">
+              <input name="q" type="text" class="search-input" placeholder="Press / to search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button type="button" tabindex="-1" class="search-close-button" aria-hidden="true">
+                <i class="ri-close-line ri-lg" title="Cancel search"></i>
+              </button>
+            </div>
+          </label>
+        </form>
+        <div class="autocomplete">
+        </div>
+        <div class="engine-selector" data-multiple="false">
+          <button type="button" class="engine-button" aria-label="Select search engine" aria-haspopup="true" aria-expanded="false">
+            <i class="ri-search-2-line" aria-hidden="true"></i>
+            <span class="engine-name">Default</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div class="engine-dropdown" hidden role="menu">
+
+              <button type="button"
+                      class="engine-option"
+                      data-engine-url="search.html?q="
+                      role="menuitemradio"
+                      aria-checked="true">
+                <span class="name">Default</span>
+                <span class="help">In-browser search</span>
+              </button>
+
+          </div>
+        </div>
+        <button class="icon-settings display-settings">
+          <i class="ri-settings-3-line"></i>
+          <span class="sr-only">Settings</span>
+        </button>
+      </div>
+    </div>
+
+<div id="top-content">
+  <div class="heading-with-actions top-heading">
+    <h1>websocket-chat</h1>
+
+
+      <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/docs/examples/websocket-chat.md#L1" title="View Source" class="icon-action" rel="help">
+        <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        <span class="sr-only">View Source</span>
+      </a>
+
+  </div>
+
+
+<hr class="thin"/><p>title: WebSocket Chat
+description: Real-time chat with WebSocket and Pub/Sub
+order: 22</p><hr class="thin"/><h1>WebSocket Chat Example</h1><p>A real-time chat application using WebSocket, ETS for user state, and Erlang Pub/Sub for message broadcasting.</p><h2 id="project-structure" class="section-heading"><a href="#project-structure" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Project Structure</span></h2><pre><code class="makeup erlang" translate="no"><span class="ss">chat_demo</span><span class="o">/</span><span class="w">
+</span><span class="err">├</span><span class="err">─</span><span class="err">─</span><span class="w"> </span><span class="ss">app</span><span class="p">.</span><span class="ss">py</span><span class="w">           </span><span class="p">#</span><span class="w"> </span><span class="n">ASGI</span><span class="w"> </span><span class="ss">application</span><span class="w">
+</span><span class="err">├</span><span class="err">─</span><span class="err">─</span><span class="w"> </span><span class="ss">static</span><span class="o">/</span><span class="w">
+</span><span class="err">│</span><span class="w">   </span><span class="err">└</span><span class="err">─</span><span class="err">─</span><span class="w"> </span><span class="ss">index</span><span class="p">.</span><span class="ss">html</span><span class="w">   </span><span class="p">#</span><span class="w"> </span><span class="n">Chat</span><span class="w"> </span><span class="n">UI</span><span class="w">
+</span><span class="err">└</span><span class="err">─</span><span class="err">─</span><span class="w"> </span><span class="ss">requirements</span><span class="p">.</span><span class="ss">txt</span></code></pre><h2 id="server-code" class="section-heading"><a href="#server-code" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Server Code</span></h2><pre><code class="python"># app.py
+import asyncio
+import json
+import uuid
+from datetime import datetime
+from hornbeam_erlang import (
+    state_get, state_set, state_delete, state_incr,
+    state_keys, publish, subscribe, unsubscribe
+)
+
+class ChatRoom:
+    def __init__(self, room_id):
+        self.room_id = room_id
+        self.topic = f'chat:{room_id}'
+
+    def add_user(self, user_id, username):
+        state_set(f'room:{self.room_id}:user:{user_id}', {
+            'username': username,
+            'joined_at': datetime.now().isoformat()
+        })
+        state_incr(f'room:{self.room_id}:user_count')
+
+    def remove_user(self, user_id):
+        state_delete(f'room:{self.room_id}:user:{user_id}')
+        state_incr(f'room:{self.room_id}:user_count', -1)
+
+    def get_users(self):
+        keys = state_keys(f'room:{self.room_id}:user:')
+        users = []
+        for key in keys:
+            user = state_get(key)
+            if user:
+                users.append(user)
+        return users
+
+    def add_message(self, user_id, username, text):
+        msg_id = state_incr(f'room:{self.room_id}:msg_seq')
+        message = {
+            'id': msg_id,
+            'user_id': user_id,
+            'username': username,
+            'text': text,
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # Store last 100 messages
+        state_set(f'room:{self.room_id}:msg:{msg_id}', message)
+
+        # Broadcast to all subscribers
+        publish(self.topic, {
+            'type': 'message',
+            'data': message
+        })
+
+        return message
+
+    def get_recent_messages(self, limit=50):
+        seq = state_get(f'room:{self.room_id}:msg_seq') or 0
+        messages = []
+
+        for i in range(max(1, seq - limit + 1), seq + 1):
+            msg = state_get(f'room:{self.room_id}:msg:{i}')
+            if msg:
+                messages.append(msg)
+
+        return messages
+
+
+async def application(scope, receive, send):
+    if scope['type'] == 'http':
+        await handle_http(scope, receive, send)
+    elif scope['type'] == 'websocket':
+        await handle_websocket(scope, receive, send)
+
+
+async def handle_http(scope, receive, send):
+    path = scope.get('path', '/')
+
+    if path == '/':
+        # Serve chat UI
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [[b'content-type', b'text/html']],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': get_chat_html().encode(),
+        })
+
+    elif path == '/api/rooms':
+        # List rooms
+        rooms = []
+        for key in state_keys('room:'):
+            if ':user_count' in key:
+                room_id = key.split(':')[1]
+                count = state_get(key) or 0
+                rooms.append({'id': room_id, 'users': count})
+
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [[b'content-type', b'application/json']],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': json.dumps(rooms).encode(),
+        })
+
+    else:
+        await send({
+            'type': 'http.response.start',
+            'status': 404,
+            'headers': [[b'content-type', b'text/plain']],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': b'Not Found',
+        })
+
+
+async def handle_websocket(scope, receive, send):
+    # Parse room from path: /ws/room-name
+    path = scope.get('path', '/ws/general')
+    room_id = path.split('/')[-1] or 'general'
+
+    room = ChatRoom(room_id)
+    user_id = str(uuid.uuid4())
+    username = None
+
+    # Accept connection
+    await send({'type': 'websocket.accept'})
+
+    # Subscribe to room topic
+    subscribe(room.topic)
+
+    try:
+        while True:
+            message = await receive()
+
+            if message['type'] == 'websocket.disconnect':
+                break
+
+            if message['type'] == 'websocket.receive':
+                data = json.loads(message.get('text', '{}'))
+                msg_type = data.get('type')
+
+                if msg_type == 'join':
+                    username = data.get('username', f'user_{user_id[:8]}')
+                    room.add_user(user_id, username)
+
+                    # Send join confirmation
+                    await send({
+                        'type': 'websocket.send',
+                        'text': json.dumps({
+                            'type': 'joined',
+                            'user_id': user_id,
+                            'username': username,
+                            'room': room_id,
+                            'users': room.get_users(),
+                            'recent_messages': room.get_recent_messages()
+                        })
+                    })
+
+                    # Broadcast user joined
+                    publish(room.topic, {
+                        'type': 'user_joined',
+                        'data': {'user_id': user_id, 'username': username}
+                    })
+
+                elif msg_type == 'message' and username:
+                    text = data.get('text', '').strip()
+                    if text:
+                        room.add_message(user_id, username, text)
+
+                elif msg_type == 'typing' and username:
+                    publish(room.topic, {
+                        'type': 'typing',
+                        'data': {'user_id': user_id, 'username': username}
+                    })
+
+            # Check for pub/sub messages
+            # In real implementation, use async pub/sub receiver
+            # This is simplified for demonstration
+
+    finally:
+        if username:
+            room.remove_user(user_id)
+            publish(room.topic, {
+                'type': 'user_left',
+                'data': {'user_id': user_id, 'username': username}
+            })
+        unsubscribe(room.topic)
+
+
+def get_chat_html():
+    return '''&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+    &lt;title&gt;Hornbeam Chat&lt;/title&gt;
+    &lt;style&gt;
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui; background: #1a1a2e; color: #eee; }
+        .container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; }
+        .header { padding: 1rem; background: #16213e; border-bottom: 1px solid #0f3460; }
+        .header h1 { font-size: 1.5rem; color: #4a7c50; }
+        .messages { flex: 1; overflow-y: auto; padding: 1rem; }
+        .message { margin-bottom: 0.5rem; padding: 0.5rem; background: #16213e; border-radius: 8px; }
+        .message .username { color: #4a7c50; font-weight: bold; }
+        .message .time { color: #666; font-size: 0.8rem; }
+        .message .text { margin-top: 0.25rem; }
+        .input-area { padding: 1rem; background: #16213e; border-top: 1px solid #0f3460; }
+        .input-area form { display: flex; gap: 0.5rem; }
+        .input-area input { flex: 1; padding: 0.75rem; border: none; border-radius: 8px; background: #1a1a2e; color: #eee; }
+        .input-area button { padding: 0.75rem 1.5rem; border: none; border-radius: 8px; background: #4a7c50; color: #fff; cursor: pointer; }
+        .input-area button:hover { background: #3d6a43; }
+        .join-form { padding: 2rem; text-align: center; }
+        .join-form input { width: 200px; margin-right: 0.5rem; }
+        .users { padding: 0.5rem 1rem; background: #0f3460; font-size: 0.9rem; }
+    &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;div class=&quot;container&quot;&gt;
+        &lt;div class=&quot;header&quot;&gt;
+            &lt;h1&gt;Hornbeam Chat&lt;/h1&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;users&quot; id=&quot;users&quot;&gt;Users: -&lt;/div&gt;
+        &lt;div class=&quot;messages&quot; id=&quot;messages&quot;&gt;&lt;/div&gt;
+        &lt;div class=&quot;input-area&quot;&gt;
+            &lt;div class=&quot;join-form&quot; id=&quot;join-form&quot;&gt;
+                &lt;input type=&quot;text&quot; id=&quot;username&quot; placeholder=&quot;Enter username&quot;&gt;
+                &lt;button onclick=&quot;join()&quot;&gt;Join Chat&lt;/button&gt;
+            &lt;/div&gt;
+            &lt;form id=&quot;message-form&quot; style=&quot;display:none&quot; onsubmit=&quot;sendMessage(event)&quot;&gt;
+                &lt;input type=&quot;text&quot; id=&quot;message&quot; placeholder=&quot;Type a message...&quot; autocomplete=&quot;off&quot;&gt;
+                &lt;button type=&quot;submit&quot;&gt;Send&lt;/button&gt;
+            &lt;/form&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;script&gt;
+        let ws;
+        const room = 'general';
+
+        function connect() {
+            ws = new WebSocket(`ws://${location.host}/ws/${room}`);
+
+            ws.onmessage = (event) =&gt; {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+
+            ws.onclose = () =&gt; {
+                setTimeout(connect, 1000);
+            };
+        }
+
+        function join() {
+            const username = document.getElementById('username').value.trim();
+            if (!username) return;
+
+            ws.send(JSON.stringify({ type: 'join', username }));
+            document.getElementById('join-form').style.display = 'none';
+            document.getElementById('message-form').style.display = 'flex';
+        }
+
+        function sendMessage(e) {
+            e.preventDefault();
+            const input = document.getElementById('message');
+            const text = input.value.trim();
+            if (!text) return;
+
+            ws.send(JSON.stringify({ type: 'message', text }));
+            input.value = '';
+        }
+
+        function handleMessage(data) {
+            if (data.type === 'joined') {
+                updateUsers(data.users);
+                data.recent_messages.forEach(addMessage);
+            } else if (data.type === 'message') {
+                addMessage(data.data);
+            } else if (data.type === 'user_joined') {
+                addSystemMessage(`${data.data.username} joined`);
+            } else if (data.type === 'user_left') {
+                addSystemMessage(`${data.data.username} left`);
+            }
+        }
+
+        function addMessage(msg) {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.innerHTML = `
+                &lt;span class=&quot;username&quot;&gt;${msg.username}&lt;/span&gt;
+                &lt;span class=&quot;time&quot;&gt;${new Date(msg.timestamp).toLocaleTimeString()}&lt;/span&gt;
+                &lt;div class=&quot;text&quot;&gt;${escapeHtml(msg.text)}&lt;/div&gt;
+            `;
+            document.getElementById('messages').appendChild(div);
+            div.scrollIntoView();
+        }
+
+        function addSystemMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.innerHTML = `&lt;em style=&quot;color:#666&quot;&gt;${text}&lt;/em&gt;`;
+            document.getElementById('messages').appendChild(div);
+        }
+
+        function updateUsers(users) {
+            document.getElementById('users').textContent = `Users: ${users.map(u =&gt; u.username).join(', ')}`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        connect();
+    &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;'''</code></pre><h2 id="running" class="section-heading"><a href="#running" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Running</span></h2><pre><code class="makeup erlang" translate="no"><span class="ss">rebar3</span><span class="w"> </span><span class="ss">shell</span><span class="w">
+
+</span><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="4024912046-1">(</span><span class="s">&quot;app:application&quot;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="4024912046-2">#{</span><span class="w">
+    </span><span class="ss">worker_class</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="ss">asgi</span><span class="p">,</span><span class="w">
+    </span><span class="ss">pythonpath</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p" data-group-id="4024912046-3">[</span><span class="s">&quot;chat_demo&quot;</span><span class="p" data-group-id="4024912046-3">]</span><span class="p">,</span><span class="w">
+    </span><span class="ss">workers</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">
+    </span><span class="ss">websocket_timeout</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">300000</span><span class="w">  </span><span class="c1">% 5 min timeout</span><span class="w">
+</span><span class="p" data-group-id="4024912046-2">}</span><span class="p" data-group-id="4024912046-1">)</span><span class="p">.</span></code></pre><p>Open <a href="http://localhost:8000">http://localhost:8000</a> in multiple browsers to test.</p><h2 id="features" class="section-heading"><a href="#features" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Features</span></h2><ol><li><strong>Multiple rooms</strong> - Join different rooms via URL path</li><li><strong>User presence</strong> - Track who's online</li><li><strong>Message history</strong> - Load recent messages on join</li><li><strong>ETS storage</strong> - Messages and users in ETS</li><li><strong>Pub/Sub</strong> - Real-time message broadcasting</li><li><strong>Typing indicators</strong> - Show who's typing</li></ol><h2 id="next-steps" class="section-heading"><a href="#next-steps" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Next Steps</span></h2><ul><li><a href="./embedding-service">Embedding Service</a> - ML with ETS caching</li><li><a href="../guides/websocket">WebSocket Guide</a> - WebSocket details</li></ul>
+
+</div>
+
+<div class="bottom-actions" id="bottom-actions">
+  <div class="bottom-actions-item">
+
+      <a href="fastapi-app.html" class="bottom-actions-button" rel="prev">
+        <span class="subheader">
+          ← Previous Page
+        </span>
+        <span class="title">
+fastapi-app
+        </span>
+      </a>
+
+  </div>
+  <div class="bottom-actions-item">
+
+      <a href="embedding-service.html" class="bottom-actions-button" rel="next">
+        <span class="subheader">
+          Next Page →
+        </span>
+        <span class="title">
+embedding-service
+        </span>
+      </a>
+
+  </div>
+</div>
+    <footer class="footer">
+      <p>
+
+          <span class="line">
+            <a href="https://hex.pm/packages/hornbeam/1.0.0" class="footer-hex-package">Hex Package</a>
+
+            <a href="https://preview.hex.pm/preview/hornbeam/1.0.0">Hex Preview</a>
+
+              (<a href="https://preview.hex.pm/preview/hornbeam/1.0.0/show/docs/examples/websocket-chat.md">current file</a>)
+
+          </span>
+
+        <span class="line">
+          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
+            Search HexDocs
+          </button>
+
+            <a href="hornbeam.epub" title="ePub version">
+              Download ePub version
+            </a>
+
+        </span>
+      </p>
+
+      <p class="built-using">
+        Built using
+        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
+
+          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
+
+      </p>
+
+    </footer>
+  </div>
+</main>
+</div>
+
+  </body>
+</html>

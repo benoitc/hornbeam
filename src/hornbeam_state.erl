@@ -67,7 +67,7 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %% @doc Get a value by key.
-%% Returns the value or `undefined` if not found.
+%% Returns the value or undefined if not found.
 -spec get(Key :: term()) -> term() | undefined.
 get(Key) ->
     case ets:lookup(?TABLE, Key) of

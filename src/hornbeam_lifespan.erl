@@ -24,20 +24,26 @@
 %%% The lifespan protocol consists of these events:
 %%%
 %%% Startup:
-%%% 1. Server sends: `{type: "lifespan.startup"}`
-%%% 2. App responds: `{type: "lifespan.startup.complete"}` or
-%%%                  `{type: "lifespan.startup.failed", message: "..."}`
+%%% &lt;ol&gt;
+%%% &lt;li&gt;Server sends: type = "lifespan.startup"&lt;/li&gt;
+%%% &lt;li&gt;App responds: type = "lifespan.startup.complete" or
+%%%     type = "lifespan.startup.failed"&lt;/li&gt;
+%%% &lt;/ol&gt;
 %%%
 %%% Shutdown:
-%%% 1. Server sends: `{type: "lifespan.shutdown"}`
-%%% 2. App responds: `{type: "lifespan.shutdown.complete"}`
+%%% &lt;ol&gt;
+%%% &lt;li&gt;Server sends: type = "lifespan.shutdown"&lt;/li&gt;
+%%% &lt;li&gt;App responds: type = "lifespan.shutdown.complete"&lt;/li&gt;
+%%% &lt;/ol&gt;
 %%%
 %%% == Configuration ==
 %%%
 %%% The lifespan setting can be:
-%%% - `auto`: Detect if app supports lifespan (default)
-%%% - `on`: Require lifespan support, fail if not supported
-%%% - `off`: Disable lifespan protocol
+%%% &lt;ul&gt;
+%%% &lt;li&gt;auto: Detect if app supports lifespan (default)&lt;/li&gt;
+%%% &lt;li&gt;on: Require lifespan support, fail if not supported&lt;/li&gt;
+%%% &lt;li&gt;off: Disable lifespan protocol&lt;/li&gt;
+%%% &lt;/ul&gt;
 -module(hornbeam_lifespan).
 
 -behaviour(gen_server).

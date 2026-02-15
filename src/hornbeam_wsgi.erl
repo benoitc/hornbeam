@@ -72,7 +72,7 @@ build_environ(Req) ->
 %% @doc Build a WSGI environ dictionary with options.
 %%
 %% Options:
-%% - script_name: Override SCRIPT_NAME (default: <<>>)
+%% - script_name: Override SCRIPT_NAME (default: empty binary)
 %% - root_path: Root path for the application
 %% - proxy_allow_from: IPs allowed to send proxy headers
 %% - proxy_headers: Headers to check for proxied client info

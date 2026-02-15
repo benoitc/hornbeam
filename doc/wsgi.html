@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="ExDoc v0.39.1">
+    <meta name="project" content="hornbeam v1.0.0">
+
+
+    <title>wsgi — hornbeam v1.0.0</title>
+
+    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+
+    <script defer src="dist/sidebar_items-DCB24D7B.js"></script>
+    <script defer src="docs_config.js"></script>
+    <script defer src="dist/html-HBZYRXZS.js"></script>
+
+  </head>
+  <body>
+    <script>(()=>{var t="ex_doc:settings",e="dark";var o="dark",s="light";var E="sidebar_state",n="closed";var r="sidebar_width";var a="sidebar-open";var i=new URLSearchParams(window.location.search),S=i.get("theme")||JSON.parse(localStorage.getItem(t)||"{}").theme;(S===o||S!==s&&window.matchMedia("(prefers-color-scheme: dark)").matches)&&document.body.classList.add(e);var d=sessionStorage.getItem(E),A=d!==n&&!window.matchMedia(`screen and (max-width: ${768}px)`).matches;document.body.classList.toggle(a,A);var c=sessionStorage.getItem(r);c&&document.body.style.setProperty("--sidebarWidth",`${c}px`);var p=/(Macintosh|iPhone|iPad|iPod)/.test(window.navigator.userAgent);document.documentElement.classList.toggle("apple-os",p);})();
+</script>
+
+<div class="body-wrapper">
+
+<button id="sidebar-menu" class="sidebar-button sidebar-toggle" aria-label="toggle sidebar" aria-controls="sidebar">
+  <i class="ri-menu-line ri-lg" title="Collapse/expand sidebar"></i>
+</button>
+
+<nav id="sidebar" class="sidebar">
+
+  <div class="sidebar-header">
+    <div class="sidebar-projectInfo">
+
+      <div>
+        <a href="https://hornbeam.dev" class="sidebar-projectName" translate="no">
+hornbeam
+        </a>
+        <div class="sidebar-projectVersion" translate="no">
+          v1.0.0
+        </div>
+      </div>
+    </div>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+  </div>
+</nav>
+
+<output role="status" id="toast"></output>
+
+<main class="content page-extra" id="main" data-type="extras">
+  <div id="content" class="content-inner">
+    <div class="top-search">
+      <div class="search-settings">
+        <form class="search-bar" action="search.html">
+          <label class="search-label">
+            <span class="sr-only">Search documentation of hornbeam</span>
+            <div class="search-input-wrapper">
+              <input name="q" type="text" class="search-input" placeholder="Press / to search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button type="button" tabindex="-1" class="search-close-button" aria-hidden="true">
+                <i class="ri-close-line ri-lg" title="Cancel search"></i>
+              </button>
+            </div>
+          </label>
+        </form>
+        <div class="autocomplete">
+        </div>
+        <div class="engine-selector" data-multiple="false">
+          <button type="button" class="engine-button" aria-label="Select search engine" aria-haspopup="true" aria-expanded="false">
+            <i class="ri-search-2-line" aria-hidden="true"></i>
+            <span class="engine-name">Default</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div class="engine-dropdown" hidden role="menu">
+
+              <button type="button"
+                      class="engine-option"
+                      data-engine-url="search.html?q="
+                      role="menuitemradio"
+                      aria-checked="true">
+                <span class="name">Default</span>
+                <span class="help">In-browser search</span>
+              </button>
+
+          </div>
+        </div>
+        <button class="icon-settings display-settings">
+          <i class="ri-settings-3-line"></i>
+          <span class="sr-only">Settings</span>
+        </button>
+      </div>
+    </div>
+
+<div id="top-content">
+  <div class="heading-with-actions top-heading">
+    <h1>wsgi</h1>
+
+
+      <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/docs/guides/wsgi.md#L1" title="View Source" class="icon-action" rel="help">
+        <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        <span class="sr-only">View Source</span>
+      </a>
+
+  </div>
+
+
+<hr class="thin"/><p>title: WSGI Guide
+description: Running WSGI applications with Hornbeam
+order: 10</p><hr class="thin"/><h1>WSGI Guide</h1><p>Hornbeam provides full WSGI (PEP 3333) support, allowing you to run Flask, Django, Bottle, and any standard WSGI application.</p><h2 id="basic-wsgi-application" class="section-heading"><a href="#basic-wsgi-application" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Basic WSGI Application</span></h2><pre><code class="python"># app.py
+def application(environ, start_response):
+    path = environ.get('PATH_INFO', '/')
+
+    start_response('200 OK', [
+        ('Content-Type', 'text/plain'),
+    ])
+    return [f'You requested: {path}'.encode()]</code></pre><pre><code class="makeup erlang" translate="no"><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="0722484887-1">(</span><span class="s">&quot;app:application&quot;</span><span class="p" data-group-id="0722484887-1">)</span><span class="p">.</span></code></pre><h2 id="wsgi-environ" class="section-heading"><a href="#wsgi-environ" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">WSGI Environ</span></h2><p>Hornbeam provides all standard WSGI environ variables:</p><table><thead><tr><th style="text-align: left;">Variable</th><th style="text-align: left;">Description</th></tr></thead><tbody><tr><td style="text-align: left;"><code class="inline">REQUEST_METHOD</code></td><td style="text-align: left;">HTTP method (GET, POST, etc.)</td></tr><tr><td style="text-align: left;"><code class="inline">SCRIPT_NAME</code></td><td style="text-align: left;">URL path prefix</td></tr><tr><td style="text-align: left;"><code class="inline">PATH_INFO</code></td><td style="text-align: left;">URL path</td></tr><tr><td style="text-align: left;"><code class="inline">QUERY_STRING</code></td><td style="text-align: left;">Query string after <code class="inline">?</code></td></tr><tr><td style="text-align: left;"><code class="inline">CONTENT_TYPE</code></td><td style="text-align: left;">Request content type</td></tr><tr><td style="text-align: left;"><code class="inline">CONTENT_LENGTH</code></td><td style="text-align: left;">Request body length</td></tr><tr><td style="text-align: left;"><code class="inline">SERVER_NAME</code></td><td style="text-align: left;">Server hostname</td></tr><tr><td style="text-align: left;"><code class="inline">SERVER_PORT</code></td><td style="text-align: left;">Server port</td></tr><tr><td style="text-align: left;"><code class="inline">SERVER_PROTOCOL</code></td><td style="text-align: left;">HTTP/1.1 or HTTP/2</td></tr><tr><td style="text-align: left;"><code class="inline">HTTP_*</code></td><td style="text-align: left;">HTTP headers</td></tr></tbody></table><h3 id="wsgi-extensions" class="section-heading"><a href="#wsgi-extensions" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">WSGI Extensions</span></h3><table><thead><tr><th style="text-align: left;">Variable</th><th style="text-align: left;">Description</th></tr></thead><tbody><tr><td style="text-align: left;"><code class="inline">wsgi.input</code></td><td style="text-align: left;">Request body stream</td></tr><tr><td style="text-align: left;"><code class="inline">wsgi.errors</code></td><td style="text-align: left;">Error output stream</td></tr><tr><td style="text-align: left;"><code class="inline">wsgi.url_scheme</code></td><td style="text-align: left;"><code class="inline">http</code> or <code class="inline">https</code></td></tr><tr><td style="text-align: left;"><code class="inline">wsgi.file_wrapper</code></td><td style="text-align: left;">Efficient file serving</td></tr><tr><td style="text-align: left;"><code class="inline">wsgi.early_hints</code></td><td style="text-align: left;">Send 103 Early Hints</td></tr></tbody></table><h2 id="running-flask" class="section-heading"><a href="#running-flask" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Running Flask</span></h2><pre><code class="python"># app.py
+from flask import Flask, jsonify
+from hornbeam_erlang import state_get, state_set, state_incr
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    # Use ETS for atomic page view counter
+    views = state_incr('page_views')
+    return f'Page views: {views}'
+
+@app.route('/api/data')
+def get_data():
+    # Cache expensive operations in ETS
+    cached = state_get('api_cache')
+    if cached is None:
+        cached = expensive_computation()
+        state_set('api_cache', cached, ttl=300)  # 5 min TTL
+    return jsonify(cached)
+
+# WSGI application callable
+application = app</code></pre><pre><code class="makeup erlang" translate="no"><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="0894360922-1">(</span><span class="s">&quot;app:application&quot;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="0894360922-2">#{</span><span class="w">
+    </span><span class="ss">workers</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w">
+    </span><span class="ss">timeout</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">30000</span><span class="w">
+</span><span class="p" data-group-id="0894360922-2">}</span><span class="p" data-group-id="0894360922-1">)</span><span class="p">.</span></code></pre><h2 id="running-django" class="section-heading"><a href="#running-django" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Running Django</span></h2><h3 id="1-create-django-project" class="section-heading"><a href="#1-create-django-project" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">1. Create Django Project</span></h3><pre><code class="makeup bash" translate="no"><span class="">django-admin startproject myproject
+</span><span class="">cd myproject
+</span><span class="">python manage.py migrate
+</span></code></pre><h3 id="2-configure-settings" class="section-heading"><a href="#2-configure-settings" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">2. Configure Settings</span></h3><pre><code class="python"># myproject/settings.py
+ALLOWED_HOSTS = ['*']  # Configure appropriately for production</code></pre><h3 id="3-start-with-hornbeam" class="section-heading"><a href="#3-start-with-hornbeam" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">3. Start with Hornbeam</span></h3><pre><code class="makeup erlang" translate="no"><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="1771523964-1">(</span><span class="s">&quot;myproject.wsgi:application&quot;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="1771523964-2">#{</span><span class="w">
+    </span><span class="ss">pythonpath</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p" data-group-id="1771523964-3">[</span><span class="s">&quot;.&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;myproject&quot;</span><span class="p" data-group-id="1771523964-3">]</span><span class="p">,</span><span class="w">
+    </span><span class="ss">workers</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="w">
+</span><span class="p" data-group-id="1771523964-2">}</span><span class="p" data-group-id="1771523964-1">)</span><span class="p">.</span></code></pre><h2 id="running-bottle" class="section-heading"><a href="#running-bottle" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Running Bottle</span></h2><pre><code class="python"># app.py
+from bottle import Bottle, response
+
+app = Bottle()
+
+@app.route('/')
+def index():
+    return 'Hello from Bottle!'
+
+@app.route('/json')
+def json_endpoint():
+    response.content_type = 'application/json'
+    return '{&quot;status&quot;: &quot;ok&quot;}'
+
+# WSGI application
+application = app</code></pre><h2 id="file-uploads" class="section-heading"><a href="#file-uploads" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">File Uploads</span></h2><p>Handle file uploads efficiently:</p><pre><code class="python">def application(environ, start_response):
+    if environ['REQUEST_METHOD'] == 'POST':
+        content_length = int(environ.get('CONTENT_LENGTH', 0))
+        body = environ['wsgi.input'].read(content_length)
+
+        # Process uploaded file
+        # ...
+
+        start_response('200 OK', [('Content-Type', 'text/plain')])
+        return [b'Upload received']
+
+    start_response('405 Method Not Allowed', [])
+    return [b'POST only']</code></pre><h2 id="file-serving" class="section-heading"><a href="#file-serving" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">File Serving</span></h2><p>Use <code class="inline">wsgi.file_wrapper</code> for efficient static file serving:</p><pre><code class="python">import os
+
+def application(environ, start_response):
+    path = environ.get('PATH_INFO', '/')[1:]  # Remove leading /
+    filepath = os.path.join('static', path)
+
+    if os.path.isfile(filepath):
+        file_wrapper = environ.get('wsgi.file_wrapper')
+
+        start_response('200 OK', [
+            ('Content-Type', 'application/octet-stream'),
+            ('Content-Length', str(os.path.getsize(filepath))),
+        ])
+
+        f = open(filepath, 'rb')
+        if file_wrapper:
+            return file_wrapper(f)
+        else:
+            return iter(lambda: f.read(8192), b'')
+
+    start_response('404 Not Found', [])
+    return [b'Not found']</code></pre><h2 id="early-hints-103" class="section-heading"><a href="#early-hints-103" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Early Hints (103)</span></h2><p>Send preload hints before the response:</p><pre><code class="python">def application(environ, start_response):
+    # Send early hints for resource preloading
+    early_hints = environ.get('wsgi.early_hints')
+    if early_hints:
+        early_hints([
+            ('Link', '&lt;/style.css&gt;; rel=preload; as=style'),
+            ('Link', '&lt;/app.js&gt;; rel=preload; as=script'),
+        ])
+
+    # Continue with normal response
+    start_response('200 OK', [('Content-Type', 'text/html')])
+    return [b'&lt;html&gt;...&lt;/html&gt;']</code></pre><h2 id="error-handling" class="section-heading"><a href="#error-handling" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Error Handling</span></h2><pre><code class="python">def application(environ, start_response):
+    try:
+        # Your application logic
+        result = process_request(environ)
+        start_response('200 OK', [('Content-Type', 'text/plain')])
+        return [result]
+    except ValueError as e:
+        start_response('400 Bad Request', [('Content-Type', 'text/plain')])
+        return [str(e).encode()]
+    except Exception as e:
+        # Log to wsgi.errors
+        environ['wsgi.errors'].write(f'Error: {e}\n')
+        start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
+        return [b'Internal error']</code></pre><h2 id="middleware" class="section-heading"><a href="#middleware" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Middleware</span></h2><p>Standard WSGI middleware works with Hornbeam:</p><pre><code class="python">class LoggingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO', '/')
+        method = environ.get('REQUEST_METHOD')
+        print(f'{method} {path}')
+        return self.app(environ, start_response)
+
+# Wrap your application
+from myapp import app
+application = LoggingMiddleware(app)</code></pre><h2 id="configuration-options" class="section-heading"><a href="#configuration-options" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Configuration Options</span></h2><pre><code class="makeup erlang" translate="no"><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="6408578552-1">(</span><span class="s">&quot;app:application&quot;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="6408578552-2">#{</span><span class="w">
+    </span><span class="c1">%% Protocol</span><span class="w">
+    </span><span class="ss">worker_class</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="ss">wsgi</span><span class="p">,</span><span class="w">
+
+    </span><span class="c1">%% Workers</span><span class="w">
+    </span><span class="ss">workers</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">              </span><span class="c1">% Number of Python workers</span><span class="w">
+    </span><span class="ss">timeout</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">30000</span><span class="p">,</span><span class="w">          </span><span class="c1">% Request timeout (ms)</span><span class="w">
+    </span><span class="ss">max_requests</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w">      </span><span class="c1">% Recycle workers after N requests</span><span class="w">
+
+    </span><span class="c1">%% HTTP</span><span class="w">
+    </span><span class="ss">keepalive</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w">            </span><span class="c1">% Keep-alive timeout (seconds)</span><span class="w">
+
+    </span><span class="c1">%% Python</span><span class="w">
+    </span><span class="ss">pythonpath</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p" data-group-id="6408578552-3">[</span><span class="s">&quot;.&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;src&quot;</span><span class="p" data-group-id="6408578552-3">]</span><span class="w">
+</span><span class="p" data-group-id="6408578552-2">}</span><span class="p" data-group-id="6408578552-1">)</span><span class="p">.</span></code></pre><h2 id="performance-tips" class="section-heading"><a href="#performance-tips" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Performance Tips</span></h2><ol><li><strong>Use ETS for caching</strong> - Faster than Redis for local state</li><li><strong>Preload models</strong> - Load ML models at startup with <code class="inline">preload_app =&gt; true</code></li><li><strong>Batch operations</strong> - Use <code class="inline">state_get_multi</code> for multiple keys</li><li><strong>Monitor workers</strong> - Check pool stats with <code class="inline">hornbeam:pool_stats()</code></li></ol><h2 id="next-steps" class="section-heading"><a href="#next-steps" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Next Steps</span></h2><ul><li><a href="./asgi">ASGI Guide</a> - For async applications</li><li><a href="./erlang-integration">Erlang Integration</a> - ETS, RPC, Pub/Sub</li><li><a href="../examples/flask-app">Flask Example</a> - Complete Flask application</li></ul>
+
+</div>
+
+<div class="bottom-actions" id="bottom-actions">
+  <div class="bottom-actions-item">
+
+      <a href="getting-started.html" class="bottom-actions-button" rel="prev">
+        <span class="subheader">
+          ← Previous Page
+        </span>
+        <span class="title">
+getting-started
+        </span>
+      </a>
+
+  </div>
+  <div class="bottom-actions-item">
+
+      <a href="asgi.html" class="bottom-actions-button" rel="next">
+        <span class="subheader">
+          Next Page →
+        </span>
+        <span class="title">
+asgi
+        </span>
+      </a>
+
+  </div>
+</div>
+    <footer class="footer">
+      <p>
+
+          <span class="line">
+            <a href="https://hex.pm/packages/hornbeam/1.0.0" class="footer-hex-package">Hex Package</a>
+
+            <a href="https://preview.hex.pm/preview/hornbeam/1.0.0">Hex Preview</a>
+
+              (<a href="https://preview.hex.pm/preview/hornbeam/1.0.0/show/docs/guides/wsgi.md">current file</a>)
+
+          </span>
+
+        <span class="line">
+          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
+            Search HexDocs
+          </button>
+
+            <a href="hornbeam.epub" title="ePub version">
+              Download ePub version
+            </a>
+
+        </span>
+      </p>
+
+      <p class="built-using">
+        Built using
+        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
+
+          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
+
+      </p>
+
+    </footer>
+  </div>
+</main>
+</div>
+
+  </body>
+</html>

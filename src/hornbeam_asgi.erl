@@ -45,8 +45,8 @@ build_scope(Req) ->
 %% @doc Build an ASGI scope dictionary with options.
 %%
 %% Options:
-%% - root_path: ASGI root_path (default: <<>>)
-%% - state: Shared state dict from lifespan (default: #{})
+%% - root_path: ASGI root_path (default: empty binary)
+%% - state: Shared state dict from lifespan (default: empty map)
 %% - extensions: Additional extensions to include
 -spec build_scope(cowboy_req:req(), scope_opts()) -> map().
 build_scope(Req, Opts) ->

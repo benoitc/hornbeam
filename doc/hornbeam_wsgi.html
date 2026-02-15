@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="ExDoc v0.39.1">
+    <meta name="project" content="hornbeam v1.0.0">
+
+
+    <title>hornbeam_wsgi — hornbeam v1.0.0</title>
+
+    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+
+    <script defer src="dist/sidebar_items-DCB24D7B.js"></script>
+    <script defer src="docs_config.js"></script>
+    <script defer src="dist/html-HBZYRXZS.js"></script>
+
+  </head>
+  <body>
+    <script>(()=>{var t="ex_doc:settings",e="dark";var o="dark",s="light";var E="sidebar_state",n="closed";var r="sidebar_width";var a="sidebar-open";var i=new URLSearchParams(window.location.search),S=i.get("theme")||JSON.parse(localStorage.getItem(t)||"{}").theme;(S===o||S!==s&&window.matchMedia("(prefers-color-scheme: dark)").matches)&&document.body.classList.add(e);var d=sessionStorage.getItem(E),A=d!==n&&!window.matchMedia(`screen and (max-width: ${768}px)`).matches;document.body.classList.toggle(a,A);var c=sessionStorage.getItem(r);c&&document.body.style.setProperty("--sidebarWidth",`${c}px`);var p=/(Macintosh|iPhone|iPad|iPod)/.test(window.navigator.userAgent);document.documentElement.classList.toggle("apple-os",p);})();
+</script>
+
+<div class="body-wrapper">
+
+<button id="sidebar-menu" class="sidebar-button sidebar-toggle" aria-label="toggle sidebar" aria-controls="sidebar">
+  <i class="ri-menu-line ri-lg" title="Collapse/expand sidebar"></i>
+</button>
+
+<nav id="sidebar" class="sidebar">
+
+  <div class="sidebar-header">
+    <div class="sidebar-projectInfo">
+
+      <div>
+        <a href="https://hornbeam.dev" class="sidebar-projectName" translate="no">
+hornbeam
+        </a>
+        <div class="sidebar-projectVersion" translate="no">
+          v1.0.0
+        </div>
+      </div>
+    </div>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+  </div>
+</nav>
+
+<output role="status" id="toast"></output>
+
+<main class="content page-module" id="main" data-type="modules">
+  <div id="content" class="content-inner">
+    <div class="top-search">
+      <div class="search-settings">
+        <form class="search-bar" action="search.html">
+          <label class="search-label">
+            <span class="sr-only">Search documentation of hornbeam</span>
+            <div class="search-input-wrapper">
+              <input name="q" type="text" class="search-input" placeholder="Press / to search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button type="button" tabindex="-1" class="search-close-button" aria-hidden="true">
+                <i class="ri-close-line ri-lg" title="Cancel search"></i>
+              </button>
+            </div>
+          </label>
+        </form>
+        <div class="autocomplete">
+        </div>
+        <div class="engine-selector" data-multiple="false">
+          <button type="button" class="engine-button" aria-label="Select search engine" aria-haspopup="true" aria-expanded="false">
+            <i class="ri-search-2-line" aria-hidden="true"></i>
+            <span class="engine-name">Default</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div class="engine-dropdown" hidden role="menu">
+
+              <button type="button"
+                      class="engine-option"
+                      data-engine-url="search.html?q="
+                      role="menuitemradio"
+                      aria-checked="true">
+                <span class="name">Default</span>
+                <span class="help">In-browser search</span>
+              </button>
+
+          </div>
+        </div>
+        <button class="icon-settings display-settings">
+          <i class="ri-settings-3-line"></i>
+          <span class="sr-only">Settings</span>
+        </button>
+      </div>
+    </div>
+
+<div id="top-content">
+  <div class="heading-with-actions top-heading">
+    <h1>
+      <span translate="no">hornbeam_wsgi</span> 
+      <small class="app-vsn" translate="no">(hornbeam v1.0.0)</small>
+
+    </h1>
+
+      <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/src/hornbeam_wsgi.erl#L51" title="View Source" class="icon-action" rel="help">
+        <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        <span class="sr-only">View Source</span>
+      </a>
+
+  </div>
+
+
+    <section id="moduledoc">
+<p>WSGI environment builder and protocol handling.</p><p>Builds a PEP 3333 compliant WSGI environ dictionary from a Cowboy request. This module creates environ dicts with all required and recommended WSGI variables for full PEP 3333 compliance.</p><h3 id="module-required-cgi-variables" class="section-heading"><a href="#module-required-cgi-variables" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text"><a name="Required_CGI_Variables">Required CGI Variables</a></span></h3><p>- REQUEST_METHOD - SCRIPT_NAME - PATH_INFO - QUERY_STRING - CONTENT_TYPE (if present) - CONTENT_LENGTH (if present) - SERVER_NAME - SERVER_PORT - SERVER_PROTOCOL - HTTP_* (for each request header)</p><h3 id="module-required-wsgi-variables" class="section-heading"><a href="#module-required-wsgi-variables" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text"><a name="Required_WSGI_Variables">Required WSGI Variables</a></span></h3><p>- wsgi.version: (1, 0) - wsgi.url_scheme: &quot;http&quot; or &quot;https&quot; - wsgi.input: Request body - wsgi.errors: &quot;stderr&quot; (routed to logging in Python) - wsgi.multithread: true - wsgi.multiprocess: true - wsgi.run_once: false</p><h3 id="module-recommended-extensions" class="section-heading"><a href="#module-recommended-extensions" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text"><a name="Recommended_Extensions">Recommended Extensions</a></span></h3><p>- wsgi.file_wrapper: FileWrapper class - wsgi.input_terminated: true - wsgi.early_hints: callback function</p><h3 id="module-additional-variables" class="section-heading"><a href="#module-additional-variables" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text"><a name="Additional_Variables">Additional Variables</a></span></h3><p>- REMOTE_ADDR: Client IP address - REMOTE_PORT: Client port - REMOTE_HOST: Client hostname (if available)</p>
+    </section>
+
+</div>
+
+  <section id="summary" class="details-list">
+    <h1 class="section-heading">
+      <a class="hover-link" href="#summary">
+        <i class="ri-link-m" aria-hidden="true"></i>
+      </a>
+      <span class="text">Summary</span>
+    </h1>
+<div class="summary-types summary">
+  <h2>
+    <a href="#types">Types</a>
+  </h2>
+
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#t:environ_opts/0" data-no-tooltip="" translate="no">environ_opts/0</a>
+
+      </div>
+
+    </div>
+
+</div>
+<div class="summary-functions summary">
+  <h2>
+    <a href="#functions">Functions</a>
+  </h2>
+
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#build_environ/1" data-no-tooltip="" translate="no">build_environ(Req)</a>
+
+      </div>
+
+        <div class="summary-synopsis"><p>Build a WSGI environ dictionary from a Cowboy request.</p></div>
+
+    </div>
+
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#build_environ/2" data-no-tooltip="" translate="no">build_environ(Req, Opts)</a>
+
+      </div>
+
+        <div class="summary-synopsis"><p>Build a WSGI environ dictionary with options.</p></div>
+
+    </div>
+
+</div>
+
+  </section>
+
+
+  <section id="types" class="details-list">
+    <h1 class="section-heading">
+      <a class="hover-link" href="#types">
+        <i class="ri-link-m" aria-hidden="true"></i>
+      </a>
+      <span class="text">Types</span>
+    </h1>
+
+    <div class="types-list">
+<section class="detail" id="t:environ_opts/0">
+
+  <div class="detail-header">
+    <a href="#t:environ_opts/0" class="detail-link" data-no-tooltip="" aria-label="Link to this type">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">environ_opts/0</h1>
+
+
+        <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/src/hornbeam_wsgi.erl#L58" class="icon-action" rel="help" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+      <div class="specs">
+
+          <pre translate="no"><span class="attribute">-type</span> environ_opts() ::
+          #{script_name => <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>(),
+            root_path => <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>(),
+            proxy_allow_from => [<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>()],
+            proxy_headers => [<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>()]}.</pre>
+
+      </div>
+
+
+  </section>
+</section>
+
+    </div>
+  </section>
+
+  <section id="functions" class="details-list">
+    <h1 class="section-heading">
+      <a class="hover-link" href="#functions">
+        <i class="ri-link-m" aria-hidden="true"></i>
+      </a>
+      <span class="text">Functions</span>
+    </h1>
+
+    <div class="functions-list">
+<section class="detail" id="build_environ/1">
+
+  <div class="detail-header">
+    <a href="#build_environ/1" class="detail-link" data-no-tooltip="" aria-label="Link to this function">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">build_environ(Req)</h1>
+
+
+        <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/src/hornbeam_wsgi.erl#L69" class="icon-action" rel="help" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+      <div class="specs">
+
+          <pre translate="no"><span class="attribute">-spec</span> build_environ(<a href="https://hexdocs.pm/cowboy/cowboy_req.html#t:req/0">cowboy_req:req</a>()) -> <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:map/0">map</a>().</pre>
+
+      </div>
+
+<p>Build a WSGI environ dictionary from a Cowboy request.</p><p>Creates a dictionary containing all standard WSGI variables.</p>
+  </section>
+</section>
+<section class="detail" id="build_environ/2">
+
+  <div class="detail-header">
+    <a href="#build_environ/2" class="detail-link" data-no-tooltip="" aria-label="Link to this function">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">build_environ(Req, Opts)</h1>
+
+
+        <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/src/hornbeam_wsgi.erl#L80" class="icon-action" rel="help" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+      <div class="specs">
+
+          <pre translate="no"><span class="attribute">-spec</span> build_environ(<a href="https://hexdocs.pm/cowboy/cowboy_req.html#t:req/0">cowboy_req:req</a>(), <a href="#t:environ_opts/0">environ_opts</a>()) -> <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:map/0">map</a>().</pre>
+
+      </div>
+
+<p>Build a WSGI environ dictionary with options.</p><p>Options: - script_name: Override SCRIPT_NAME (default: empty binary) - root_path: Root path for the application - proxy_allow_from: IPs allowed to send proxy headers - proxy_headers: Headers to check for proxied client info</p>
+  </section>
+</section>
+
+    </div>
+  </section>
+
+    <footer class="footer">
+      <p>
+
+          <span class="line">
+            <a href="https://hex.pm/packages/hornbeam/1.0.0" class="footer-hex-package">Hex Package</a>
+
+            <a href="https://preview.hex.pm/preview/hornbeam/1.0.0">Hex Preview</a>
+
+          </span>
+
+        <span class="line">
+          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
+            Search HexDocs
+          </button>
+
+            <a href="hornbeam.epub" title="ePub version">
+              Download ePub version
+            </a>
+
+        </span>
+      </p>
+
+      <p class="built-using">
+        Built using
+        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
+
+          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
+
+      </p>
+
+    </footer>
+  </div>
+</main>
+</div>
+
+  </body>
+</html>

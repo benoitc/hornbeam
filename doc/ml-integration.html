@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="ExDoc v0.39.1">
+    <meta name="project" content="hornbeam v1.0.0">
+
+
+    <title>ml-integration — hornbeam v1.0.0</title>
+
+    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+
+    <script defer src="dist/sidebar_items-DCB24D7B.js"></script>
+    <script defer src="docs_config.js"></script>
+    <script defer src="dist/html-HBZYRXZS.js"></script>
+
+  </head>
+  <body>
+    <script>(()=>{var t="ex_doc:settings",e="dark";var o="dark",s="light";var E="sidebar_state",n="closed";var r="sidebar_width";var a="sidebar-open";var i=new URLSearchParams(window.location.search),S=i.get("theme")||JSON.parse(localStorage.getItem(t)||"{}").theme;(S===o||S!==s&&window.matchMedia("(prefers-color-scheme: dark)").matches)&&document.body.classList.add(e);var d=sessionStorage.getItem(E),A=d!==n&&!window.matchMedia(`screen and (max-width: ${768}px)`).matches;document.body.classList.toggle(a,A);var c=sessionStorage.getItem(r);c&&document.body.style.setProperty("--sidebarWidth",`${c}px`);var p=/(Macintosh|iPhone|iPad|iPod)/.test(window.navigator.userAgent);document.documentElement.classList.toggle("apple-os",p);})();
+</script>
+
+<div class="body-wrapper">
+
+<button id="sidebar-menu" class="sidebar-button sidebar-toggle" aria-label="toggle sidebar" aria-controls="sidebar">
+  <i class="ri-menu-line ri-lg" title="Collapse/expand sidebar"></i>
+</button>
+
+<nav id="sidebar" class="sidebar">
+
+  <div class="sidebar-header">
+    <div class="sidebar-projectInfo">
+
+      <div>
+        <a href="https://hornbeam.dev" class="sidebar-projectName" translate="no">
+hornbeam
+        </a>
+        <div class="sidebar-projectVersion" translate="no">
+          v1.0.0
+        </div>
+      </div>
+    </div>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+  </div>
+</nav>
+
+<output role="status" id="toast"></output>
+
+<main class="content page-extra" id="main" data-type="extras">
+  <div id="content" class="content-inner">
+    <div class="top-search">
+      <div class="search-settings">
+        <form class="search-bar" action="search.html">
+          <label class="search-label">
+            <span class="sr-only">Search documentation of hornbeam</span>
+            <div class="search-input-wrapper">
+              <input name="q" type="text" class="search-input" placeholder="Press / to search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button type="button" tabindex="-1" class="search-close-button" aria-hidden="true">
+                <i class="ri-close-line ri-lg" title="Cancel search"></i>
+              </button>
+            </div>
+          </label>
+        </form>
+        <div class="autocomplete">
+        </div>
+        <div class="engine-selector" data-multiple="false">
+          <button type="button" class="engine-button" aria-label="Select search engine" aria-haspopup="true" aria-expanded="false">
+            <i class="ri-search-2-line" aria-hidden="true"></i>
+            <span class="engine-name">Default</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div class="engine-dropdown" hidden role="menu">
+
+              <button type="button"
+                      class="engine-option"
+                      data-engine-url="search.html?q="
+                      role="menuitemradio"
+                      aria-checked="true">
+                <span class="name">Default</span>
+                <span class="help">In-browser search</span>
+              </button>
+
+          </div>
+        </div>
+        <button class="icon-settings display-settings">
+          <i class="ri-settings-3-line"></i>
+          <span class="sr-only">Settings</span>
+        </button>
+      </div>
+    </div>
+
+<div id="top-content">
+  <div class="heading-with-actions top-heading">
+    <h1>ml-integration</h1>
+
+
+      <a href="https://github.com/benoitc/hornbeam/blob/v1.0.0/docs/guides/ml-integration.md#L1" title="View Source" class="icon-action" rel="help">
+        <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        <span class="sr-only">View Source</span>
+      </a>
+
+  </div>
+
+
+<hr class="thin"/><p>title: ML Integration
+description: Caching, distributed inference, and AI patterns
+order: 14</p><hr class="thin"/><h1>ML Integration</h1><p>Hornbeam makes Python ML/AI workloads production-ready with ETS caching, distributed inference, and Erlang's fault tolerance.</p><h2 id="cached-inference" class="section-heading"><a href="#cached-inference" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Cached Inference</span></h2><p>Use ETS to cache ML inference results:</p><pre><code class="python">from hornbeam_ml import cached_inference, cache_stats
+
+# Load model at startup
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def get_embedding(text):
+    # Automatically cached by input hash
+    return cached_inference(model.encode, text)
+
+# Check cache performance
+stats = cache_stats()
+# {'hits': 1000, 'misses': 100, 'hit_rate': 0.91}</code></pre><h3 id="custom-cache-keys" class="section-heading"><a href="#custom-cache-keys" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Custom Cache Keys</span></h3><pre><code class="python">from hornbeam_ml import cached_inference
+
+def get_embedding(text, model_name='default'):
+    # Custom cache key includes model name
+    return cached_inference(
+        model.encode,
+        text,
+        cache_key=f'{model_name}:{hash(text)}',
+        cache_prefix='embedding'
+    )</code></pre><h3 id="cache-with-ttl" class="section-heading"><a href="#cache-with-ttl" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Cache with TTL</span></h3><pre><code class="python">from hornbeam_erlang import state_get, state_set
+import hashlib
+import time
+
+def cached_with_ttl(fn, input, ttl_seconds=3600):
+    &quot;&quot;&quot;Cache result with time-to-live.&quot;&quot;&quot;
+    key = f'cache:{hashlib.md5(str(input).encode()).hexdigest()}'
+
+    cached = state_get(key)
+    if cached:
+        if time.time() - cached['timestamp'] &lt; ttl_seconds:
+            return cached['result']
+
+    result = fn(input)
+    state_set(key, {
+        'result': result,
+        'timestamp': time.time()
+    })
+    return result</code></pre><h2 id="embedding-service" class="section-heading"><a href="#embedding-service" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Embedding Service</span></h2><p>Complete embedding service with caching:</p><pre><code class="python"># embedding_service.py
+from fastapi import FastAPI
+from pydantic import BaseModel
+from hornbeam_ml import cached_inference, cache_stats
+from hornbeam_erlang import state_incr
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+app = FastAPI()
+model = None
+
+@app.on_event(&quot;startup&quot;)
+async def load_model():
+    global model
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+
+class EmbedRequest(BaseModel):
+    texts: list[str]
+
+class EmbedResponse(BaseModel):
+    embeddings: list[list[float]]
+    cache_hits: int
+    cache_misses: int
+
+@app.post(&quot;/embed&quot;, response_model=EmbedResponse)
+async def embed(request: EmbedRequest):
+    state_incr('metrics:embed_requests')
+
+    embeddings = []
+    for text in request.texts:
+        emb = cached_inference(model.encode, text)
+        embeddings.append(emb.tolist())
+
+    stats = cache_stats()
+    return EmbedResponse(
+        embeddings=embeddings,
+        cache_hits=stats['hits'],
+        cache_misses=stats['misses']
+    )
+
+@app.get(&quot;/stats&quot;)
+async def get_stats():
+    return cache_stats()</code></pre><pre><code class="makeup erlang" translate="no"><span class="nc">hornbeam</span><span class="p">:</span><span class="nf">start</span><span class="p" data-group-id="0489704351-1">(</span><span class="s">&quot;embedding_service:app&quot;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="0489704351-2">#{</span><span class="w">
+    </span><span class="ss">worker_class</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="ss">asgi</span><span class="p">,</span><span class="w">
+    </span><span class="ss">lifespan</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="ss">on</span><span class="p">,</span><span class="w">
+    </span><span class="ss">workers</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="w">
+</span><span class="p" data-group-id="0489704351-2">}</span><span class="p" data-group-id="0489704351-1">)</span><span class="p">.</span></code></pre><h2 id="semantic-search" class="section-heading"><a href="#semantic-search" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Semantic Search</span></h2><p>Build semantic search with ETS-cached embeddings:</p><pre><code class="python">from hornbeam_erlang import state_get, state_set, state_keys
+from hornbeam_ml import cached_inference
+import numpy as np
+
+def index_document(doc_id, text):
+    &quot;&quot;&quot;Index a document for semantic search.&quot;&quot;&quot;
+    embedding = cached_inference(model.encode, text)
+    state_set(f'doc:{doc_id}', {
+        'text': text,
+        'embedding': embedding.tolist()
+    })
+
+def search(query, top_k=10):
+    &quot;&quot;&quot;Search documents by semantic similarity.&quot;&quot;&quot;
+    query_emb = cached_inference(model.encode, query)
+    query_emb = np.array(query_emb)
+
+    # Get all documents
+    doc_keys = state_keys('doc:')
+    results = []
+
+    for key in doc_keys:
+        doc = state_get(key)
+        if doc:
+            doc_emb = np.array(doc['embedding'])
+            similarity = cosine_similarity(query_emb, doc_emb)
+            results.append({
+                'id': key.replace('doc:', ''),
+                'text': doc['text'],
+                'score': float(similarity)
+            })
+
+    # Sort by similarity
+    results.sort(key=lambda x: x['score'], reverse=True)
+    return results[:top_k]
+
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))</code></pre><h2 id="distributed-inference" class="section-heading"><a href="#distributed-inference" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Distributed Inference</span></h2><p>Spread ML workloads across a cluster:</p><pre><code class="python">from hornbeam_erlang import rpc_call, nodes
+import asyncio
+
+class DistributedInference:
+    def __init__(self, node_filter='gpu'):
+        self.node_filter = node_filter
+
+    def get_worker_nodes(self):
+        &quot;&quot;&quot;Get available GPU nodes.&quot;&quot;&quot;
+        return [n for n in nodes() if self.node_filter in n]
+
+    async def predict_batch(self, inputs):
+        &quot;&quot;&quot;Distribute predictions across nodes.&quot;&quot;&quot;
+        worker_nodes = self.get_worker_nodes()
+
+        if not worker_nodes:
+            # No GPU nodes, run locally
+            return self.local_predict(inputs)
+
+        # Split inputs across workers
+        chunks = self.split_inputs(inputs, len(worker_nodes))
+        results = []
+
+        for node, chunk in zip(worker_nodes, chunks):
+            try:
+                result = rpc_call(
+                    node,
+                    'ml_worker',
+                    'predict',
+                    [chunk],
+                    timeout_ms=60000
+                )
+                results.extend(result)
+            except Exception as e:
+                # Fallback to local on failure
+                results.extend(self.local_predict(chunk))
+
+        return results
+
+    def split_inputs(self, inputs, n):
+        &quot;&quot;&quot;Split list into n roughly equal chunks.&quot;&quot;&quot;
+        k, m = divmod(len(inputs), n)
+        return [inputs[i*k+min(i,m):(i+1)*k+min(i+1,m)] for i in range(n)]
+
+    def local_predict(self, inputs):
+        return model.predict(inputs)</code></pre><h3 id="gpu-node-setup" class="section-heading"><a href="#gpu-node-setup" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">GPU Node Setup</span></h3><p>On each GPU node:</p><pre><code class="makeup erlang" translate="no"><span class="c1">%% gpu_node.erl</span><span class="w">
+</span><span class="p">-</span><span class="na">module</span><span class="p" data-group-id="9860692747-1">(</span><span class="ss">ml_worker</span><span class="p" data-group-id="9860692747-1">)</span><span class="p">.</span><span class="w">
+</span><span class="p">-</span><span class="na">export</span><span class="p" data-group-id="9860692747-2">(</span><span class="p" data-group-id="9860692747-3">[</span><span class="ss">predict</span><span class="p">/</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="ss">encode</span><span class="p">/</span><span class="mi">1</span><span class="p" data-group-id="9860692747-3">]</span><span class="p" data-group-id="9860692747-2">)</span><span class="p">.</span><span class="w">
+
+</span><span class="nf">predict</span><span class="p" data-group-id="9860692747-4">(</span><span class="n">Inputs</span><span class="p" data-group-id="9860692747-4">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w">
+    </span><span class="nc">py</span><span class="p">:</span><span class="nf">call</span><span class="p" data-group-id="9860692747-5">(</span><span class="ss">&#39;model&#39;</span><span class="p">,</span><span class="w"> </span><span class="ss">&#39;predict&#39;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="9860692747-6">[</span><span class="n">Inputs</span><span class="p" data-group-id="9860692747-6">]</span><span class="p" data-group-id="9860692747-5">)</span><span class="p">.</span><span class="w">
+
+</span><span class="nf">encode</span><span class="p" data-group-id="9860692747-7">(</span><span class="n">Texts</span><span class="p" data-group-id="9860692747-7">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w">
+    </span><span class="nc">py</span><span class="p">:</span><span class="nf">call</span><span class="p" data-group-id="9860692747-8">(</span><span class="ss">&#39;model&#39;</span><span class="p">,</span><span class="w"> </span><span class="ss">&#39;encode&#39;</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="9860692747-9">[</span><span class="n">Texts</span><span class="p" data-group-id="9860692747-9">]</span><span class="p" data-group-id="9860692747-8">)</span><span class="p">.</span></code></pre><h2 id="llm-integration" class="section-heading"><a href="#llm-integration" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">LLM Integration</span></h2><p>Integrate with LLM APIs:</p><pre><code class="python">from hornbeam_erlang import state_get, state_set
+import hashlib
+import openai
+
+def cached_llm_call(prompt, model=&quot;gpt-4&quot;, temperature=0):
+    &quot;&quot;&quot;Cache LLM responses for identical prompts.&quot;&quot;&quot;
+    # Only cache deterministic (temp=0) responses
+    if temperature == 0:
+        cache_key = f'llm:{model}:{hashlib.md5(prompt.encode()).hexdigest()}'
+        cached = state_get(cache_key)
+        if cached:
+            return cached
+
+    response = openai.chat.completions.create(
+        model=model,
+        messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: prompt}],
+        temperature=temperature
+    )
+
+    result = response.choices[0].message.content
+
+    if temperature == 0:
+        state_set(cache_key, result)
+
+    return result</code></pre><h3 id="streaming-llm-responses" class="section-heading"><a href="#streaming-llm-responses" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Streaming LLM Responses</span></h3><pre><code class="python">from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+import openai
+
+app = FastAPI()
+
+async def stream_llm(prompt):
+    stream = openai.chat.completions.create(
+        model=&quot;gpt-4&quot;,
+        messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: prompt}],
+        stream=True
+    )
+
+    for chunk in stream:
+        if chunk.choices[0].delta.content:
+            yield f&quot;data: {chunk.choices[0].delta.content}\n\n&quot;
+
+    yield &quot;data: [DONE]\n\n&quot;
+
+@app.post(&quot;/chat/stream&quot;)
+async def chat_stream(prompt: str):
+    return StreamingResponse(
+        stream_llm(prompt),
+        media_type=&quot;text/event-stream&quot;
+    )</code></pre><h2 id="rag-retrieval-augmented-generation" class="section-heading"><a href="#rag-retrieval-augmented-generation" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">RAG (Retrieval-Augmented Generation)</span></h2><p>Combine semantic search with LLM:</p><pre><code class="python">from hornbeam_ml import cached_inference
+from hornbeam_erlang import state_get, state_keys
+import openai
+
+def rag_query(question, top_k=5):
+    &quot;&quot;&quot;Answer question using retrieved context.&quot;&quot;&quot;
+
+    # 1. Retrieve relevant documents
+    docs = search(question, top_k=top_k)
+
+    # 2. Build context
+    context = &quot;\n\n&quot;.join([
+        f&quot;Document {i+1}:\n{doc['text']}&quot;
+        for i, doc in enumerate(docs)
+    ])
+
+    # 3. Generate answer with LLM
+    prompt = f&quot;&quot;&quot;Answer the question based on the following context.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:&quot;&quot;&quot;
+
+    response = openai.chat.completions.create(
+        model=&quot;gpt-4&quot;,
+        messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: prompt}]
+    )
+
+    return {
+        'answer': response.choices[0].message.content,
+        'sources': [doc['id'] for doc in docs]
+    }</code></pre><h2 id="model-loading-with-lifespan" class="section-heading"><a href="#model-loading-with-lifespan" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Model Loading with Lifespan</span></h2><p>Load models at startup, not per-request:</p><pre><code class="python">from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+models = {}
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup: Load all models
+    models['embedding'] = SentenceTransformer('all-MiniLM-L6-v2')
+    models['classifier'] = load_classifier('model.pkl')
+    print(&quot;Models loaded!&quot;)
+
+    yield
+
+    # Shutdown: Cleanup
+    models.clear()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post(&quot;/embed&quot;)
+async def embed(text: str):
+    return models['embedding'].encode(text).tolist()</code></pre><h2 id="batch-processing" class="section-heading"><a href="#batch-processing" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Batch Processing</span></h2><p>Efficient batch processing with BEAM parallelism:</p><pre><code class="python">from hornbeam_erlang import rpc_call
+import concurrent.futures
+
+def process_batch(items, batch_size=100):
+    &quot;&quot;&quot;Process items in parallel batches.&quot;&quot;&quot;
+    results = []
+
+    # Split into batches
+    batches = [items[i:i+batch_size] for i in range(0, len(items), batch_size)]
+
+    # Process batches in parallel using Erlang processes
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(process_single_batch, batch)
+            for batch in batches
+        ]
+
+        for future in concurrent.futures.as_completed(futures):
+            results.extend(future.result())
+
+    return results
+
+def process_single_batch(batch):
+    # This runs in a separate BEAM process
+    embeddings = model.encode(batch)
+    return embeddings.tolist()</code></pre><h2 id="monitoring-ml-performance" class="section-heading"><a href="#monitoring-ml-performance" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Monitoring ML Performance</span></h2><pre><code class="python">from hornbeam_erlang import state_incr, state_get
+import time
+
+class MLMetrics:
+    @staticmethod
+    def track_inference(model_name, latency_ms):
+        state_incr(f'ml:{model_name}:calls')
+        state_incr(f'ml:{model_name}:latency_total', int(latency_ms))
+
+        # Track latency buckets
+        bucket = (latency_ms // 100) * 100
+        state_incr(f'ml:{model_name}:latency:{bucket}')
+
+    @staticmethod
+    def get_stats(model_name):
+        calls = state_get(f'ml:{model_name}:calls') or 0
+        latency_total = state_get(f'ml:{model_name}:latency_total') or 0
+
+        return {
+            'calls': calls,
+            'avg_latency_ms': latency_total / calls if calls &gt; 0 else 0
+        }
+
+# Usage
+def timed_inference(model, input):
+    start = time.time()
+    result = model.predict(input)
+    latency = (time.time() - start) * 1000
+    MLMetrics.track_inference('classifier', latency)
+    return result</code></pre><h2 id="next-steps" class="section-heading"><a href="#next-steps" class="hover-link"><i class="ri-link-m" aria-hidden="true"></i></a><span class="text">Next Steps</span></h2><ul><li><a href="../examples/embedding-service">Embedding Service Example</a> - Complete service</li><li><a href="../examples/distributed-ml">Distributed ML Example</a> - Cluster setup</li><li><a href="https://hexdocs.pm/erlang_python/ai-integration.html">Erlang Python AI Guide</a> - Low-level AI integration</li></ul>
+
+</div>
+
+<div class="bottom-actions" id="bottom-actions">
+  <div class="bottom-actions-item">
+
+      <a href="erlang-integration.html" class="bottom-actions-button" rel="prev">
+        <span class="subheader">
+          ← Previous Page
+        </span>
+        <span class="title">
+erlang-integration
+        </span>
+      </a>
+
+  </div>
+  <div class="bottom-actions-item">
+
+      <a href="flask-app.html" class="bottom-actions-button" rel="next">
+        <span class="subheader">
+          Next Page →
+        </span>
+        <span class="title">
+flask-app
+        </span>
+      </a>
+
+  </div>
+</div>
+    <footer class="footer">
+      <p>
+
+          <span class="line">
+            <a href="https://hex.pm/packages/hornbeam/1.0.0" class="footer-hex-package">Hex Package</a>
+
+            <a href="https://preview.hex.pm/preview/hornbeam/1.0.0">Hex Preview</a>
+
+              (<a href="https://preview.hex.pm/preview/hornbeam/1.0.0/show/docs/guides/ml-integration.md">current file</a>)
+
+          </span>
+
+        <span class="line">
+          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
+            Search HexDocs
+          </button>
+
+            <a href="hornbeam.epub" title="ePub version">
+              Download ePub version
+            </a>
+
+        </span>
+      </p>
+
+      <p class="built-using">
+        Built using
+        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
+
+          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
+
+      </p>
+
+    </footer>
+  </div>
+</main>
+</div>
+
+  </body>
+</html>
