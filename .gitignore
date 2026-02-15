@@ -1,6 +1,7 @@
 # Build artifacts
 _build/
 deps/
+doc/
 *.beam
 *.plt
 erl_crash.dump
