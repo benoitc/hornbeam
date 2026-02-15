@@ -1,6 +1,6 @@
 {application, hornbeam,
- [{description, "Erlang WSGI/ASGI Server using erlang-python"},
-  {vsn, "0.1.0"},
+ [{description, "WSGI/ASGI HTTP server powered by the BEAM"},
+  {vsn, "1.0.0"},
   {registered, [hornbeam_sup, hornbeam_config]},
   {mod, {hornbeam_app, []}},
   {applications,
@@ -21,5 +21,8 @@
   ]},
   {modules, []},
   {licenses, ["Apache-2.0"]},
-  {links, [{"GitHub", "https://github.com/benoitc/hornbeam"}]}
+  {links, [
+    {"GitHub", "https://github.com/benoitc/hornbeam"},
+    {"Website", "https://hornbeam.dev"}
+  ]}
  ]}.
