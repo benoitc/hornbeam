@@ -203,12 +203,14 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
     end.
 
 setup_python_paths(Config) ->
-    %% Get priv directory for runner modules
+    %% Get priv directory for runner modules (ensure absolute path)
     PrivDir = case code:priv_dir(hornbeam) of
         {error, _} ->
             %% Development mode - find priv relative to ebin
             case code:which(?MODULE) of
-                non_existing -> "priv";
+                non_existing ->
+                    {ok, Cwd} = file:get_cwd(),
+                    filename:join(Cwd, "priv");
                 ModPath ->
                     EbinDir = filename:dirname(ModPath),
                     AppDir = filename:dirname(EbinDir),
@@ -217,13 +219,25 @@ setup_python_paths(Config) ->
         Dir -> Dir
     end,
 
-    %% Add priv directory and pythonpath to Python
-    AllPaths = [PrivDir | maps:get(pythonpath, Config)],
-    lists:foreach(fun(Path) ->
+    %% Ensure priv dir is absolute
+    AbsPrivDir = filename:absname(PrivDir),
+
+    %% Build list of absolute paths
+    AllPaths = [AbsPrivDir | maps:get(pythonpath, Config)],
+    AbsPaths = lists:map(fun(Path) ->
         PathBin = ensure_binary(Path),
-        py:exec(io_lib:format("import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
-                              [PathBin, PathBin]))
-    end, AllPaths).
+        filename:absname(binary_to_list(PathBin))
+    end, AllPaths),
+
+    %% Add paths to Python sys.path
+    %% Use py:exec which will be processed by a worker
+    %% The path will be set for subsequent calls
+    lists:foreach(fun(AbsPath) ->
+        Code = io_lib:format(
+            "import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
+            [AbsPath, AbsPath]),
+        py:exec(Code)
+    end, AbsPaths).
 
 maybe_run_lifespan_startup(asgi, Config) ->
     LifespanMode = maps:get(lifespan, Config, auto),
