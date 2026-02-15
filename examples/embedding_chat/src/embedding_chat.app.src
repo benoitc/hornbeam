@@ -1,0 +1,19 @@
+{application, embedding_chat, [
+    {description, "Embedding service with FastAPI and Erlang WebSocket"},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {mod, {embedding_chat_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        hornbeam
+    ]},
+    {env, [
+        {model_name, "all-MiniLM-L6-v2"},
+        {port, 8000},
+        {bind, "0.0.0.0"}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

@@ -64,7 +64,8 @@
     pythonpath => [string() | binary()],
     lifespan => auto | on | off,
     websocket_timeout => pos_integer(),
-    websocket_max_frame_size => pos_integer()
+    websocket_max_frame_size => pos_integer(),
+    routes => [{Path :: binary(), Handler :: module(), Opts :: map()}]
 }.
 
 -export_type([app_spec/0, options/0]).
@@ -90,6 +91,7 @@ start(AppSpec) ->
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
 %%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
 %%   <li>`websocket_max_frame_size' - Max WebSocket frame size (default: 16MB)</li>
+%%   <li>`routes' - Custom Cowboy routes [{Path, Handler, Opts}] (default: [])</li>
 %% </ul>
 -spec start(app_spec(), options()) -> ok | {error, term()}.
 start(AppSpec, Options) ->
@@ -227,8 +229,17 @@ start_listener(Config) ->
     {Ip, Port} = parse_bind(maps:get(bind, Config)),
     WorkerClass = maps:get(worker_class, Config),
 
+    %% Build custom routes (WebSocket handlers, etc.)
+    CustomRoutes = maps:get(routes, Config, []),
+
+    %% Default catchall route for Python app
+    DefaultRoute = {'_', hornbeam_handler, #{worker_class => WorkerClass}},
+
+    %% Combine custom routes with default (custom routes take precedence)
+    AllRoutes = CustomRoutes ++ [DefaultRoute],
+
     Dispatch = cowboy_router:compile([
-        {'_', [{'_', hornbeam_handler, #{worker_class => WorkerClass}}]}
+        {'_', AllRoutes}
     ]),
 
     {ok, _} = cowboy:start_clear(hornbeam_http,
