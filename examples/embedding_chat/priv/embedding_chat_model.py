@@ -57,15 +57,24 @@ def load_model(model_name: str):
     return model
 
 
-def encode(model, texts: List[str]) -> List[List[float]]:
+def get_model(model_name: str = "all-MiniLM-L6-v2"):
+    """Get the model, loading if needed."""
+    if isinstance(model_name, bytes):
+        model_name = model_name.decode()
+    return load_model(model_name)
+
+
+def encode(texts: List[str], model_name: str = "all-MiniLM-L6-v2") -> List[List[float]]:
     """Encode texts into embeddings."""
+    model = get_model(model_name)
     texts = [t.decode() if isinstance(t, bytes) else t for t in texts]
     embeddings = model.encode(texts, convert_to_numpy=True)
     return embeddings.tolist()
 
 
-def similarity(model, text1: str, text2: str) -> float:
+def similarity(text1: str, text2: str, model_name: str = "all-MiniLM-L6-v2") -> float:
     """Compute cosine similarity between two texts."""
+    model = get_model(model_name)
     if isinstance(text1, bytes):
         text1 = text1.decode()
     if isinstance(text2, bytes):
@@ -79,8 +88,9 @@ def similarity(model, text1: str, text2: str) -> float:
     return float(cos_sim)
 
 
-def find_most_similar(model, query: str, candidates: List[str]) -> Tuple[int, float, str]:
+def find_most_similar(query: str, candidates: List[str], model_name: str = "all-MiniLM-L6-v2") -> Tuple[int, float, str]:
     """Find the most similar text from candidates."""
+    model = get_model(model_name)
     if isinstance(query, bytes):
         query = query.decode()
     candidates = [c.decode() if isinstance(c, bytes) else c for c in candidates]

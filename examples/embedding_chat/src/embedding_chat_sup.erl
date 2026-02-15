@@ -52,19 +52,46 @@ init([ModelName]) ->
 init_python() ->
     %% Add priv directory to Python path
     PrivDir = priv_dir(),
+    %% Add venv site-packages if present (look in source dir, not _build)
+    VenvSitePackages = filename:join([source_dir(), "venv/lib/python3.14/site-packages"]),
     py:exec(io_lib:format(
-        "import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
-        [PrivDir, PrivDir]
+        "import sys; "
+        "[sys.path.insert(0, p) for p in ['~s', '~s'] if p not in sys.path]",
+        [PrivDir, VenvSitePackages]
     )),
     ok.
+
+%% Find the source directory (not _build) for venv lookup
+source_dir() ->
+    %% Look for rebar.config to find source root
+    case code:which(?MODULE) of
+        non_existing -> ".";
+        ModPath ->
+            %% ModPath is like _build/default/lib/embedding_chat/ebin/...beam
+            %% Walk up and look for rebar.config
+            find_source_root(filename:dirname(ModPath))
+    end.
+
+find_source_root(Dir) ->
+    RebarConfig = filename:join(Dir, "rebar.config"),
+    case filelib:is_file(RebarConfig) of
+        true -> Dir;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> ".";  % Reached root
+                _ -> find_source_root(Parent)
+            end
+    end.
 
 load_model(ModelName) ->
     %% Initialize the Python module
     py:call(embedding_chat_model, init, []),
-    %% Load the model
-    Model = py:call(embedding_chat_model, load_model, [list_to_binary(ModelName)]),
-    %% Store in persistent_term for fast access
-    persistent_term:put(embedding_model, Model),
+    %% Store model name in shared state (ETS - accessible by all workers)
+    ModelNameBin = list_to_binary(ModelName),
+    py:state_store(<<"embedding_model_name">>, ModelNameBin),
+    %% Pre-load the model in first worker (Python will cache it per-worker)
+    _ = py:call(embedding_chat_model, load_model, [ModelNameBin]),
     ok.
 
 priv_dir() ->

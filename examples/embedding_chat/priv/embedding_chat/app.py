@@ -82,7 +82,11 @@ async def root():
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest):
-    """Get embeddings for texts."""
+    """Get embeddings for texts via Erlang hook.
+
+    With erlang-python 1.2.0+ reentrant callbacks, this works seamlessly:
+    FastAPI (Python) -> execute() -> Erlang hook -> py:call() -> Python model
+    """
     embeddings = execute("embeddings", "embed", request.texts)
     return EmbedResponse(
         embeddings=embeddings,

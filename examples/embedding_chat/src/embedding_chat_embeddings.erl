@@ -27,23 +27,27 @@
 -export([handle/3]).
 
 %% @doc Hook handler for embedding operations.
+%% With erlang-python 1.2.0+ reentrant callbacks, py:call() works transparently
+%% for Python→Erlang→Python callback chains without deadlocking.
 -spec handle(Action :: binary(), Args :: list(), Kwargs :: map()) -> term().
 handle(<<"embed">>, [Texts], _Kwargs) when is_list(Texts) ->
-    Model = persistent_term:get(embedding_model),
-    py:call(embedding_chat_model, encode, [Model, Texts]);
+    %% With reentrant callbacks in erlang-python 1.2.0+, we can use py:call()
+    %% directly without deadlocking. The suspension/resume mechanism allows
+    %% Python→Erlang→Python callback chains to work transparently.
+    {ok, Result} = py:call(embedding_chat_model, encode, [Texts]),
+    Result;
 
 handle(<<"embed_one">>, [Text], _Kwargs) when is_binary(Text) ->
-    Model = persistent_term:get(embedding_model),
-    [Embedding] = py:call(embedding_chat_model, encode, [Model, [Text]]),
+    {ok, [Embedding]} = py:call(embedding_chat_model, encode, [[Text]]),
     Embedding;
 
 handle(<<"similarity">>, [Text1, Text2], _Kwargs) ->
-    Model = persistent_term:get(embedding_model),
-    py:call(embedding_chat_model, similarity, [Model, Text1, Text2]);
+    {ok, Result} = py:call(embedding_chat_model, similarity, [Text1, Text2]),
+    Result;
 
 handle(<<"find_similar">>, [Query, Candidates], _Kwargs) when is_list(Candidates) ->
-    Model = persistent_term:get(embedding_model),
-    py:call(embedding_chat_model, find_most_similar, [Model, Query, Candidates]);
+    {ok, Result} = py:call(embedding_chat_model, find_most_similar, [Query, Candidates]),
+    Result;
 
 handle(Action, Args, _Kwargs) ->
     error({unknown_action, Action, Args}).

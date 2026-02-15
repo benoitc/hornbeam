@@ -48,10 +48,11 @@ start(_StartType, _StartArgs) ->
 
             %% Start hornbeam HTTP server
             BindAddr = iolist_to_binary([Bind, ":", integer_to_list(Port)]),
+            VenvSitePackages = filename:join([source_dir(), "venv/lib/python3.14/site-packages"]),
             ok = hornbeam:start(<<"embedding_chat.app:app">>, #{
                 worker_class => asgi,
                 bind => BindAddr,
-                pythonpath => [priv_dir()],
+                pythonpath => [priv_dir(), VenvSitePackages],
                 %% /ws handled by Erlang, rest by FastAPI
                 routes => [
                     {"/ws", embedding_chat_ws, #{}}
@@ -86,4 +87,24 @@ priv_dir() ->
             filename:join(filename:dirname(code:which(?MODULE)), "../priv");
         Dir ->
             Dir
+    end.
+
+%% Find the source directory (not _build) for venv lookup
+source_dir() ->
+    case code:which(?MODULE) of
+        non_existing -> ".";
+        ModPath ->
+            find_source_root(filename:dirname(ModPath))
+    end.
+
+find_source_root(Dir) ->
+    RebarConfig = filename:join(Dir, "rebar.config"),
+    case filelib:is_file(RebarConfig) of
+        true -> Dir;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> ".";
+                _ -> find_source_root(Parent)
+            end
     end.
