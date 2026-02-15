@@ -21,8 +21,22 @@ using Erlang ETS for caching embeddings.
 import json
 import hashlib
 
-# These will be registered by Erlang
-from erlang import cache_get, cache_set, state_incr, state_get
+# Import hornbeam Erlang integration (or fallback for standalone use/gunicorn)
+try:
+    from hornbeam_erlang import state_get, state_set, state_incr
+except ImportError:
+    # Fallback for running standalone or with gunicorn
+    _cache = {}
+
+    def state_get(k):
+        return _cache.get(k)
+
+    def state_set(k, v):
+        _cache[k] = v
+
+    def state_incr(k, d=1):
+        _cache[k] = _cache.get(k, 0) + d
+        return _cache[k]
 
 # Model loading (lazy)
 _model = None
@@ -39,10 +53,10 @@ def get_model():
 
 def embed_with_cache(text):
     """Generate embedding with Erlang ETS cache."""
-    key = hashlib.md5(text.encode()).hexdigest()
+    key = f"emb:{hashlib.md5(text.encode()).hexdigest()}"
 
     # Check Erlang cache
-    cached = cache_get(key)
+    cached = state_get(key)
     if cached is not None:
         state_incr('cache_hits')
         return cached
@@ -51,7 +65,7 @@ def embed_with_cache(text):
     embedding = get_model().encode(text).tolist()
 
     # Store in Erlang cache
-    cache_set(key, embedding)
+    state_set(key, embedding)
     state_incr('cache_misses')
     return embedding
 

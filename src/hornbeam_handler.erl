@@ -15,7 +15,8 @@
 %%% @doc Cowboy HTTP handler for hornbeam.
 %%%
 %%% This module handles HTTP requests and routes them to either WSGI or ASGI
-%%% handlers based on configuration.
+%%% handlers based on configuration. It also handles WebSocket upgrades
+%%% for ASGI applications.
 -module(hornbeam_handler).
 
 -export([init/2]).
@@ -27,7 +28,26 @@ init(Req, State) ->
 handle_request(wsgi, Req, State) ->
     handle_wsgi(Req, State);
 handle_request(asgi, Req, State) ->
-    handle_asgi(Req, State).
+    %% Check for WebSocket upgrade
+    case is_websocket_upgrade(Req) of
+        true ->
+            handle_websocket_upgrade(Req, State);
+        false ->
+            handle_asgi(Req, State)
+    end.
+
+%% @private
+is_websocket_upgrade(Req) ->
+    case cowboy_req:header(<<"upgrade">>, Req) of
+        undefined -> false;
+        Upgrade ->
+            string:lowercase(Upgrade) =:= <<"websocket">>
+    end.
+
+%% @private
+handle_websocket_upgrade(Req, State) ->
+    %% Delegate to WebSocket handler
+    hornbeam_websocket:init(Req, State).
 
 %%% ============================================================================
 %%% WSGI Handler
@@ -54,10 +74,7 @@ handle_wsgi(Req, State) ->
 
         case Result of
             {ok, Response} ->
-                Status = maps:get(<<"status">>, Response),
-                Headers = maps:get(<<"headers">>, Response),
-                Body = maps:get(<<"body">>, Response),
-                send_wsgi_response(Req, Status, Headers, Body, State);
+                send_wsgi_response(Req, Response, State);
             {error, Error} ->
                 error_response(Req, Error, State)
         end
@@ -68,25 +85,34 @@ handle_wsgi(Req, State) ->
             error_response(Req, {Class, Reason}, State)
     end.
 
-send_wsgi_response(Req, Status, Headers, Body, State) ->
+send_wsgi_response(Req, Response, State) ->
+    Status = maps:get(<<"status">>, Response),
+    Headers = maps:get(<<"headers">>, Response),
+    Body = maps:get(<<"body">>, Response),
+    EarlyHints = maps:get(<<"early_hints">>, Response, []),
+
     %% Parse status code
     StatusCode = parse_status_code(Status),
 
     %% Convert headers to cowboy format
-    CowboyHeaders = lists:foldl(fun(Header, Acc) ->
-        case Header of
-            [Name, Value] ->
-                Acc#{to_lower_binary(Name) => to_binary(Value)};
-            {Name, Value} ->
-                Acc#{to_lower_binary(Name) => to_binary(Value)};
-            _ ->
-                Acc
-        end
-    end, #{}, Headers),
+    CowboyHeaders = convert_headers(Headers),
+
+    %% Send early hints if any (103 responses)
+    Req1 = send_early_hints(Req, EarlyHints),
 
     %% Send response
-    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req1),
     {ok, Req2, State}.
+
+%% @private
+send_early_hints(Req, []) ->
+    Req;
+send_early_hints(Req, [Hints | Rest]) ->
+    %% Convert hints to cowboy headers format
+    HintHeaders = convert_headers(Hints),
+    %% Send 103 Early Hints informational response
+    Req1 = cowboy_req:inform(103, HintHeaders, Req),
+    send_early_hints(Req1, Rest).
 
 parse_status_code(Status) when is_binary(Status) ->
     case binary:split(Status, <<" ">>) of
@@ -126,10 +152,7 @@ handle_asgi(Req, State) ->
 
         case Result of
             {ok, Response} ->
-                Status = maps:get(<<"status">>, Response),
-                Headers = maps:get(<<"headers">>, Response),
-                Body = maps:get(<<"body">>, Response),
-                send_asgi_response(Req2, Status, Headers, Body, State);
+                send_asgi_response(Req2, Response, State);
             {error, Error} ->
                 error_response(Req2, Error, State)
         end
@@ -140,7 +163,12 @@ handle_asgi(Req, State) ->
             error_response(Req, {Class, Reason}, State)
     end.
 
-send_asgi_response(Req, Status, Headers, Body, State) ->
+send_asgi_response(Req, Response, State) ->
+    Status = maps:get(<<"status">>, Response),
+    Headers = maps:get(<<"headers">>, Response),
+    Body = maps:get(<<"body">>, Response),
+    EarlyHints = maps:get(<<"early_hints">>, Response, []),
+
     %% Convert status
     StatusCode = case Status of
         undefined -> 500;
@@ -149,18 +177,12 @@ send_asgi_response(Req, Status, Headers, Body, State) ->
     end,
 
     %% Convert headers to cowboy format
-    CowboyHeaders = lists:foldl(fun(Header, Acc) ->
-        case Header of
-            [Name, Value] ->
-                Acc#{to_lower_binary(Name) => to_binary(Value)};
-            {Name, Value} ->
-                Acc#{to_lower_binary(Name) => to_binary(Value)};
-            _ ->
-                Acc
-        end
-    end, #{}, Headers),
+    CowboyHeaders = convert_headers(Headers),
 
-    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+    %% Send early hints if any
+    Req1 = send_early_hints(Req, EarlyHints),
+
+    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req1),
     {ok, Req2, State}.
 
 %%% ============================================================================
@@ -178,6 +200,20 @@ error_response(Req, Error, State) ->
 %%% ============================================================================
 %%% Utilities
 %%% ============================================================================
+
+%% @private
+%% Convert headers from various formats to cowboy map format
+convert_headers(Headers) ->
+    lists:foldl(fun(Header, Acc) ->
+        case Header of
+            [Name, Value] ->
+                Acc#{to_lower_binary(Name) => to_binary(Value)};
+            {Name, Value} ->
+                Acc#{to_lower_binary(Name) => to_binary(Value)};
+            _ ->
+                Acc
+        end
+    end, #{}, Headers).
 
 to_binary(V) when is_binary(V) -> V;
 to_binary(V) when is_list(V) -> list_to_binary(V);

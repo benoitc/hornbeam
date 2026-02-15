@@ -29,6 +29,12 @@
 %%%     workers => 4
 %%% }).
 %%%
+%%% %% Start ASGI app with lifespan
+%%% hornbeam:start("myapp:app", #{
+%%%     worker_class => asgi,
+%%%     lifespan => on
+%%% }).
+%%%
 %%% %% Register Erlang functions callable from Python
 %%% hornbeam:register_function(my_func, fun([Arg]) -> process(Arg) end).
 %%%
@@ -55,7 +61,10 @@
     keepalive => pos_integer(),
     max_requests => pos_integer(),
     preload_app => boolean(),
-    pythonpath => [string() | binary()]
+    pythonpath => [string() | binary()],
+    lifespan => auto | on | off,
+    websocket_timeout => pos_integer(),
+    websocket_max_frame_size => pos_integer()
 }.
 
 -export_type([app_spec/0, options/0]).
@@ -78,6 +87,9 @@ start(AppSpec) ->
 %%   <li>`max_requests' - Max requests per worker before restart (default: 1000)</li>
 %%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
+%%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
+%%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
+%%   <li>`websocket_max_frame_size' - Max WebSocket frame size (default: 16MB)</li>
 %% </ul>
 -spec start(app_spec(), options()) -> ok | {error, term()}.
 start(AppSpec, Options) ->
@@ -92,8 +104,18 @@ start(AppSpec, Options) ->
             },
             hornbeam_config:set_config(Config1),
 
-            %% Start the HTTP listener
-            start_listener(Config1);
+            %% Setup Python paths
+            setup_python_paths(Config1),
+
+            %% Run lifespan startup for ASGI apps
+            WorkerClass = maps:get(worker_class, Config1),
+            case maybe_run_lifespan_startup(WorkerClass, Config1) of
+                ok ->
+                    %% Start the HTTP listener
+                    start_listener(Config1);
+                {error, _} = Error ->
+                    Error
+            end;
         {error, _} = Error ->
             Error
     end.
@@ -101,6 +123,10 @@ start(AppSpec, Options) ->
 %% @doc Stop hornbeam server.
 -spec stop() -> ok | {error, term()}.
 stop() ->
+    %% Run lifespan shutdown first
+    _ = hornbeam_lifespan:shutdown(),
+
+    %% Stop the HTTP listener
     case ranch:stop_listener(hornbeam_http) of
         ok -> ok;
         {error, not_found} -> ok;
@@ -146,7 +172,10 @@ default_config() ->
         keepalive => 2,
         max_requests => 1000,
         preload_app => false,
-        pythonpath => [<<".">>, <<"examples">>]
+        pythonpath => [<<".">>, <<"examples">>],
+        lifespan => auto,
+        websocket_timeout => 60000,
+        websocket_max_frame_size => 16777216  % 16MB
     }.
 
 parse_app_spec(AppSpec) when is_list(AppSpec) ->
@@ -161,10 +190,7 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
             {error, {invalid_app_spec, AppSpec}}
     end.
 
-start_listener(Config) ->
-    {Ip, Port} = parse_bind(maps:get(bind, Config)),
-    WorkerClass = maps:get(worker_class, Config),
-
+setup_python_paths(Config) ->
     %% Get priv directory for runner modules
     PrivDir = case code:priv_dir(hornbeam) of
         {error, _} ->
@@ -185,7 +211,21 @@ start_listener(Config) ->
         PathBin = ensure_binary(Path),
         py:exec(io_lib:format("import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
                               [PathBin, PathBin]))
-    end, AllPaths),
+    end, AllPaths).
+
+maybe_run_lifespan_startup(asgi, Config) ->
+    LifespanMode = maps:get(lifespan, Config, auto),
+    case LifespanMode of
+        off -> ok;
+        _ -> hornbeam_lifespan:startup(#{lifespan => LifespanMode})
+    end;
+maybe_run_lifespan_startup(wsgi, _Config) ->
+    %% WSGI doesn't support lifespan
+    ok.
+
+start_listener(Config) ->
+    {Ip, Port} = parse_bind(maps:get(bind, Config)),
+    WorkerClass = maps:get(worker_class, Config),
 
     Dispatch = cowboy_router:compile([
         {'_', [{'_', hornbeam_handler, #{worker_class => WorkerClass}}]}

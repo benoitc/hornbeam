@@ -13,6 +13,15 @@
 %% limitations under the License.
 
 %%% @doc Hornbeam top-level supervisor.
+%%%
+%%% Supervises all hornbeam services:
+%%% - hornbeam_config: Configuration management
+%%% - hornbeam_state: Shared state ETS
+%%% - hornbeam_tasks: Async task spawning
+%%% - hornbeam_callbacks: Erlang callback registry
+%%% - hornbeam_pubsub: Pub/sub messaging
+%%% - hornbeam_lifespan: ASGI lifespan management
+%%% - hornbeam_hooks: Hooks-style execution API
 -module(hornbeam_sup).
 
 -behaviour(supervisor).
@@ -40,6 +49,54 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [hornbeam_config]
+        },
+        #{
+            id => hornbeam_state,
+            start => {hornbeam_state, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_state]
+        },
+        #{
+            id => hornbeam_tasks,
+            start => {hornbeam_tasks, start_link, []},
+            restart => permanent,
+            shutdown => 10000,
+            type => worker,
+            modules => [hornbeam_tasks]
+        },
+        #{
+            id => hornbeam_callbacks,
+            start => {hornbeam_callbacks, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_callbacks]
+        },
+        #{
+            id => hornbeam_pubsub,
+            start => {hornbeam_pubsub, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_pubsub]
+        },
+        #{
+            id => hornbeam_lifespan,
+            start => {hornbeam_lifespan, start_link, []},
+            restart => permanent,
+            shutdown => 10000,
+            type => worker,
+            modules => [hornbeam_lifespan]
+        },
+        #{
+            id => hornbeam_hooks,
+            start => {hornbeam_hooks, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_hooks]
         }
     ],
 

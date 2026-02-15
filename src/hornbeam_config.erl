@@ -13,6 +13,44 @@
 %% limitations under the License.
 
 %%% @doc Hornbeam configuration management.
+%%%
+%%% This module manages configuration for the hornbeam server.
+%%% Configuration is stored in ETS for fast concurrent access.
+%%%
+%%% == Configuration Options ==
+%%%
+%%% === Server ===
+%%% - bind: Address to bind to (default: "127.0.0.1:8000")
+%%% - ssl: Enable SSL/TLS (default: false)
+%%% - certfile: Path to SSL certificate file
+%%% - keyfile: Path to SSL private key file
+%%%
+%%% === Protocol ===
+%%% - worker_class: wsgi or asgi (default: wsgi)
+%%% - http_version: List of supported HTTP versions (default: ['HTTP/1.1', 'HTTP/2'])
+%%%
+%%% === Workers ===
+%%% - workers: Number of Python workers (default: 4)
+%%% - timeout: Request timeout in ms (default: 30000)
+%%% - keepalive: Keep-alive timeout in seconds (default: 2)
+%%% - max_requests: Max requests per worker before restart (default: 1000)
+%%% - preload_app: Preload app before forking workers (default: false)
+%%%
+%%% === Request Limits ===
+%%% - max_request_line_size: Max request line size (default: 4094)
+%%% - max_header_size: Max header size (default: 8190)
+%%% - max_headers: Max number of headers (default: 100)
+%%%
+%%% === ASGI ===
+%%% - root_path: ASGI root_path (default: "")
+%%% - lifespan: Lifespan protocol mode: auto, on, off (default: auto)
+%%%
+%%% === WebSocket ===
+%%% - websocket_timeout: WebSocket idle timeout in ms (default: 60000)
+%%% - websocket_max_frame_size: Max WebSocket frame size (default: 16MB)
+%%%
+%%% === Python ===
+%%% - pythonpath: Additional Python paths (default: [".", "examples"])
 -module(hornbeam_config).
 
 -behaviour(gen_server).
@@ -21,8 +59,11 @@
     start_link/0,
     get_config/0,
     get_config/1,
+    get_config/2,
     set_config/1,
-    set_config/2
+    set_config/2,
+    update_config/1,
+    defaults/0
 ]).
 
 -export([
@@ -51,7 +92,7 @@ start_link() ->
 get_config() ->
     case ets:lookup(?TABLE, config) of
         [{config, Config}] -> Config;
-        [] -> #{}
+        [] -> defaults()
     end.
 
 %% @doc Get a configuration value.
@@ -59,6 +100,12 @@ get_config() ->
 get_config(Key) ->
     Config = get_config(),
     maps:get(Key, Config, undefined).
+
+%% @doc Get a configuration value with default.
+-spec get_config(atom(), term()) -> term().
+get_config(Key, Default) ->
+    Config = get_config(),
+    maps:get(Key, Config, Default).
 
 %% @doc Set the entire configuration.
 -spec set_config(map()) -> ok.
@@ -69,6 +116,49 @@ set_config(Config) when is_map(Config) ->
 -spec set_config(atom(), term()) -> ok.
 set_config(Key, Value) ->
     gen_server:call(?SERVER, {set_config_key, Key, Value}).
+
+%% @doc Update configuration with new values (merge).
+-spec update_config(map()) -> ok.
+update_config(Updates) when is_map(Updates) ->
+    gen_server:call(?SERVER, {update_config, Updates}).
+
+%% @doc Get default configuration.
+-spec defaults() -> map().
+defaults() ->
+    #{
+        %% Server
+        bind => <<"127.0.0.1:8000">>,
+        ssl => false,
+        certfile => undefined,
+        keyfile => undefined,
+
+        %% Protocol
+        worker_class => wsgi,
+        http_version => ['HTTP/1.1', 'HTTP/2'],
+
+        %% Workers
+        workers => 4,
+        timeout => 30000,
+        keepalive => 2,
+        max_requests => 1000,
+        preload_app => false,
+
+        %% Request limits
+        max_request_line_size => 4094,
+        max_header_size => 8190,
+        max_headers => 100,
+
+        %% ASGI
+        root_path => <<>>,
+        lifespan => auto,
+
+        %% WebSocket
+        websocket_timeout => 60000,
+        websocket_max_frame_size => 16777216,  % 16MB
+
+        %% Python
+        pythonpath => [<<".">>, <<"examples">>]
+    }.
 
 %%% ============================================================================
 %%% gen_server callbacks
@@ -82,19 +172,29 @@ init([]) ->
         {read_concurrency, true}
     ]),
 
-    %% Load default configuration from application env
-    Defaults = load_app_env(),
-    ets:insert(?TABLE, {config, Defaults}),
+    %% Load configuration from application env, merged with defaults
+    Defaults = defaults(),
+    EnvConfig = load_app_env(),
+    Config = maps:merge(Defaults, EnvConfig),
+    ets:insert(?TABLE, {config, Config}),
 
     {ok, #state{}}.
 
 handle_call({set_config, Config}, _From, State) ->
-    ets:insert(?TABLE, {config, Config}),
+    %% Merge with defaults to ensure all keys present
+    MergedConfig = maps:merge(defaults(), Config),
+    ets:insert(?TABLE, {config, MergedConfig}),
     {reply, ok, State};
 
 handle_call({set_config_key, Key, Value}, _From, State) ->
     Config = get_config(),
     NewConfig = Config#{Key => Value},
+    ets:insert(?TABLE, {config, NewConfig}),
+    {reply, ok, State};
+
+handle_call({update_config, Updates}, _From, State) ->
+    Config = get_config(),
+    NewConfig = maps:merge(Config, Updates),
     ets:insert(?TABLE, {config, NewConfig}),
     {reply, ok, State};
 
@@ -118,8 +218,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%% ============================================================================
 
 load_app_env() ->
-    Keys = [bind, workers, worker_class, timeout, keepalive,
-            max_requests, preload_app, pythonpath],
+    Keys = [
+        %% Server
+        bind, ssl, certfile, keyfile,
+        %% Protocol
+        worker_class, http_version,
+        %% Workers
+        workers, timeout, keepalive, max_requests, preload_app,
+        %% Request limits
+        max_request_line_size, max_header_size, max_headers,
+        %% ASGI
+        root_path, lifespan,
+        %% WebSocket
+        websocket_timeout, websocket_max_frame_size,
+        %% Python
+        pythonpath
+    ],
     lists:foldl(fun(Key, Acc) ->
         case application:get_env(hornbeam, Key) of
             {ok, Value} -> Acc#{Key => Value};

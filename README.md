@@ -1,26 +1,40 @@
 # Hornbeam
 
-**Hornbeam** is an Erlang-based WSGI/ASGI server that uses [erlang-python](https://github.com/benoitc/erlang-python) for Python execution. The name combines "horn" (unicorn, like gunicorn) with "BEAM" (Erlang VM). Hornbeam is also a tree species, fitting the nature theme.
+**Hornbeam** is an Erlang-based WSGI/ASGI server that combines Python's web and ML capabilities with Erlang's strengths:
+
+- **Python handles**: Web apps (WSGI/ASGI), ML models, data processing
+- **Erlang handles**: Scaling (millions of connections), concurrency (no GIL), distribution (cluster RPC), fault tolerance, shared state (ETS)
+
+The name combines "horn" (unicorn, like gunicorn) with "BEAM" (Erlang VM).
 
 ## Features
 
 - **WSGI Support**: Run standard WSGI Python applications
 - **ASGI Support**: Run async ASGI Python applications (FastAPI, Starlette, etc.)
-- **Cowboy/Ranch**: High-performance HTTP/1.1 and HTTP/2 support
-- **Erlang Integration**: Python apps can call registered Erlang functions
-- **Shared State**: Built-in shared state accessible from Python and Erlang
+- **WebSocket**: Full WebSocket support for real-time apps
+- **HTTP/2**: Via Cowboy, with multiplexing and server push
+- **Shared State**: ETS-backed state accessible from Python (concurrent-safe)
+- **Distributed RPC**: Call functions on remote Erlang nodes
+- **Pub/Sub**: pg-based publish/subscribe messaging
+- **ML Integration**: Cache ML inference results in ETS
+- **Lifespan**: ASGI lifespan protocol for app startup/shutdown
 - **Hot Reload**: Leverage Erlang's hot code reloading
 
 ## Quick Start
 
 ```erlang
-%% Start hornbeam with a WSGI application
+%% Start with a WSGI application
 hornbeam:start("myapp:application").
 
-%% Or with options
+%% Start ASGI app (FastAPI, Starlette, etc.)
+hornbeam:start("main:app", #{worker_class => asgi}).
+
+%% With all options
 hornbeam:start("myapp:application", #{
     bind => "0.0.0.0:8000",
-    workers => 4
+    workers => 4,
+    worker_class => asgi,
+    lifespan => auto
 }).
 ```
 
@@ -34,59 +48,82 @@ Add hornbeam to your `rebar.config`:
 ]}.
 ```
 
-## Configuration
+## Python Integration
 
-```erlang
-%% sys.config
-[
-    {hornbeam, [
-        {bind, "127.0.0.1:8000"},
-        {workers, 4},
-        {worker_class, wsgi},  % wsgi | asgi
-        {timeout, 30000},
-        {keepalive, 2},
-        {max_requests, 1000},
-        {pythonpath, ["."]}
-    ]}
-].
-```
+### Shared State (ETS)
 
-## Erlang Integration
-
-Python applications running on hornbeam can call registered Erlang functions:
-
-### Register Functions from Erlang
-
-```erlang
-%% Register a cache backed by ETS
-ets:new(my_cache, [named_table, public]),
-
-hornbeam:register_function(cache_get, fun([Key]) ->
-    case ets:lookup(my_cache, Key) of
-        [{_, Value}] -> Value;
-        [] -> none
-    end
-end),
-
-hornbeam:register_function(cache_set, fun([Key, Value]) ->
-    ets:insert(my_cache, {Key, Value}),
-    none
-end).
-```
-
-### Call from Python
+Python apps can use Erlang ETS for high-concurrency shared state:
 
 ```python
-from erlang import cache_get, cache_set, state_incr
+from hornbeam_erlang import state_get, state_set, state_incr
 
 def application(environ, start_response):
-    # Access Erlang cache
-    cached = cache_get("my_key")
+    # Atomic counter (millions of concurrent increments)
+    views = state_incr(f'views:{path}')
 
-    # Use shared state
-    state_incr('requests')
+    # Get/set cached data
+    data = state_get('my_key')
+    if data is None:
+        data = compute_expensive()
+        state_set('my_key', data)
 
-    # ...
+    start_response('200 OK', [('Content-Type', 'text/plain')])
+    return [f'Views: {views}'.encode()]
+```
+
+### Distributed RPC
+
+Call functions on remote Erlang nodes:
+
+```python
+from hornbeam_erlang import rpc_call, nodes
+
+def application(environ, start_response):
+    # Get connected nodes
+    connected = nodes()
+
+    # Call ML model on GPU node
+    result = rpc_call(
+        'gpu@ml-server',      # Remote node
+        'ml_model',           # Module
+        'predict',            # Function
+        [data],               # Args
+        timeout_ms=30000
+    )
+
+    start_response('200 OK', [('Content-Type', 'application/json')])
+    return [json.dumps(result).encode()]
+```
+
+### ML Caching
+
+Use ETS to cache ML inference results:
+
+```python
+from hornbeam_ml import cached_inference, cache_stats
+
+def application(environ, start_response):
+    # Automatically cached by input hash
+    embedding = cached_inference(model.encode, text)
+
+    # Check cache stats
+    stats = cache_stats()  # {'hits': 100, 'misses': 10, 'hit_rate': 0.91}
+
+    start_response('200 OK', [('Content-Type', 'application/json')])
+    return [json.dumps({'embedding': embedding}).encode()]
+```
+
+### Pub/Sub Messaging
+
+```python
+from hornbeam_erlang import publish
+
+def application(environ, start_response):
+    # Publish to topic (all subscribers notified)
+    count = publish('updates', {'type': 'new_item', 'id': 123})
+
+    start_response('200 OK', [('Content-Type', 'application/json')])
+    return [json.dumps({'subscribers_notified': count}).encode()]
 ```
 
 ## Examples
@@ -101,7 +138,7 @@ def application(environ, start_response):
 ```
 
 ```erlang
-hornbeam:start("hello_wsgi.app:application").
+hornbeam:start("app:application", #{pythonpath => ["examples/hello_wsgi"]}).
 ```
 
 ### Hello World (ASGI)
@@ -121,16 +158,112 @@ async def application(scope, receive, send):
 ```
 
 ```erlang
-hornbeam:start("hello_asgi.app:application", #{worker_class => asgi}).
+hornbeam:start("app:application", #{
+    worker_class => asgi,
+    pythonpath => ["examples/hello_asgi"]
+}).
 ```
 
-### Embedding Service with Erlang Caching
+### WebSocket Chat
 
-See `examples/embedding_service/` for a complete example of an ML embedding service using Erlang ETS for caching.
+```python
+# examples/websocket_chat/app.py
+async def app(scope, receive, send):
+    if scope['type'] == 'websocket':
+        await send({'type': 'websocket.accept'})
+
+        while True:
+            message = await receive()
+            if message['type'] == 'websocket.disconnect':
+                break
+            if message['type'] == 'websocket.receive':
+                # Echo back
+                await send({
+                    'type': 'websocket.send',
+                    'text': message.get('text', '')
+                })
+```
+
+```erlang
+hornbeam:start("app:app", #{
+    worker_class => asgi,
+    pythonpath => ["examples/websocket_chat"]
+}).
+```
+
+### Embedding Service with ETS Caching
+
+See `examples/embedding_service/` for a complete ML embedding service using Erlang ETS for caching.
+
+### Distributed ML Inference
+
+See `examples/distributed_rpc/` for distributing ML inference across a cluster.
+
+## Running with Gunicorn (for comparison)
+
+All examples are designed to work with gunicorn too (with fallback functions):
+
+```bash
+# With gunicorn (single process, no Erlang features)
+cd examples/hello_wsgi
+gunicorn app:application
+
+# With hornbeam (Erlang concurrency, shared state, distribution)
+rebar3 shell
+> hornbeam:start("app:application", #{pythonpath => ["examples/hello_wsgi"]}).
+```
+
+## Configuration
+
+### Via hornbeam:start/2
+
+```erlang
+hornbeam:start("myapp:application", #{
+    %% Server
+    bind => <<"0.0.0.0:8000">>,
+    ssl => false,
+    certfile => undefined,
+    keyfile => undefined,
+
+    %% Protocol
+    worker_class => wsgi,  % wsgi | asgi
+    http_version => ['HTTP/1.1', 'HTTP/2'],
+
+    %% Workers
+    workers => 4,
+    timeout => 30000,
+    keepalive => 2,
+    max_requests => 1000,
+
+    %% ASGI
+    lifespan => auto,  % auto | on | off
+
+    %% WebSocket
+    websocket_timeout => 60000,
+    websocket_max_frame_size => 16777216,  % 16MB
+
+    %% Python
+    pythonpath => [<<".">>]
+}).
+```
+
+### Via sys.config
+
+```erlang
+[
+    {hornbeam, [
+        {bind, "127.0.0.1:8000"},
+        {workers, 4},
+        {worker_class, wsgi},
+        {timeout, 30000},
+        {pythonpath, ["."]}
+    ]}
+].
+```
 
 ## API Reference
 
-### hornbeam
+### hornbeam module
 
 | Function | Description |
 |----------|-------------|
@@ -141,17 +274,31 @@ See `examples/embedding_service/` for a complete example of an ML embedding serv
 | `register_function(Name, Module, Function)` | Register module:function |
 | `unregister_function(Name)` | Unregister a function |
 
-### Options
+### Python hornbeam_erlang module
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `bind` | string | `"127.0.0.1:8000"` | Address to bind to |
-| `workers` | integer | `4` | Number of Python workers |
-| `worker_class` | atom | `wsgi` | `wsgi` or `asgi` |
-| `timeout` | integer | `30000` | Request timeout (ms) |
-| `keepalive` | integer | `2` | Keep-alive timeout (seconds) |
-| `max_requests` | integer | `1000` | Max requests per worker |
-| `pythonpath` | list | `["."]` | Additional Python paths |
+| Function | Description |
+|----------|-------------|
+| `state_get(key)` | Get value from ETS (None if not found) |
+| `state_set(key, value)` | Set value in ETS |
+| `state_incr(key, delta=1)` | Atomically increment counter, return new value |
+| `state_decr(key, delta=1)` | Atomically decrement counter |
+| `state_delete(key)` | Delete key from ETS |
+| `state_get_multi(keys)` | Batch get multiple keys |
+| `state_keys(prefix=None)` | Get all keys, optionally by prefix |
+| `rpc_call(node, module, function, args, timeout_ms)` | Call function on remote node |
+| `rpc_cast(node, module, function, args)` | Async call (fire and forget) |
+| `nodes()` | Get list of connected Erlang nodes |
+| `node()` | Get this node's name |
+| `publish(topic, message)` | Publish to pub/sub topic |
+| `call(name, *args)` | Call registered Erlang function |
+| `cast(name, *args)` | Async call to registered function |
+
+### Python hornbeam_ml module
+
+| Function | Description |
+|----------|-------------|
+| `cached_inference(fn, input, cache_key=None, cache_prefix="ml")` | Run inference with ETS caching |
+| `cache_stats()` | Get cache hit/miss statistics |
 
 ## Development
 

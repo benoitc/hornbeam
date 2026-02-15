@@ -16,12 +16,61 @@
 
 This example demonstrates how to call registered Erlang functions from
 a Python WSGI application running on hornbeam.
+
+Run with hornbeam:
+    hornbeam:start("app:application", #{pythonpath => ["examples/erlang_integration"]}).
+
+Run with gunicorn (for comparison):
+    gunicorn app:application
 """
 
 import json
 
-# These functions are registered by Erlang before starting the server
-from erlang import get_config, log_request, lookup_user, spawn_task
+# Import hornbeam Erlang integration (or provide fallbacks for gunicorn)
+try:
+    from hornbeam_erlang import call, rpc_call, state_get, state_set
+
+    def get_config():
+        """Get config from Erlang."""
+        return call('get_config')
+
+    def log_request(method, path):
+        """Log request via Erlang."""
+        return call('log_request', method, path)
+
+    def lookup_user(user_id):
+        """Look up user from Erlang gen_server."""
+        return call('lookup_user', user_id)
+
+    def spawn_task(data):
+        """Spawn background Erlang task."""
+        return call('spawn_task', data)
+
+except ImportError:
+    # Fallback for running standalone or with gunicorn
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    _logger = logging.getLogger(__name__)
+    _users = {
+        '1': {'id': '1', 'name': 'Alice', 'email': 'alice@example.com'},
+        '2': {'id': '2', 'name': 'Bob', 'email': 'bob@example.com'},
+    }
+    _task_id = 0
+
+    def get_config():
+        return {'env': 'development', 'debug': True}
+
+    def log_request(method, path):
+        _logger.info(f"{method} {path}")
+
+    def lookup_user(user_id):
+        return _users.get(user_id, 'none')
+
+    def spawn_task(data):
+        global _task_id
+        _task_id += 1
+        _logger.info(f"Would spawn task {_task_id} with data: {data}")
+        return str(_task_id)
 
 
 def application(environ, start_response):
