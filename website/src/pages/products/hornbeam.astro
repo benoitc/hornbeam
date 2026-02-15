@@ -1,0 +1,266 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const rebarCode = `{deps, [
+  {hornbeam, {git,
+    "https://github.com/benoitc/hornbeam.git",
+    {branch, "main"}}}
+]}.`;
+
+const erlangCode = `%% WSGI
+hornbeam:start("app:application").
+
+%% ASGI (FastAPI, etc.)
+hornbeam:start("app:app", #{
+  worker_class => asgi
+}).`;
+
+const pythonCode = `from hornbeam_erlang import (
+    state_get, state_set, state_incr,  # ETS shared state
+    rpc_call, rpc_cast, nodes,          # Distributed RPC
+    publish,                             # Pub/Sub
+    call, cast                           # Erlang callbacks
+)
+
+# Shared state
+state_set('user:123', {'name': 'Alice', 'score': 100})
+user = state_get('user:123')
+views = state_incr('page:views')
+
+# Distributed RPC
+result = rpc_call('gpu@server', 'ml', 'predict', [data])
+connected = nodes()
+
+# Pub/Sub
+publish('events', {'type': 'login', 'user': 123})`;
+
+const mlCode = `from hornbeam_ml import cached_inference, cache_stats
+
+# Automatically cached by input hash
+embedding = cached_inference(model.encode, text)
+
+# Check cache performance
+stats = cache_stats()
+# {'hits': 100, 'misses': 10, 'hit_rate': 0.91}`;
+---
+
+<BaseLayout title="Hornbeam" description="WSGI/ASGI HTTP server and application server for Python on Erlang. Shared state, distributed RPC, pub/sub, ML caching.">
+  <section class="py-20 px-4">
+    <div class="container mx-auto max-w-5xl">
+      <!-- Header -->
+      <div class="text-center mb-16">
+        <div class="w-20 h-20 mx-auto bg-hb-green/20 rounded-2xl flex items-center justify-center mb-6">
+          <img src="/favicon.svg" alt="Hornbeam" class="w-12 h-12" />
+        </div>
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <h1 class="text-4xl md:text-5xl font-bold text-hb-green-light">Hornbeam</h1>
+          <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-1 rounded font-medium">Apache 2.0</span>
+        </div>
+        <p class="text-xl text-hb-gray/60 max-w-2xl mx-auto">
+          WSGI/ASGI HTTP server and application server for Python on Erlang. Your Python code. Erlang's infrastructure.
+        </p>
+      </div>
+
+      <!-- Protocol Support -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-4">Protocol Support</h2>
+        <p class="text-hb-gray/60 text-center mb-8 max-w-2xl mx-auto">
+          Full compliance with Python web standards.
+        </p>
+        <div class="grid md:grid-cols-4 gap-4">
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green/50 text-center">
+            <h3 class="font-bold text-hb-gray mb-2">WSGI</h3>
+            <p class="text-hb-gray/60 text-xs">PEP 3333</p>
+            <p class="text-hb-gray/50 text-xs mt-2">Flask, Django</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green/50 text-center">
+            <h3 class="font-bold text-hb-gray mb-2">ASGI</h3>
+            <p class="text-hb-gray/60 text-xs">ASGI 3.0</p>
+            <p class="text-hb-gray/50 text-xs mt-2">FastAPI, Starlette</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30 text-center">
+            <h3 class="font-bold text-hb-gray mb-2">WebSocket</h3>
+            <p class="text-hb-gray/60 text-xs">RFC 6455</p>
+            <p class="text-hb-gray/50 text-xs mt-2">Real-time apps</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30 text-center">
+            <h3 class="font-bold text-hb-gray mb-2">HTTP/2</h3>
+            <p class="text-hb-gray/60 text-xs">Via Cowboy</p>
+            <p class="text-hb-gray/50 text-xs mt-2">Multiplexing</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Erlang Features -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-4">Erlang Superpowers</h2>
+        <p class="text-hb-gray/60 text-center mb-8 max-w-2xl mx-auto">
+          Access Erlang features directly from Python.
+        </p>
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-amber/30">
+            <div class="w-12 h-12 bg-hb-amber/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">ETS Shared State</h3>
+            <p class="text-hb-gray/60 text-sm">In-memory key/value storage. Atomic counters. Concurrent-safe.</p>
+          </div>
+
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-erlang/30">
+            <div class="w-12 h-12 bg-hb-erlang/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-erlang" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">Distributed RPC</h3>
+            <p class="text-hb-gray/60 text-sm">Call functions on remote nodes. Built-in clustering.</p>
+          </div>
+
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-erlang/30">
+            <div class="w-12 h-12 bg-hb-erlang/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-erlang" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">Pub/Sub</h3>
+            <p class="text-hb-gray/60 text-sm">pg-based messaging. Real-time notifications.</p>
+          </div>
+
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-amber/30">
+            <div class="w-12 h-12 bg-hb-amber/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">ML Caching</h3>
+            <p class="text-hb-gray/60 text-sm">Cache inference results in ETS. Automatic deduplication.</p>
+          </div>
+
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <div class="w-12 h-12 bg-hb-green/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">Hot Reload</h3>
+            <p class="text-hb-gray/60 text-sm">Update without restart. Zero downtime deployments.</p>
+          </div>
+
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <div class="w-12 h-12 bg-hb-green/20 rounded-lg flex items-center justify-center mb-4">
+              <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>
+              </svg>
+            </div>
+            <h3 class="font-semibold text-hb-gray mb-2">Hooks</h3>
+            <p class="text-hb-gray/60 text-sm">Extend behavior with Erlang callbacks.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Start -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Quick Start</h2>
+
+        <div class="grid md:grid-cols-2 gap-6">
+          <!-- Installation -->
+          <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+            <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-green-dark/30">
+              <span class="text-hb-gray/60 text-sm">1. Add to rebar.config</span>
+            </div>
+            <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-green-light" set:html={rebarCode} /></pre>
+          </div>
+
+          <!-- Run -->
+          <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+            <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-green-dark/30">
+              <span class="text-hb-gray/60 text-sm">2. Run your app</span>
+            </div>
+            <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-green-light" set:html={erlangCode} /></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Python API -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Python API</h2>
+
+        <div class="bg-hb-black rounded-lg border border-[#3776ab]/30 overflow-hidden">
+          <div class="bg-hb-black/80 px-4 py-2 border-b border-[#3776ab]/30">
+            <span class="text-hb-gray/60 text-sm">hornbeam_erlang module</span>
+          </div>
+          <pre class="p-4 text-sm overflow-x-auto"><code class="text-[#3776ab]" set:html={pythonCode} /></pre>
+        </div>
+      </div>
+
+      <!-- ML Integration -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">ML Integration</h2>
+
+        <div class="bg-hb-black rounded-lg border border-hb-amber/30 overflow-hidden">
+          <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-amber/30">
+            <span class="text-hb-gray/60 text-sm">hornbeam_ml module</span>
+          </div>
+          <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-amber" set:html={mlCode} /></pre>
+        </div>
+      </div>
+
+      <!-- Comparison -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">vs. gunicorn</h2>
+        <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-hb-green-dark/30">
+                <th class="text-left p-4 text-hb-gray">Feature</th>
+                <th class="text-center p-4 text-hb-gray">gunicorn</th>
+                <th class="text-center p-4 text-hb-green-light">Hornbeam</th>
+              </tr>
+            </thead>
+            <tbody class="text-hb-gray/70">
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4">Concurrent connections</td>
+                <td class="p-4 text-center">~1000s (GIL)</td>
+                <td class="p-4 text-center text-hb-green-light">Millions (BEAM)</td>
+              </tr>
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4">Shared state</td>
+                <td class="p-4 text-center">Redis/Memcached</td>
+                <td class="p-4 text-center text-hb-green-light">Built-in ETS</td>
+              </tr>
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4">Distribution</td>
+                <td class="p-4 text-center">Redis/RabbitMQ</td>
+                <td class="p-4 text-center text-hb-green-light">Built-in RPC</td>
+              </tr>
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4">Hot reload</td>
+                <td class="p-4 text-center">Restart workers</td>
+                <td class="p-4 text-center text-hb-green-light">Live code swap</td>
+              </tr>
+              <tr>
+                <td class="p-4">Fault tolerance</td>
+                <td class="p-4 text-center">Manual</td>
+                <td class="p-4 text-center text-hb-green-light">Supervisors</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- CTA -->
+      <div class="text-center">
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
+            Read the Docs
+          </a>
+          <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition">
+            View Source
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

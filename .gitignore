@@ -4,14 +4,19 @@ deps/
 *.beam
 *.plt
 erl_crash.dump
+rebar3.crashdump
+_checkouts/
 
 # Rebar3
 .rebar3/
+rebar.lock
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+venv/
+.venv/
 
 # IDE
 .idea/
@@ -23,3 +28,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Website
+website/node_modules/
+website/dist/
+website/.astro/

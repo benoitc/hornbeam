@@ -1,0 +1,11 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { getEntry } from 'astro:content';
+
+const doc = await getEntry('docs', 'index');
+const { Content } = await doc.render();
+---
+
+<DocsLayout title={doc.data.title} description={doc.data.description}>
+  <Content />
+</DocsLayout>

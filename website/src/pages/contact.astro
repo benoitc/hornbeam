@@ -1,0 +1,125 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Contact" description="Get in touch with the Hornbeam team">
+  <div class="container mx-auto px-4 py-16 max-w-4xl">
+    <div class="text-center mb-12">
+      <h1 class="text-4xl font-bold text-hb-gray mb-4">Contact Us</h1>
+      <p class="text-xl text-hb-gray/70">Have questions about Hornbeam or Erlang Python? Get in touch.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8">
+      <!-- GitHub -->
+      <a
+        href="https://github.com/benoitc/hornbeam"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="group block p-8 bg-hb-green-dark/20 border border-hb-green-dark/30 rounded-xl hover:border-hb-green/50 transition"
+      >
+        <div class="flex items-center gap-4 mb-4">
+          <div class="p-3 bg-hb-green-dark/30 rounded-lg group-hover:bg-hb-green/20 transition">
+            <svg class="w-8 h-8 text-hb-gray" fill="currentColor" viewBox="0 0 24 24">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-xl font-semibold text-hb-gray group-hover:text-hb-green-light transition">GitHub</h2>
+            <p class="text-hb-gray/60">Source code & contributions</p>
+          </div>
+        </div>
+        <p class="text-hb-gray/70">
+          Browse the source code, submit pull requests, and contribute to the project.
+        </p>
+      </a>
+
+      <!-- Issues -->
+      <a
+        href="https://github.com/benoitc/hornbeam/issues"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="group block p-8 bg-hb-green-dark/20 border border-hb-green-dark/30 rounded-xl hover:border-hb-green/50 transition"
+      >
+        <div class="flex items-center gap-4 mb-4">
+          <div class="p-3 bg-hb-green-dark/30 rounded-lg group-hover:bg-hb-green/20 transition">
+            <svg class="w-8 h-8 text-hb-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-xl font-semibold text-hb-gray group-hover:text-hb-green-light transition">Issues</h2>
+            <p class="text-hb-gray/60">Bug reports & feature requests</p>
+          </div>
+        </div>
+        <p class="text-hb-gray/70">
+          Report bugs, request features, or ask questions about Hornbeam.
+        </p>
+      </a>
+
+      <!-- Erlang Python -->
+      <a
+        href="https://github.com/benoitc/erlang-python"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="group block p-8 bg-hb-erlang/10 border border-hb-erlang/20 rounded-xl hover:border-hb-erlang/40 transition"
+      >
+        <div class="flex items-center gap-4 mb-4">
+          <div class="p-3 bg-hb-erlang/20 rounded-lg group-hover:bg-hb-erlang/30 transition">
+            <img src="/erlang-logo.svg" alt="Erlang" class="w-8 h-8" />
+          </div>
+          <div>
+            <h2 class="text-xl font-semibold text-hb-gray group-hover:text-hb-erlang transition">Erlang Python</h2>
+            <p class="text-hb-gray/60">Core integration library</p>
+          </div>
+        </div>
+        <p class="text-hb-gray/70">
+          Issues and discussions for the Erlang Python integration library.
+        </p>
+      </a>
+
+      <!-- Email -->
+      <a
+        href="mailto:bchesneau@gmail.com"
+        class="group block p-8 bg-hb-green-dark/20 border border-hb-green-dark/30 rounded-xl hover:border-hb-green/50 transition"
+      >
+        <div class="flex items-center gap-4 mb-4">
+          <div class="p-3 bg-hb-green-dark/30 rounded-lg group-hover:bg-hb-green/20 transition">
+            <svg class="w-8 h-8 text-hb-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-xl font-semibold text-hb-gray group-hover:text-hb-green-light transition">Email</h2>
+            <p class="text-hb-gray/60">Direct contact</p>
+          </div>
+        </div>
+        <p class="text-hb-gray/70">
+          For business inquiries, partnerships, or private discussions.
+        </p>
+      </a>
+    </div>
+
+    <!-- Company Info -->
+    <div class="mt-16 text-center">
+      <div class="inline-flex items-center gap-2 px-6 py-3 bg-hb-green-dark/20 border border-hb-green-dark/30 rounded-full">
+        <svg class="w-5 h-4" viewBox="0 0 810 540">
+          <rect width="810" height="540" fill="#003399"/>
+          <g fill="#FFCC00">
+            <g id="s">
+              <g id="c">
+                <path d="M405,60 l7.35,22.63 h23.78l-19.24,13.99 7.35,22.62L405,105.26l-18.24,13.98 7.35-22.62-19.24-13.99h23.78z"/>
+              </g>
+              <use href="#c" transform="rotate(30,405,270)"/>
+              <use href="#c" transform="rotate(60,405,270)"/>
+              <use href="#c" transform="rotate(90,405,270)"/>
+              <use href="#c" transform="rotate(120,405,270)"/>
+              <use href="#c" transform="rotate(150,405,270)"/>
+            </g>
+            <use href="#s" transform="rotate(180,405,270)"/>
+          </g>
+        </svg>
+        <span class="text-hb-gray/70">Made in Europe by <strong class="text-hb-gray">Enki Multimedia</strong></span>
+      </div>
+    </div>
+  </div>
+</BaseLayout>

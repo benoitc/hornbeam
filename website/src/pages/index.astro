@@ -1,0 +1,266 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="When Python Meets Erlang">
+  <!-- Hero Section -->
+  <section class="py-24 px-4 bg-gradient-to-b from-hb-black to-hb-green-dark/10">
+    <div class="container mx-auto text-center max-w-5xl">
+      <div class="flex items-center justify-center gap-4 mb-6">
+        <div class="flex items-center gap-2 bg-hb-green-dark/20 px-3 py-1.5 rounded-full border border-hb-green-dark/30">
+          <svg class="w-4 h-4 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path>
+          </svg>
+          <span class="text-hb-green-light text-sm font-medium">Open Source</span>
+        </div>
+        <div class="flex items-center gap-2 bg-hb-amber/20 px-3 py-1.5 rounded-full border border-hb-amber/30">
+          <svg class="w-4 h-4 text-hb-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+          </svg>
+          <span class="text-hb-amber text-sm font-medium">AI Ready</span>
+        </div>
+      </div>
+
+      <h1 class="text-5xl md:text-6xl font-bold mb-6">
+        <span class="text-hb-gray">When Python Meets</span>
+        <span class="text-hb-erlang"> Erlang</span>
+      </h1>
+
+      <p class="text-xl text-hb-gray/70 mb-4 max-w-2xl mx-auto">
+        Your Python code. Erlang's infrastructure.
+      </p>
+
+      <p class="text-lg text-hb-gray/60 mb-8 max-w-2xl mx-auto">
+        Mix the best of Python — AI, web apps — with Erlang's distribution, concurrency, resilience, and safety.
+      </p>
+
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
+          Documentation
+        </a>
+        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+          </svg>
+          View Source
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture Diagram -->
+  <section class="py-16 px-4">
+    <div class="container mx-auto max-w-5xl">
+      <h2 class="text-3xl font-bold mb-4 text-center">How It Works</h2>
+      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+        Two libraries that bring Python and Erlang together.
+      </p>
+
+      <!-- Diagram -->
+      <div class="bg-hb-black p-8 rounded-2xl border border-hb-green-dark/30">
+        <div class="grid md:grid-cols-3 gap-6 items-center">
+          <!-- Python Side -->
+          <div class="text-center">
+            <div class="w-20 h-20 mx-auto bg-[#3776ab]/20 rounded-2xl flex items-center justify-center mb-4">
+              <svg class="w-12 h-12" viewBox="0 0 256 255" fill="#3776ab">
+                <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"/>
+                <path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z"/>
+              </svg>
+            </div>
+            <h3 class="font-bold text-hb-gray mb-2">Python</h3>
+            <p class="text-hb-gray/60 text-sm">AI, ML, Web Apps</p>
+            <p class="text-hb-gray/40 text-xs mt-2">Flask, FastAPI, Django<br/>PyTorch, TensorFlow</p>
+          </div>
+
+          <!-- Middle - Integration -->
+          <div class="text-center py-8">
+            <div class="flex items-center justify-center gap-4 mb-6">
+              <div class="h-px flex-1 bg-gradient-to-r from-transparent via-hb-green-dark to-transparent"></div>
+              <svg class="w-8 h-8 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+              </svg>
+              <div class="h-px flex-1 bg-gradient-to-r from-transparent via-hb-green-dark to-transparent"></div>
+            </div>
+
+            <div class="space-y-4">
+              <a href="/products/erlang-python" class="block bg-[#3776ab]/10 border border-[#3776ab]/30 rounded-lg p-4 hover:border-[#3776ab]/50 transition">
+                <p class="font-bold text-[#3776ab]">Erlang Python</p>
+                <p class="text-hb-gray/50 text-xs">Embed Python in Erlang</p>
+              </a>
+              <a href="/products/hornbeam" class="block bg-hb-green/10 border border-hb-green/30 rounded-lg p-4 hover:border-hb-green/50 transition">
+                <p class="font-bold text-hb-green-light">Hornbeam</p>
+                <p class="text-hb-gray/50 text-xs">HTTP + Application Server</p>
+              </a>
+            </div>
+          </div>
+
+          <!-- Erlang Side -->
+          <div class="text-center">
+            <div class="w-20 h-20 mx-auto bg-hb-erlang/20 rounded-2xl flex items-center justify-center mb-4">
+              <img src="/erlang-logo.svg" alt="Erlang" class="w-12 h-12" />
+            </div>
+            <h3 class="font-bold text-hb-gray mb-2">Erlang / BEAM</h3>
+            <p class="text-hb-gray/60 text-sm">Scale & Resilience</p>
+            <p class="text-hb-gray/40 text-xs mt-2">Distribution, Concurrency<br/>Fault Tolerance, Hot Reload</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Product Cards Section -->
+  <section class="py-16 px-4 bg-hb-black/50">
+    <div class="container mx-auto max-w-5xl">
+      <h2 class="text-3xl font-bold mb-4 text-center">Two Libraries, One Platform</h2>
+      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+        Use them together or separately.
+      </p>
+
+      <div class="grid md:grid-cols-2 gap-8">
+        <!-- Erlang Python Card -->
+        <div class="bg-hb-black p-8 rounded-xl border border-[#3776ab]/30 hover:border-[#3776ab]/50 transition">
+          <div class="w-14 h-14 bg-[#3776ab]/20 rounded-xl flex items-center justify-center mb-6">
+            <svg class="w-8 h-8" viewBox="0 0 256 255" fill="#3776ab">
+              <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"/>
+            </svg>
+          </div>
+          <div class="flex items-center gap-3 mb-2">
+            <h3 class="text-2xl font-bold text-[#3776ab]">Erlang Python</h3>
+            <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-0.5 rounded font-medium">Apache 2.0</span>
+          </div>
+          <p class="text-hb-gray/50 text-sm mb-4">Python Integration Library</p>
+          <p class="text-hb-gray/70 mb-6">
+            Embed Python in your Erlang applications. Call Python functions, load modules, and share data seamlessly between both runtimes.
+          </p>
+          <ul class="space-y-2 text-sm text-hb-gray/70 mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-[#3776ab]">+</span>
+              <span>Call any Python function from Erlang</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[#3776ab]">+</span>
+              <span>Load Python modules dynamically</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[#3776ab]">+</span>
+              <span>Automatic type conversion</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[#3776ab]">+</span>
+              <span>Process pool for concurrency</span>
+            </li>
+          </ul>
+          <a href="/products/erlang-python" class="text-[#3776ab] hover:text-[#4a90c2] font-semibold">
+            Learn more &rarr;
+          </a>
+        </div>
+
+        <!-- Hornbeam Card -->
+        <div class="bg-hb-black p-8 rounded-xl border border-hb-green/30 hover:border-hb-green/50 transition">
+          <div class="w-14 h-14 bg-hb-green/20 rounded-xl flex items-center justify-center mb-6">
+            <img src="/favicon.svg" alt="Hornbeam" class="w-8 h-8" />
+          </div>
+          <div class="flex items-center gap-3 mb-2">
+            <h3 class="text-2xl font-bold text-hb-green-light">Hornbeam</h3>
+            <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-0.5 rounded font-medium">Apache 2.0</span>
+          </div>
+          <p class="text-hb-gray/50 text-sm mb-4">HTTP & Application Server</p>
+          <p class="text-hb-gray/70 mb-6">
+            WSGI/ASGI HTTP server with shared state, distributed RPC, pub/sub, and ML caching. Full application server for Python on Erlang.
+          </p>
+          <ul class="space-y-2 text-sm text-hb-gray/70 mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-hb-green-light">+</span>
+              <span>WSGI & ASGI support</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-hb-green-light">+</span>
+              <span>ETS shared state from Python</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-hb-green-light">+</span>
+              <span>Distributed RPC across nodes</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-hb-green-light">+</span>
+              <span>ML inference caching</span>
+            </li>
+          </ul>
+          <a href="/products/hornbeam" class="text-hb-green-light hover:text-hb-green font-semibold">
+            Learn more &rarr;
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why Section -->
+  <section class="py-16 px-4">
+    <div class="container mx-auto max-w-5xl">
+      <h2 class="text-3xl font-bold mb-4 text-center">Why Python + Erlang?</h2>
+      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+        Each language excels at different things. Use both.
+      </p>
+
+      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+          <div class="w-12 h-12 bg-hb-amber/20 rounded-lg mx-auto flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-hb-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+            </svg>
+          </div>
+          <h3 class="font-semibold text-hb-gray mb-2">AI Ready</h3>
+          <p class="text-hb-gray/60 text-sm">Use Python's ML ecosystem with Erlang's scale.</p>
+        </div>
+
+        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+          <div class="w-12 h-12 bg-hb-erlang/20 rounded-lg mx-auto flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-hb-erlang" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path>
+            </svg>
+          </div>
+          <h3 class="font-semibold text-hb-gray mb-2">Distributed</h3>
+          <p class="text-hb-gray/60 text-sm">Built-in clustering. No Redis or RabbitMQ needed.</p>
+        </div>
+
+        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+          <div class="w-12 h-12 bg-hb-green/20 rounded-lg mx-auto flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+            </svg>
+          </div>
+          <h3 class="font-semibold text-hb-gray mb-2">Resilient</h3>
+          <p class="text-hb-gray/60 text-sm">Let it crash. Supervisors restart failed processes.</p>
+        </div>
+
+        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+          <div class="w-12 h-12 bg-hb-green/20 rounded-lg mx-auto flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+            </svg>
+          </div>
+          <h3 class="font-semibold text-hb-gray mb-2">No GIL</h3>
+          <p class="text-hb-gray/60 text-sm">Erlang handles concurrency. Python stays simple.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="py-20 px-4 bg-gradient-to-t from-hb-black to-hb-green-dark/10">
+    <div class="container mx-auto max-w-4xl text-center">
+      <h2 class="text-3xl font-bold mb-4">Ready to Get Started?</h2>
+      <p class="text-hb-gray/60 mb-8">
+        Check out the documentation or explore the source code.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
+          Read the Docs
+        </a>
+        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition">
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

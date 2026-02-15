@@ -1,0 +1,29 @@
+---
+const navItems = [
+  { href: '/', label: 'Home' },
+  { href: '/docs', label: 'Docs' },
+  { href: 'https://github.com/benoitc/hornbeam', label: 'GitHub', external: true },
+];
+---
+
+<header class="border-b border-gray-200 bg-white">
+  <nav class="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2">
+      <img src="/favicon.svg" alt="" class="h-8 w-8" />
+      <span class="text-xl font-semibold text-primary">hornbeam</span>
+    </a>
+
+    <div class="flex items-center gap-6">
+      {navItems.map((item) => (
+        <a
+          href={item.href}
+          class="text-gray-600 hover:text-primary transition-colors text-sm"
+          target={item.external ? '_blank' : undefined}
+          rel={item.external ? 'noopener noreferrer' : undefined}
+        >
+          {item.label}
+        </a>
+      ))}
+    </div>
+  </nav>
+</header>

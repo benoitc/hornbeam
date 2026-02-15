@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Hornbeam leaf - simple serrated leaf shape -->
+  <path fill="#2c5530" d="M50 5 C35 15, 20 35, 20 55 C20 75, 35 90, 50 95 C65 90, 80 75, 80 55 C80 35, 65 15, 50 5 Z"/>
+  <!-- Leaf veins -->
+  <path fill="none" stroke="#1a3a1f" stroke-width="2" d="M50 15 L50 85"/>
+  <path fill="none" stroke="#1a3a1f" stroke-width="1.5" d="M50 30 L35 40 M50 30 L65 40"/>
+  <path fill="none" stroke="#1a3a1f" stroke-width="1.5" d="M50 50 L30 60 M50 50 L70 60"/>
+  <path fill="none" stroke="#1a3a1f" stroke-width="1.5" d="M50 70 L38 78 M50 70 L62 78"/>
+</svg>

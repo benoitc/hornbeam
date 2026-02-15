@@ -1,0 +1,325 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const rebarCode = `{deps, [
+    {erlang_python, {git, "https://github.com/benoitc/erlang_python.git", {branch, "main"}}}
+]}.`;
+
+const erlangCallsPython = `%% Call Python functions from Erlang
+{ok, 4.0} = py:call(math, sqrt, [16]).
+
+%% Evaluate expressions
+{ok, 45} = py:eval(<<"sum(range(10))">>).
+
+%% Async calls
+Ref = py:call_async(math, factorial, [100]),
+{ok, Result} = py:await(Ref).
+
+%% Stream from generators
+{ok, [0,1,4,9,16]} = py:stream_eval(<<"(x**2 for x in range(5))">>).`;
+
+const pythonCallsErlang = `# Python calling Erlang functions
+from erlang import my_func, state_get, state_set
+
+# Call registered Erlang functions
+result = my_func(10, 20)
+
+# Use shared state (ETS-backed)
+state_set('user:123', {'name': 'Alice', 'score': 100})
+user = state_get('user:123')
+
+# Atomic counters
+from erlang import state_incr
+count = state_incr('page_views')`;
+
+const registerCode = `%% Register Erlang functions callable from Python
+py:register_function(my_func, fun([X, Y]) -> X + Y end).
+
+%% Python can now import and call it
+py:exec(<<"
+from erlang import my_func
+result = my_func(10, 20)  # Returns 30
+">>).`;
+
+const asyncCode = `%% Call Python async functions
+Ref = py:async_call(aiohttp, get, [<<"https://api.example.com">>]),
+{ok, Response} = py:async_await(Ref).
+
+%% Gather multiple async calls concurrently
+{ok, Results} = py:async_gather([
+    {aiohttp, get, [<<"https://api.example.com/users">>]},
+    {aiohttp, get, [<<"https://api.example.com/posts">>]}
+]).`;
+---
+
+<BaseLayout title="Erlang Python" description="Bidirectional Python-Erlang integration. Call Python from Erlang and Erlang from Python with true parallelism.">
+  <section class="py-20 px-4">
+    <div class="container mx-auto max-w-5xl">
+      <!-- Header with both logos -->
+      <div class="text-center mb-16">
+        <div class="flex items-center justify-center gap-6 mb-6">
+          <div class="w-16 h-16 bg-hb-erlang/20 rounded-2xl flex items-center justify-center">
+            <img src="/erlang-logo.svg" alt="Erlang" class="w-10 h-10" />
+          </div>
+          <svg class="w-8 h-8 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+          </svg>
+          <div class="w-16 h-16 bg-[#3776ab]/20 rounded-2xl flex items-center justify-center">
+            <svg class="w-10 h-10" viewBox="0 0 256 255" fill="#3776ab">
+              <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"/>
+              <path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z"/>
+            </svg>
+          </div>
+        </div>
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <h1 class="text-4xl md:text-5xl font-bold">
+            <span class="text-hb-erlang">Erlang</span>
+            <span class="text-hb-gray"> </span>
+            <span class="text-[#3776ab]">Python</span>
+          </h1>
+          <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-1 rounded font-medium">Apache 2.0</span>
+        </div>
+        <p class="text-xl text-hb-gray/60 max-w-2xl mx-auto">
+          Bidirectional integration between Erlang and Python. Call Python from Erlang. Call Erlang from Python. True parallelism.
+        </p>
+      </div>
+
+      <!-- Bidirectional Flow Diagram -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Bidirectional Integration</h2>
+        <div class="bg-hb-black p-8 rounded-2xl border border-hb-green-dark/30">
+          <div class="grid md:grid-cols-3 gap-8 items-center">
+            <!-- Erlang Side -->
+            <div class="text-center">
+              <div class="w-20 h-20 mx-auto bg-hb-erlang/20 rounded-2xl flex items-center justify-center mb-4">
+                <img src="/erlang-logo.svg" alt="Erlang" class="w-12 h-12" />
+              </div>
+              <h3 class="font-bold text-hb-erlang mb-2">Erlang / Elixir</h3>
+              <ul class="text-hb-gray/60 text-sm space-y-1">
+                <li>py:call()</li>
+                <li>py:eval()</li>
+                <li>py:async_call()</li>
+                <li>py:stream()</li>
+              </ul>
+            </div>
+
+            <!-- Bidirectional Arrows -->
+            <div class="flex flex-col items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span class="text-hb-erlang text-sm font-medium">Erlang calls Python</span>
+                <svg class="w-6 h-6 text-hb-erlang" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                </svg>
+              </div>
+
+              <div class="w-full h-px bg-gradient-to-r from-hb-erlang via-hb-green-light to-[#3776ab]"></div>
+
+              <div class="flex items-center gap-2">
+                <svg class="w-6 h-6 text-[#3776ab]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                </svg>
+                <span class="text-[#3776ab] text-sm font-medium">Python calls Erlang</span>
+              </div>
+
+              <div class="mt-4 p-4 bg-hb-green/10 rounded-lg border border-hb-green/30">
+                <p class="text-hb-green-light text-sm font-medium text-center">Shared State (ETS)</p>
+                <p class="text-hb-gray/50 text-xs text-center mt-1">Accessible from both sides</p>
+              </div>
+            </div>
+
+            <!-- Python Side -->
+            <div class="text-center">
+              <div class="w-20 h-20 mx-auto bg-[#3776ab]/20 rounded-2xl flex items-center justify-center mb-4">
+                <svg class="w-12 h-12" viewBox="0 0 256 255" fill="#3776ab">
+                  <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"/>
+                  <path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z"/>
+                </svg>
+              </div>
+              <h3 class="font-bold text-[#3776ab] mb-2">Python</h3>
+              <ul class="text-hb-gray/60 text-sm space-y-1">
+                <li>from erlang import func</li>
+                <li>erlang.call()</li>
+                <li>state_get/set()</li>
+                <li>state_incr()</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Key Features -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Features</h2>
+        <div class="grid md:grid-cols-3 gap-6">
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-erlang/30">
+            <h3 class="font-semibold text-hb-erlang mb-2">True Parallelism</h3>
+            <p class="text-hb-gray/60 text-sm">Sub-interpreters (Python 3.12+) or free-threaded Python (3.13+). No GIL contention.</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-[#3776ab]/30">
+            <h3 class="font-semibold text-[#3776ab] mb-2">Async/Await</h3>
+            <p class="text-hb-gray/60 text-sm">Call Python async functions, gather results, stream from async generators.</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <h3 class="font-semibold text-hb-green-light mb-2">Dirty NIF Execution</h3>
+            <p class="text-hb-gray/60 text-sm">Python runs on dirty schedulers. Never blocks the BEAM.</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <h3 class="font-semibold text-hb-green-light mb-2">Bidirectional Calls</h3>
+            <p class="text-hb-gray/60 text-sm">Python calls Erlang. Erlang calls Python. Reentrant callbacks supported.</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <h3 class="font-semibold text-hb-green-light mb-2">Streaming</h3>
+            <p class="text-hb-gray/60 text-sm">Iterate over Python generators chunk-by-chunk. Memory efficient.</p>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-amber/30">
+            <h3 class="font-semibold text-hb-amber mb-2">AI/ML Ready</h3>
+            <p class="text-hb-gray/60 text-sm">Examples for embeddings, semantic search, RAG, and LLMs.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Code Examples -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Code Examples</h2>
+
+        <div class="space-y-6">
+          <!-- Erlang calling Python -->
+          <div class="bg-hb-black rounded-lg border border-hb-erlang/30 overflow-hidden">
+            <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-erlang/30 flex items-center gap-2">
+              <img src="/erlang-logo.svg" alt="Erlang" class="w-4 h-4" />
+              <span class="text-hb-gray/60 text-sm">Erlang calling Python</span>
+            </div>
+            <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-green-light" set:html={erlangCallsPython} /></pre>
+          </div>
+
+          <!-- Python calling Erlang -->
+          <div class="bg-hb-black rounded-lg border border-[#3776ab]/30 overflow-hidden">
+            <div class="bg-hb-black/80 px-4 py-2 border-b border-[#3776ab]/30 flex items-center gap-2">
+              <svg class="w-4 h-4" viewBox="0 0 256 255" fill="#3776ab">
+                <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072z"/>
+              </svg>
+              <span class="text-hb-gray/60 text-sm">Python calling Erlang</span>
+            </div>
+            <pre class="p-4 text-sm overflow-x-auto"><code class="text-[#3776ab]" set:html={pythonCallsErlang} /></pre>
+          </div>
+
+          <!-- Register functions -->
+          <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+            <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-green-dark/30">
+              <span class="text-hb-gray/60 text-sm">Register Erlang functions for Python</span>
+            </div>
+            <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-green-light" set:html={registerCode} /></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Parallelism Modes -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Parallelism Modes</h2>
+        <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-hb-green-dark/30">
+                <th class="text-left p-4 text-hb-gray">Mode</th>
+                <th class="text-left p-4 text-hb-gray">Python Version</th>
+                <th class="text-left p-4 text-hb-gray">Parallelism</th>
+              </tr>
+            </thead>
+            <tbody class="text-hb-gray/70">
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4 font-medium text-hb-green-light">Free-threaded</td>
+                <td class="p-4">3.13+ (nogil)</td>
+                <td class="p-4">True parallel, no GIL</td>
+              </tr>
+              <tr class="border-b border-hb-green-dark/20">
+                <td class="p-4 font-medium text-hb-green-light">Sub-interpreter</td>
+                <td class="p-4">3.12+</td>
+                <td class="p-4">Per-interpreter GIL</td>
+              </tr>
+              <tr>
+                <td class="p-4 font-medium">Multi-executor</td>
+                <td class="p-4">Any</td>
+                <td class="p-4">GIL contention (fallback)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Use Cases -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Use Cases</h2>
+        <div class="grid md:grid-cols-2 gap-6">
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-amber/30">
+            <h3 class="font-semibold text-hb-amber mb-3">ML/AI Integration</h3>
+            <p class="text-hb-gray/60 text-sm mb-4">
+              Use PyTorch, TensorFlow, sentence-transformers, or any ML library. Run inference, generate embeddings, build RAG pipelines.
+            </p>
+            <ul class="text-xs text-hb-gray/50 space-y-1">
+              <li>+ Semantic search</li>
+              <li>+ RAG with LLMs</li>
+              <li>+ Embeddings at scale</li>
+            </ul>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-erlang/30">
+            <h3 class="font-semibold text-hb-erlang mb-3">BEAM Parallelism</h3>
+            <p class="text-hb-gray/60 text-sm mb-4">
+              Fan out Python work across lightweight Erlang processes. 10x speedup for parallel workloads.
+            </p>
+            <ul class="text-xs text-hb-gray/50 space-y-1">
+              <li>+ Process-per-request</li>
+              <li>+ Parallel map</li>
+              <li>+ Linear scaling</li>
+            </ul>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <h3 class="font-semibold text-hb-green-light mb-3">Async I/O</h3>
+            <p class="text-hb-gray/60 text-sm mb-4">
+              Call Python async functions with async_call/async_await. Stream from async generators.
+            </p>
+            <ul class="text-xs text-hb-gray/50 space-y-1">
+              <li>+ aiohttp requests</li>
+              <li>+ Async database queries</li>
+              <li>+ Concurrent API calls</li>
+            </ul>
+          </div>
+          <div class="bg-hb-black p-6 rounded-lg border border-hb-green-dark/30">
+            <h3 class="font-semibold text-hb-green-light mb-3">Data Processing</h3>
+            <p class="text-hb-gray/60 text-sm mb-4">
+              Leverage pandas, numpy, scipy for computation. Erlang handles orchestration.
+            </p>
+            <ul class="text-xs text-hb-gray/50 space-y-1">
+              <li>+ Pandas DataFrames</li>
+              <li>+ NumPy arrays</li>
+              <li>+ Scientific computing</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Installation -->
+      <div class="mb-16">
+        <h2 class="text-2xl font-bold text-center mb-8">Installation</h2>
+        <div class="bg-hb-black rounded-lg border border-hb-green-dark/30 overflow-hidden">
+          <div class="bg-hb-black/80 px-4 py-2 border-b border-hb-green-dark/30">
+            <span class="text-hb-gray/60 text-sm">rebar.config</span>
+          </div>
+          <pre class="p-4 text-sm overflow-x-auto"><code class="text-hb-green-light" set:html={rebarCode} /></pre>
+        </div>
+        <p class="text-hb-gray/50 text-sm text-center mt-4">Requires Erlang/OTP 27+ and Python 3.12+</p>
+      </div>
+
+      <!-- CTA -->
+      <div class="text-center">
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a href="/docs" class="bg-hb-erlang hover:bg-hb-erlang/80 text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
+            Read the Docs
+          </a>
+          <a href="https://github.com/benoitc/erlang_python" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition">
+            View Source
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

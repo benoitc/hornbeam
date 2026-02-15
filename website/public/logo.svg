@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 50">
+  <!-- Hornbeam leaf -->
+  <g transform="translate(5, 3)">
+    <path fill="#2c5530" d="M22 2 C14 8, 6 18, 6 30 C6 40, 14 46, 22 46 C30 46, 38 40, 38 30 C38 18, 30 8, 22 2 Z"/>
+    <path fill="none" stroke="#1a3a1f" stroke-width="1.5" d="M22 8 L22 40"/>
+    <path fill="none" stroke="#1a3a1f" stroke-width="1" d="M22 15 L14 22 M22 15 L30 22"/>
+    <path fill="none" stroke="#1a3a1f" stroke-width="1" d="M22 26 L12 33 M22 26 L32 33"/>
+  </g>
+  <!-- Text -->
+  <text x="52" y="34" font-family="system-ui, sans-serif" font-size="26" font-weight="600" fill="#2c5530">hornbeam</text>
+</svg>
