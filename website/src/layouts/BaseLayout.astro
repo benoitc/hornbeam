@@ -20,25 +20,47 @@ const { title, description = 'WSGI/ASGI HTTP server and application server power
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <script is:inline>
+      // Theme based on time of day (light: 7am-7pm, dark: 7pm-7am)
+      // User can override with toggle
+      (function() {
+        const stored = localStorage.getItem('theme');
+        if (stored) {
+          document.documentElement.classList.toggle('light', stored === 'light');
+        } else {
+          const hour = new Date().getHours();
+          const isDay = hour >= 7 && hour < 19;
+          document.documentElement.classList.toggle('light', isDay);
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-hb-black text-hb-gray min-h-screen flex flex-col">
-    <header class="border-b border-hb-green-dark/30">
+  <body class="bg-hb-bg text-hb-text min-h-screen flex flex-col transition-colors duration-300">
+    <header class="border-b border-hb-border">
       <nav class="container mx-auto px-4 py-4 flex items-center justify-between max-w-5xl">
         <a href="/" class="flex items-center gap-3 hover:opacity-80 transition">
           <img src="/favicon.svg" alt="Hornbeam" class="h-10 w-auto" />
-          <span class="text-xl font-bold text-hb-gray">Hornbeam</span>
+          <span class="text-xl font-bold text-hb-text">Hornbeam</span>
         </a>
         <div class="flex items-center gap-6">
-          <a href="/products/erlang-python" class="text-hb-gray/70 hover:text-hb-gray transition">Erlang Python</a>
-          <a href="/products/hornbeam" class="text-hb-gray/70 hover:text-hb-gray transition">Hornbeam</a>
-          <a href="/docs" class="text-hb-gray/70 hover:text-hb-gray transition">Docs</a>
-          <a href="/contact" class="text-hb-gray/70 hover:text-hb-gray transition">Contact</a>
-          <a href="https://github.com/benoitc/hornbeam" class="text-hb-gray/70 hover:text-hb-gray transition flex items-center gap-1.5" target="_blank" rel="noopener noreferrer">
+          <a href="/products/hornbeam" class="text-hb-muted hover:text-hb-text transition">Hornbeam</a>
+          <a href="/products/erlang-python" class="text-hb-muted hover:text-hb-text transition">Erlang Python</a>
+          <a href="/docs" class="text-hb-muted hover:text-hb-text transition">Docs</a>
+          <a href="/contact" class="text-hb-muted hover:text-hb-text transition">Contact</a>
+          <a href="https://github.com/benoitc/hornbeam" class="text-hb-muted hover:text-hb-text transition flex items-center gap-1.5" target="_blank" rel="noopener noreferrer">
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
             </svg>
             GitHub
           </a>
+          <button id="theme-toggle" class="text-hb-muted hover:text-hb-text transition p-2" title="Toggle theme">
+            <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </button>
           <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-4 py-2 rounded-lg transition font-medium">
             Get Started
           </a>
@@ -50,23 +72,31 @@ const { title, description = 'WSGI/ASGI HTTP server and application server power
       <slot />
     </main>
 
-    <footer class="border-t border-hb-green-dark/30 py-8 mt-auto">
+    <footer class="border-t border-hb-border py-8 mt-auto">
       <div class="container mx-auto px-4 max-w-5xl">
         <div class="flex flex-col md:flex-row justify-between items-center gap-4">
           <div class="flex items-center gap-2">
             <img src="/favicon.svg" alt="Hornbeam" class="h-6 w-auto" />
-            <span class="font-semibold text-hb-gray">Hornbeam</span>
+            <span class="font-semibold text-hb-text">Hornbeam</span>
           </div>
-          <div class="text-hb-gray/60 text-sm text-center">
+          <div class="text-hb-muted text-sm text-center">
             <p class="flex items-center justify-center gap-1">Made in <span class="inline-flex items-center gap-1"><svg class="w-4 h-3" viewBox="0 0 810 540"><rect width="810" height="540" fill="#003399"/><g fill="#FFCC00"><g id="s"><g id="c"><path d="M405,60 l7.35,22.63 h23.78l-19.24,13.99 7.35,22.62L405,105.26l-18.24,13.98 7.35-22.62-19.24-13.99h23.78z"/></g><use href="#c" transform="rotate(30,405,270)"/><use href="#c" transform="rotate(60,405,270)"/><use href="#c" transform="rotate(90,405,270)"/><use href="#c" transform="rotate(120,405,270)"/><use href="#c" transform="rotate(150,405,270)"/></g><use href="#s" transform="rotate(180,405,270)"/></g></svg>Europe</span> &middot; Apache 2.0 &middot; &copy; 2026 Enki Multimedia</p>
           </div>
           <div class="flex items-center gap-4 text-sm">
-            <a href="https://github.com/benoitc/hornbeam" class="text-hb-gray/60 hover:text-hb-gray">GitHub</a>
-            <a href="/docs" class="text-hb-gray/60 hover:text-hb-gray">Docs</a>
-            <a href="/contact" class="text-hb-gray/60 hover:text-hb-gray">Contact</a>
+            <a href="https://github.com/benoitc/hornbeam" class="text-hb-muted hover:text-hb-text">GitHub</a>
+            <a href="/docs" class="text-hb-muted hover:text-hb-text">Docs</a>
+            <a href="/contact" class="text-hb-muted hover:text-hb-text">Contact</a>
           </div>
         </div>
       </div>
     </footer>
+
+    <script is:inline>
+      document.getElementById('theme-toggle').addEventListener('click', () => {
+        const html = document.documentElement;
+        const isLight = html.classList.toggle('light');
+        localStorage.setItem('theme', isLight ? 'light' : 'dark');
+      });
+    </script>
   </body>
 </html>

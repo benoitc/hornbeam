@@ -48,10 +48,10 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
 
 <BaseLayout title={title} description={description}>
   <div class="container mx-auto px-4 py-8 max-w-6xl">
-    <div class="flex flex-col md:flex-row gap-8">
+    <div class="flex flex-col md:flex-row md:items-start gap-8">
       <!-- Sidebar -->
-      <aside class="md:w-56 flex-shrink-0">
-        <nav class="md:sticky md:top-20 space-y-6">
+      <aside class="md:w-56 flex-shrink-0 md:sticky md:top-20 md:self-start md:max-h-[calc(100vh-6rem)]">
+        <nav class="md:overflow-y-auto md:max-h-[calc(100vh-6rem)] md:pb-8 space-y-6 scrollbar-thin">
 
           <!-- Product Switcher -->
           <div class="flex gap-2 p-1 bg-hb-green-dark/20 rounded-lg">
@@ -61,7 +61,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                 "flex-1 text-center text-xs py-2 px-3 rounded-md transition font-medium",
                 !isErlangPythonSection
                   ? "bg-hb-green text-white"
-                  : "text-hb-gray/60 hover:text-hb-gray"
+                  : "text-hb-muted hover:text-hb-text"
               ]}
             >
               Hornbeam
@@ -72,7 +72,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                 "flex-1 text-center text-xs py-2 px-3 rounded-md transition font-medium",
                 isErlangPythonSection
                   ? "bg-hb-erlang text-white"
-                  : "text-hb-gray/60 hover:text-hb-gray"
+                  : "text-hb-muted hover:text-hb-text"
               ]}
             >
               Erlang Python
@@ -83,7 +83,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
             <>
               <!-- Hornbeam Docs -->
               <div>
-                <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">Getting Started</h3>
+                <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">Getting Started</h3>
                 <ul class="space-y-1">
                   {mainDocs.map((doc) => (
                     <li>
@@ -93,7 +93,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                           "block text-sm py-1.5 px-2 rounded transition",
                           currentPath === (doc.slug === 'index' ? '/docs' : `/docs/${doc.slug}`) || currentPath === (doc.slug === 'index' ? '/docs/' : `/docs/${doc.slug}/`)
                             ? "text-hb-green-light bg-hb-green-dark/20"
-                            : "text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10"
+                            : "text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10"
                         ]}
                       >
                         {doc.data.title}
@@ -105,7 +105,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
 
               {guideDocs.length > 0 && (
                 <div>
-                  <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">Guides</h3>
+                  <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">Guides</h3>
                   <ul class="space-y-1">
                     {guideDocs.map((doc) => (
                       <li>
@@ -115,7 +115,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                             "block text-sm py-1.5 px-2 rounded transition",
                             currentPath === `/docs/${doc.slug}` || currentPath === `/docs/${doc.slug}/`
                               ? "text-hb-green-light bg-hb-green-dark/20"
-                              : "text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10"
+                              : "text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10"
                           ]}
                         >
                           {doc.data.title}
@@ -128,7 +128,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
 
               {exampleDocs.length > 0 && (
                 <div>
-                  <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">Examples</h3>
+                  <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">Examples</h3>
                   <ul class="space-y-1">
                     {exampleDocs.map((doc) => (
                       <li>
@@ -138,7 +138,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                             "block text-sm py-1.5 px-2 rounded transition",
                             currentPath === `/docs/${doc.slug}` || currentPath === `/docs/${doc.slug}/`
                               ? "text-hb-green-light bg-hb-green-dark/20"
-                              : "text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10"
+                              : "text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10"
                           ]}
                         >
                           {doc.data.title}
@@ -149,44 +149,47 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                 </div>
               )}
 
-              <!-- Reference - link to hex.pm -->
-              <div>
-                <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">Reference</h3>
-                <ul class="space-y-1">
-                  <li>
-                    <a
-                      href="/docs/reference/configuration"
-                      class:list={[
-                        "block text-sm py-1.5 px-2 rounded transition",
-                        currentPath.includes('/reference/configuration')
-                          ? "text-hb-green-light bg-hb-green-dark/20"
-                          : "text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10"
-                      ]}
-                    >
-                      Configuration
-                    </a>
-                  </li>
-                  <li>
-                    <a
-                      href="https://hexdocs.pm/hornbeam"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="block text-sm py-1.5 px-2 rounded transition text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10 flex items-center gap-1"
-                    >
-                      API Docs (hex.pm)
-                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
-                  </li>
-                </ul>
-              </div>
+              {referenceDocs.length > 0 && (
+                <div>
+                  <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">Reference</h3>
+                  <ul class="space-y-1">
+                    {referenceDocs.map((doc) => (
+                      <li>
+                        <a
+                          href={`/docs/${doc.slug}`}
+                          class:list={[
+                            "block text-sm py-1.5 px-2 rounded transition",
+                            currentPath === `/docs/${doc.slug}` || currentPath === `/docs/${doc.slug}/`
+                              ? "text-hb-green-light bg-hb-green-dark/20"
+                              : "text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10"
+                          ]}
+                        >
+                          {doc.data.title}
+                        </a>
+                      </li>
+                    ))}
+                    <li>
+                      <a
+                        href="https://hexdocs.pm/hornbeam"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="block text-sm py-1.5 px-2 rounded transition text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10 flex items-center gap-1"
+                      >
+                        hex.pm
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    </li>
+                  </ul>
+                </div>
+              )}
             </>
           ) : (
             <>
               <!-- Erlang Python Docs -->
               <div>
-                <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">Erlang Python</h3>
+                <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">Erlang Python</h3>
                 <ul class="space-y-1">
                   {erlangPythonDocs.map((doc) => (
                     <li>
@@ -196,7 +199,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
                           "block text-sm py-1.5 px-2 rounded transition",
                           currentPath === `/docs/${doc.slug}` || currentPath === `/docs/${doc.slug}/`
                             ? "text-hb-green-light bg-hb-green-dark/20"
-                            : "text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10"
+                            : "text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10"
                         ]}
                       >
                         {doc.data.title}
@@ -208,14 +211,14 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
 
               <!-- Link to hex.pm for API reference -->
               <div>
-                <h3 class="font-semibold text-hb-gray mb-3 text-xs uppercase tracking-wider">API Reference</h3>
+                <h3 class="font-semibold text-hb-text mb-3 text-xs uppercase tracking-wider">API Reference</h3>
                 <ul class="space-y-1">
                   <li>
                     <a
                       href="https://hexdocs.pm/erlang_python"
                       target="_blank"
                       rel="noopener noreferrer"
-                      class="block text-sm py-1.5 px-2 rounded transition text-hb-gray/60 hover:text-hb-green-light hover:bg-hb-green-dark/10 flex items-center gap-1"
+                      class="block text-sm py-1.5 px-2 rounded transition text-hb-muted hover:text-hb-green hover:bg-hb-green-dark/10 flex items-center gap-1"
                     >
                       Module Docs (hex.pm)
                       <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -232,7 +235,7 @@ const isErlangPythonSection = currentPath.includes('/erlang-python');
 
       <!-- Main content -->
       <main class="flex-1 min-w-0">
-        <article class="prose prose-invert prose-headings:text-hb-gray prose-p:text-hb-gray/80 prose-a:text-hb-green-light prose-a:no-underline hover:prose-a:underline prose-code:text-hb-green-light prose-code:bg-hb-green-dark/20 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-hb-black prose-pre:border prose-pre:border-hb-green-dark/30 prose-strong:text-hb-gray prose-table:text-hb-gray/80 prose-th:text-hb-gray prose-td:border-hb-green-dark/30 prose-th:border-hb-green-dark/30 max-w-none">
+        <article class="prose prose-headings:text-hb-text prose-p:text-hb-muted prose-a:text-hb-green prose-a:no-underline hover:prose-a:underline prose-code:text-hb-green prose-code:bg-hb-green/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-hb-code-bg prose-pre:border prose-pre:border-hb-border prose-strong:text-hb-text prose-table:text-hb-muted prose-th:text-hb-text prose-td:border-hb-border prose-th:border-hb-border max-w-none">
           <slot />
         </article>
       </main>

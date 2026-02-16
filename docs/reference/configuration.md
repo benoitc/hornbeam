@@ -321,5 +321,5 @@ hornbeam:start("app:application", #{
 
 ## Next Steps
 
-- [Erlang API Reference](./erlang-api) - All Erlang modules
+- [Erlang API Reference](https://hexdocs.pm/hornbeam) - All Erlang modules (hex.pm)
 - [Python API Reference](./python-api) - All Python modules

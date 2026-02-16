@@ -32,7 +32,7 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 
 ### Reference
 - [Configuration](./reference/configuration) - All options
-- [Erlang API](./reference/erlang-api) - Erlang modules
+- [Erlang API](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)
 - [Python API](./reference/python-api) - Python modules
 
 ## Why Hornbeam?

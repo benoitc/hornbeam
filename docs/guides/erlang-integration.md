@@ -397,4 +397,4 @@ if value is None:
 
 - [ML Integration](./ml-integration) - Caching ML inference
 - [Distributed ML Example](../examples/distributed-ml) - Cluster inference
-- [Erlang API Reference](../reference/erlang-api) - All Erlang modules
+- [Erlang API Reference](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)
