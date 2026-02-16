@@ -308,11 +308,13 @@ Hornbeam achieves high throughput by leveraging Erlang's lightweight process mod
 
 Tested on Apple M4 Pro, Python 3.14, OTP 28:
 
-| Test | Requests/sec | Latency (mean) | Failed |
-|------|--------------|----------------|--------|
-| Simple (100 concurrent) | **33,754** | 2.96ms | 0 |
-| High concurrency (500 concurrent) | **30,312** | 16.5ms | 0 |
-| Large response (64KB) | **27,355** | 1.83ms | 0 |
+| Test | Hornbeam | Gunicorn (gthread) | Speedup |
+|------|----------|--------------------|---------|
+| Simple (100 concurrent) | **34,731** req/s | 3,636 req/s | **9.5x** |
+| High concurrency (500 concurrent) | **30,114** req/s | 3,677 req/s | **8.2x** |
+| Large response (64KB) | **27,697** req/s | 3,613 req/s | **7.7x** |
+
+Both servers configured with 4 workers, gunicorn with 4 threads per worker.
 
 ### Run Your Own Benchmarks
 

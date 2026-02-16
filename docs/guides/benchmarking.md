@@ -59,11 +59,34 @@ Failed requests:        0
 
 | Test | Requests/sec | Latency (mean) | Failed |
 |------|--------------|----------------|--------|
-| Simple (100 concurrent) | **33,754** | 2.96ms | 0 |
-| High concurrency (500 concurrent) | **30,312** | 16.5ms | 0 |
-| Large response (64KB) | **27,355** | 1.83ms | 0 |
+| Simple (100 concurrent) | **34,731** | 2.88ms | 0 |
+| High concurrency (500 concurrent) | **30,114** | 16.6ms | 0 |
+| Large response (64KB) | **27,697** | 1.81ms | 0 |
 
 These numbers demonstrate that hornbeam maintains consistent high throughput even under heavy concurrency, thanks to Erlang's lightweight process model.
+
+## Comparison with Gunicorn
+
+Direct comparison using identical WSGI app (4 workers, gunicorn with gthread and 4 threads):
+
+| Test | Hornbeam | Gunicorn sync | Gunicorn gthread | Speedup |
+|------|----------|---------------|------------------|---------|
+| Simple (100 concurrent) | **34,731** req/s | 3,607 req/s | 3,636 req/s | **9.5x** |
+| High concurrency (500 concurrent) | **30,114** req/s | 3,589 req/s | 3,677 req/s | **8.2x** |
+| Large response (64KB) | **27,697** req/s | 3,526 req/s | 3,613 req/s | **7.7x** |
+
+### Why the Difference?
+
+**Gunicorn limitations:**
+- **GIL contention**: Python's Global Interpreter Lock limits true parallelism
+- **Process model**: Each worker is a separate OS process with overhead
+- **Connection handling**: Blocking I/O model limits concurrent connections
+
+**Hornbeam advantages:**
+- **BEAM scheduler**: Millions of lightweight processes, no OS thread overhead
+- **No GIL impact**: Python runs on dirty schedulers, isolated from BEAM
+- **Cowboy**: Battle-tested HTTP server handling connections efficiently
+- **Zero-copy ETS**: Shared state without serialization overhead
 
 ## Python Benchmark Script
 
