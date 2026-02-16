@@ -1,0 +1,73 @@
+# Demo Example Dockerfile
+# Builds Hornbeam and runs a specific demo example
+
+FROM erlang:26
+
+ARG EXAMPLE=ml_caching
+
+# Install Python and build tools
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-venv \
+    git \
+    wget \
+    cmake \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rebar3
+RUN wget -q https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3 && mv rebar3 /usr/local/bin/
+
+WORKDIR /build
+
+# Copy Hornbeam source
+COPY rebar.config rebar.lock ./
+COPY src ./src
+COPY priv ./priv
+COPY config ./config
+
+# Build Hornbeam
+RUN rebar3 compile
+
+# Create Python venv and install dependencies
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/venv"
+
+# Copy example
+COPY examples/demo/${EXAMPLE} /app/example
+
+# Install Python dependencies
+RUN if [ -f /app/example/requirements.txt ]; then \
+        pip install --no-cache-dir -r /app/example/requirements.txt; \
+    fi
+
+WORKDIR /build
+
+# Expose port
+EXPOSE 8000
+
+# Start script that runs Hornbeam with the example
+COPY <<'STARTSCRIPT' /app/start.sh
+#!/bin/bash
+set -e
+
+cd /build
+
+# Start Hornbeam with the example app
+# bind to [::] for IPv6 (also accepts IPv4 on most systems)
+exec erl -pa _build/default/lib/*/ebin \
+    -eval "application:ensure_all_started(hornbeam), \
+           hornbeam:start(\"app:app\", #{ \
+               bind => \"[::]:8000\", \
+               worker_class => asgi, \
+               pythonpath => [\"/app/example\"] \
+           })." \
+    -noshell
+STARTSCRIPT
+
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]

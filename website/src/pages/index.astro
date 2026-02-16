@@ -22,15 +22,15 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       </div>
 
       <h1 class="text-5xl md:text-6xl font-bold mb-6">
-        <span class="text-hb-gray">When Python Meets</span>
+        <span class="text-hb-text">When Python Meets</span>
         <span class="text-hb-erlang"> Erlang</span>
       </h1>
 
-      <p class="text-xl text-hb-gray/70 mb-4 max-w-2xl mx-auto">
+      <p class="text-xl text-hb-muted mb-4 max-w-2xl mx-auto">
         Your Python code. Erlang's infrastructure.
       </p>
 
-      <p class="text-lg text-hb-gray/60 mb-8 max-w-2xl mx-auto">
+      <p class="text-lg text-hb-muted mb-8 max-w-2xl mx-auto">
         Mix the best of Python — AI, web apps — with Erlang's distribution, concurrency, resilience, and safety.
       </p>
 
@@ -38,7 +38,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
           Documentation
         </a>
-        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition flex items-center justify-center gap-2">
+        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-text px-8 py-3 rounded-lg text-lg transition flex items-center justify-center gap-2">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
           </svg>
@@ -52,12 +52,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="py-16 px-4">
     <div class="container mx-auto max-w-5xl">
       <h2 class="text-3xl font-bold mb-4 text-center">How It Works</h2>
-      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+      <p class="text-hb-muted text-center mb-12 max-w-2xl mx-auto">
         Two libraries that bring Python and Erlang together.
       </p>
 
       <!-- Diagram -->
-      <div class="bg-hb-black p-8 rounded-2xl border border-hb-green-dark/30">
+      <div class="bg-hb-bg p-8 rounded-2xl border border-hb-green-dark/30">
         <div class="grid md:grid-cols-3 gap-6 items-center">
           <!-- Python Side -->
           <div class="text-center">
@@ -67,9 +67,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
                 <path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z"/>
               </svg>
             </div>
-            <h3 class="font-bold text-hb-gray mb-2">Python</h3>
-            <p class="text-hb-gray/60 text-sm">AI, ML, Web Apps</p>
-            <p class="text-hb-gray/40 text-xs mt-2">Flask, FastAPI, Django<br/>PyTorch, TensorFlow</p>
+            <h3 class="font-bold text-hb-text mb-2">Python</h3>
+            <p class="text-hb-muted text-sm">AI, ML, Web Apps</p>
+            <p class="text-hb-muted opacity-70 text-xs mt-2">Flask, FastAPI, Django<br/>PyTorch, TensorFlow</p>
           </div>
 
           <!-- Middle - Integration -->
@@ -85,11 +85,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="space-y-4">
               <a href="/products/erlang-python" class="block bg-[#3776ab]/10 border border-[#3776ab]/30 rounded-lg p-4 hover:border-[#3776ab]/50 transition">
                 <p class="font-bold text-[#3776ab]">Erlang Python</p>
-                <p class="text-hb-gray/50 text-xs">Embed Python in Erlang</p>
+                <p class="text-hb-muted text-xs">Embed Python in Erlang</p>
               </a>
               <a href="/products/hornbeam" class="block bg-hb-green/10 border border-hb-green/30 rounded-lg p-4 hover:border-hb-green/50 transition">
                 <p class="font-bold text-hb-green-light">Hornbeam</p>
-                <p class="text-hb-gray/50 text-xs">HTTP + Application Server</p>
+                <p class="text-hb-muted text-xs">HTTP + Application Server</p>
               </a>
             </div>
           </div>
@@ -99,9 +99,311 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="w-20 h-20 mx-auto bg-hb-erlang/20 rounded-2xl flex items-center justify-center mb-4">
               <img src="/erlang-logo.svg" alt="Erlang" class="w-12 h-12" />
             </div>
-            <h3 class="font-bold text-hb-gray mb-2">Erlang / BEAM</h3>
-            <p class="text-hb-gray/60 text-sm">Scale & Resilience</p>
-            <p class="text-hb-gray/40 text-xs mt-2">Distribution, Concurrency<br/>Fault Tolerance, Hot Reload</p>
+            <h3 class="font-bold text-hb-text mb-2">Erlang / BEAM</h3>
+            <p class="text-hb-muted text-sm">Scale & Resilience</p>
+            <p class="text-hb-muted opacity-70 text-xs mt-2">Distribution, Concurrency<br/>Fault Tolerance, Hot Reload</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live Demo Section -->
+  <section class="py-16 px-4 bg-hb-bg-secondary/50">
+    <div class="container mx-auto max-w-5xl">
+      <h2 class="text-3xl font-bold mb-4 text-center">See It In Action</h2>
+      <p class="text-hb-muted text-center mb-10 max-w-2xl mx-auto">
+        Python code. Erlang infrastructure. Zero complexity.
+      </p>
+
+      <!-- Tab Navigation -->
+      <div class="flex justify-center mb-6">
+        <div class="inline-flex bg-hb-bg rounded-lg p-1 border border-hb-border">
+          <button
+            data-tab="ml-caching"
+            class="demo-tab active px-4 py-2 rounded-md text-sm font-medium transition-all"
+          >
+            ML Caching
+          </button>
+          <button
+            data-tab="distributed-rpc"
+            class="demo-tab px-4 py-2 rounded-md text-sm font-medium transition-all"
+          >
+            Distributed RPC
+          </button>
+          <button
+            data-tab="realtime"
+            class="demo-tab px-4 py-2 rounded-md text-sm font-medium transition-all"
+          >
+            Real-time Chat
+          </button>
+        </div>
+      </div>
+
+      <!-- Demo Panels -->
+      <div class="bg-hb-bg rounded-2xl border border-hb-border overflow-hidden">
+        <!-- ML Caching Panel -->
+        <div id="panel-ml-caching" class="demo-panel">
+          <div class="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-hb-border">
+            <!-- Python Code -->
+            <div class="p-6">
+              <div class="flex items-center gap-2 mb-4">
+                <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+                <span class="ml-2 text-xs text-hb-muted">app.py</span>
+              </div>
+              <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">fastapi</span> <span class="text-[#c586c0]">import</span> FastAPI
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_erlang</span> <span class="text-[#c586c0]">import</span> state
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">sentence_transformers</span> <span class="text-[#c586c0]">import</span> SentenceTransformer
+
+app = FastAPI()
+model = SentenceTransformer(<span class="text-[#ce9178]">'all-MiniLM-L6-v2'</span>)
+
+<span class="text-[#dcdcaa]">@app.post</span>(<span class="text-[#ce9178]">"/embed"</span>)
+<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">embed</span>(text: <span class="text-[#4ec9b0]">str</span>):
+    <span class="text-[#6a9955]"># Check Erlang ETS cache first</span>
+    cached = state.get(<span class="text-[#ce9178]">"embed"</span>, text)
+    <span class="text-[#c586c0]">if</span> cached:
+        <span class="text-[#c586c0]">return</span> {'{'}<span class="text-[#ce9178]">"embedding"</span>: cached, <span class="text-[#ce9178]">"cached"</span>: <span class="text-[#569cd6]">True</span>{'}'}
+
+    <span class="text-[#6a9955]"># Compute and cache in ETS</span>
+    embedding = model.encode(text).tolist()
+    state.set(<span class="text-[#ce9178]">"embed"</span>, text, embedding, ttl=<span class="text-[#b5cea8]">3600</span>)
+    <span class="text-[#c586c0]">return</span> {'{'}<span class="text-[#ce9178]">"embedding"</span>: embedding{'}'}</code></pre>
+            </div>
+
+            <!-- Erlang Benefits -->
+            <div class="p-6 bg-hb-green-dark/5">
+              <h4 class="text-sm font-semibold text-hb-green-light mb-4 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                What Erlang Handles
+              </h4>
+              <ul class="space-y-3 text-sm">
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">ETS Cache</span>
+                    <p class="text-hb-muted text-xs mt-0.5">In-memory, ~0.1ms lookups, survives Python crashes</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Auto-replication</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Cache syncs across cluster nodes automatically</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">TTL Management</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Erlang cleans up expired entries, not Python</p>
+                  </div>
+                </li>
+              </ul>
+
+              <div class="mt-6 p-4 bg-hb-bg rounded-lg border border-hb-border">
+                <div class="flex items-center justify-between text-xs mb-2">
+                  <span class="text-hb-muted">Cache hit rate</span>
+                  <span class="text-hb-green-light font-mono">94.2%</span>
+                </div>
+                <div class="w-full bg-hb-green-dark/30 rounded-full h-2">
+                  <div class="bg-hb-green-light h-2 rounded-full" style="width: 94.2%"></div>
+                </div>
+                <p class="text-xs text-hb-muted mt-3">
+                  <span class="text-hb-amber font-medium">45ms</span> inference → <span class="text-hb-green-light font-medium">0.1ms</span> cached
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="px-6 py-3 border-t border-hb-border bg-hb-bg-secondary/30 flex justify-end">
+            <a href="https://github.com/benoitc/hornbeam/tree/main/examples/demo/ml_caching" target="_blank" class="text-xs text-hb-green-light hover:underline flex items-center gap-1">
+              View full example
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- Distributed RPC Panel -->
+        <div id="panel-distributed-rpc" class="demo-panel hidden">
+          <div class="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-hb-border">
+            <!-- Python Code -->
+            <div class="p-6">
+              <div class="flex items-center gap-2 mb-4">
+                <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+                <span class="ml-2 text-xs text-hb-muted">workers.py</span>
+              </div>
+              <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_erlang</span> <span class="text-[#c586c0]">import</span> rpc, nodes
+
+<span class="text-[#6a9955]"># Discover GPU nodes in the cluster</span>
+gpu_nodes = nodes.find(capability=<span class="text-[#ce9178]">"gpu"</span>)
+
+<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">distributed_inference</span>(prompts: <span class="text-[#4ec9b0]">list</span>):
+    <span class="text-[#6a9955]"># Fan out to all GPU nodes</span>
+    futures = []
+    <span class="text-[#c586c0]">for</span> i, prompt <span class="text-[#c586c0]">in</span> <span class="text-[#dcdcaa]">enumerate</span>(prompts):
+        node = gpu_nodes[i % <span class="text-[#dcdcaa]">len</span>(gpu_nodes)]
+        future = rpc.call(
+            node, <span class="text-[#ce9178]">"inference"</span>, <span class="text-[#ce9178]">"generate"</span>,
+            [prompt], timeout=<span class="text-[#b5cea8]">30000</span>
+        )
+        futures.append(future)
+
+    <span class="text-[#6a9955]"># Gather results from all nodes</span>
+    <span class="text-[#c586c0]">return await</span> rpc.gather(futures)</code></pre>
+            </div>
+
+            <!-- Erlang Benefits -->
+            <div class="p-6 bg-hb-green-dark/5">
+              <h4 class="text-sm font-semibold text-hb-green-light mb-4 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9" />
+                </svg>
+                What Erlang Handles
+              </h4>
+              <ul class="space-y-3 text-sm">
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Node Discovery</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Automatic cluster membership via Erlang distribution</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Load Balancing</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Work distributed across available nodes</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Failover</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Node failures detected, work redistributed</p>
+                  </div>
+                </li>
+              </ul>
+
+              <div class="mt-6 p-4 bg-hb-bg rounded-lg border border-hb-border">
+                <div class="flex items-center gap-4 text-xs">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-hb-green-light animate-pulse"></span>
+                    <span class="text-hb-muted">node1@gpu</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-hb-green-light animate-pulse"></span>
+                    <span class="text-hb-muted">node2@gpu</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-hb-green-light animate-pulse"></span>
+                    <span class="text-hb-muted">node3@gpu</span>
+                  </div>
+                </div>
+                <p class="text-xs text-hb-muted mt-3">
+                  <span class="text-hb-text font-medium">No Redis.</span> No RabbitMQ. Just Erlang.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="px-6 py-3 border-t border-hb-border bg-hb-bg-secondary/30 flex justify-end">
+            <a href="https://github.com/benoitc/hornbeam/tree/main/examples/demo/distributed_rpc" target="_blank" class="text-xs text-hb-green-light hover:underline flex items-center gap-1">
+              View full example
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- Real-time Panel -->
+        <div id="panel-realtime" class="demo-panel hidden">
+          <div class="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-hb-border">
+            <!-- Python Code -->
+            <div class="p-6">
+              <div class="flex items-center gap-2 mb-4">
+                <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+                <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+                <span class="ml-2 text-xs text-hb-muted">chat.py</span>
+              </div>
+              <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">fastapi</span> <span class="text-[#c586c0]">import</span> WebSocket
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_erlang</span> <span class="text-[#c586c0]">import</span> pubsub
+
+<span class="text-[#dcdcaa]">@app.websocket</span>(<span class="text-[#ce9178]">"/chat/{'{'}room{'}'}"</span>)
+<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">chat</span>(ws: WebSocket, room: <span class="text-[#4ec9b0]">str</span>):
+    <span class="text-[#c586c0]">await</span> ws.accept()
+
+    <span class="text-[#6a9955]"># Subscribe via Erlang pg groups</span>
+    <span class="text-[#c586c0]">async for</span> msg <span class="text-[#c586c0]">in</span> pubsub.subscribe(room):
+        <span class="text-[#c586c0]">await</span> ws.send_json(msg)
+
+<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">broadcast</span>(room: <span class="text-[#4ec9b0]">str</span>, message: <span class="text-[#4ec9b0]">dict</span>):
+    <span class="text-[#6a9955]"># Publish to all nodes in cluster</span>
+    pubsub.publish(room, message)</code></pre>
+            </div>
+
+            <!-- Erlang Benefits -->
+            <div class="p-6 bg-hb-green-dark/5">
+              <h4 class="text-sm font-semibold text-hb-green-light mb-4 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                What Erlang Handles
+              </h4>
+              <ul class="space-y-3 text-sm">
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">pg Process Groups</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Built-in pub/sub, no external broker needed</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Cluster-wide Broadcast</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Messages reach all nodes automatically</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
+                    <span class="text-hb-text font-medium">Millions of Connections</span>
+                    <p class="text-hb-muted text-xs mt-0.5">BEAM handles WebSocket connections efficiently</p>
+                  </div>
+                </li>
+              </ul>
+
+              <div class="mt-6 p-4 bg-hb-bg rounded-lg border border-hb-border">
+                <div class="space-y-2">
+                  <div class="flex items-center gap-2 text-xs">
+                    <span class="text-hb-green-light">→</span>
+                    <span class="text-hb-muted">alice joined #general</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-xs">
+                    <span class="text-hb-green-light">→</span>
+                    <span class="text-hb-muted">bob: Hello from node2!</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-xs animate-pulse">
+                    <span class="text-hb-amber">→</span>
+                    <span class="text-hb-muted">typing...</span>
+                  </div>
+                </div>
+                <p class="text-xs text-hb-muted mt-3 pt-3 border-t border-hb-border">
+                  <span class="text-hb-green-light font-mono">2.1M</span> concurrent connections per node
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="px-6 py-3 border-t border-hb-border bg-hb-bg-secondary/30 flex justify-end">
+            <a href="https://github.com/benoitc/hornbeam/tree/main/examples/demo/realtime_chat" target="_blank" class="text-xs text-hb-green-light hover:underline flex items-center gap-1">
+              View full example
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
           </div>
         </div>
       </div>
@@ -109,16 +411,16 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   </section>
 
   <!-- Product Cards Section -->
-  <section class="py-16 px-4 bg-hb-black/50">
+  <section class="py-16 px-4 bg-hb-bg-secondary/50">
     <div class="container mx-auto max-w-5xl">
       <h2 class="text-3xl font-bold mb-4 text-center">Two Libraries, One Platform</h2>
-      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+      <p class="text-hb-muted text-center mb-12 max-w-2xl mx-auto">
         Use them together or separately.
       </p>
 
       <div class="grid md:grid-cols-2 gap-8">
         <!-- Erlang Python Card -->
-        <div class="bg-hb-black p-8 rounded-xl border border-[#3776ab]/30 hover:border-[#3776ab]/50 transition">
+        <div class="bg-hb-bg p-8 rounded-xl border border-[#3776ab]/30 hover:border-[#3776ab]/50 transition">
           <div class="w-14 h-14 bg-[#3776ab]/20 rounded-xl flex items-center justify-center mb-6">
             <svg class="w-8 h-8" viewBox="0 0 256 255" fill="#3776ab">
               <path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"/>
@@ -128,11 +430,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <h3 class="text-2xl font-bold text-[#3776ab]">Erlang Python</h3>
             <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-0.5 rounded font-medium">Apache 2.0</span>
           </div>
-          <p class="text-hb-gray/50 text-sm mb-4">Python Integration Library</p>
-          <p class="text-hb-gray/70 mb-6">
+          <p class="text-hb-muted text-sm mb-4">Python Integration Library</p>
+          <p class="text-hb-muted mb-6">
             Embed Python in your Erlang applications. Call Python functions, load modules, and share data seamlessly between both runtimes.
           </p>
-          <ul class="space-y-2 text-sm text-hb-gray/70 mb-6">
+          <ul class="space-y-2 text-sm text-hb-muted mb-6">
             <li class="flex items-center gap-2">
               <span class="text-[#3776ab]">+</span>
               <span>Call any Python function from Erlang</span>
@@ -156,7 +458,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         </div>
 
         <!-- Hornbeam Card -->
-        <div class="bg-hb-black p-8 rounded-xl border border-hb-green/30 hover:border-hb-green/50 transition">
+        <div class="bg-hb-bg p-8 rounded-xl border border-hb-green/30 hover:border-hb-green/50 transition">
           <div class="w-14 h-14 bg-hb-green/20 rounded-xl flex items-center justify-center mb-6">
             <img src="/favicon.svg" alt="Hornbeam" class="w-8 h-8" />
           </div>
@@ -164,11 +466,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <h3 class="text-2xl font-bold text-hb-green-light">Hornbeam</h3>
             <span class="bg-hb-green-light/20 text-hb-green-light text-xs px-2 py-0.5 rounded font-medium">Apache 2.0</span>
           </div>
-          <p class="text-hb-gray/50 text-sm mb-4">HTTP & Application Server</p>
-          <p class="text-hb-gray/70 mb-6">
+          <p class="text-hb-muted text-sm mb-4">HTTP & Application Server</p>
+          <p class="text-hb-muted mb-6">
             WSGI/ASGI HTTP server with shared state, distributed RPC, pub/sub, and ML caching. Full application server for Python on Erlang.
           </p>
-          <ul class="space-y-2 text-sm text-hb-gray/70 mb-6">
+          <ul class="space-y-2 text-sm text-hb-muted mb-6">
             <li class="flex items-center gap-2">
               <span class="text-hb-green-light">+</span>
               <span>WSGI & ASGI support</span>
@@ -198,49 +500,49 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="py-16 px-4">
     <div class="container mx-auto max-w-5xl">
       <h2 class="text-3xl font-bold mb-4 text-center">Why Python + Erlang?</h2>
-      <p class="text-hb-gray/60 text-center mb-12 max-w-2xl mx-auto">
+      <p class="text-hb-muted text-center mb-12 max-w-2xl mx-auto">
         Each language excels at different things. Use both.
       </p>
 
       <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+        <div class="bg-hb-bg p-6 rounded-xl border border-hb-green-dark/30 text-center">
           <div class="w-12 h-12 bg-hb-amber/20 rounded-lg mx-auto flex items-center justify-center mb-4">
             <svg class="w-6 h-6 text-hb-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
             </svg>
           </div>
-          <h3 class="font-semibold text-hb-gray mb-2">AI Ready</h3>
-          <p class="text-hb-gray/60 text-sm">Use Python's ML ecosystem with Erlang's scale.</p>
+          <h3 class="font-semibold text-hb-text mb-2">AI Ready</h3>
+          <p class="text-hb-muted text-sm">Use Python's ML ecosystem with Erlang's scale.</p>
         </div>
 
-        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+        <div class="bg-hb-bg p-6 rounded-xl border border-hb-green-dark/30 text-center">
           <div class="w-12 h-12 bg-hb-erlang/20 rounded-lg mx-auto flex items-center justify-center mb-4">
             <svg class="w-6 h-6 text-hb-erlang" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path>
             </svg>
           </div>
-          <h3 class="font-semibold text-hb-gray mb-2">Distributed</h3>
-          <p class="text-hb-gray/60 text-sm">Built-in clustering. No Redis or RabbitMQ needed.</p>
+          <h3 class="font-semibold text-hb-text mb-2">Distributed</h3>
+          <p class="text-hb-muted text-sm">Built-in clustering. No Redis or RabbitMQ needed.</p>
         </div>
 
-        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+        <div class="bg-hb-bg p-6 rounded-xl border border-hb-green-dark/30 text-center">
           <div class="w-12 h-12 bg-hb-green/20 rounded-lg mx-auto flex items-center justify-center mb-4">
             <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
             </svg>
           </div>
-          <h3 class="font-semibold text-hb-gray mb-2">Resilient</h3>
-          <p class="text-hb-gray/60 text-sm">Let it crash. Supervisors restart failed processes.</p>
+          <h3 class="font-semibold text-hb-text mb-2">Resilient</h3>
+          <p class="text-hb-muted text-sm">Let it crash. Supervisors restart failed processes.</p>
         </div>
 
-        <div class="bg-hb-black p-6 rounded-xl border border-hb-green-dark/30 text-center">
+        <div class="bg-hb-bg p-6 rounded-xl border border-hb-green-dark/30 text-center">
           <div class="w-12 h-12 bg-hb-green/20 rounded-lg mx-auto flex items-center justify-center mb-4">
             <svg class="w-6 h-6 text-hb-green-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
             </svg>
           </div>
-          <h3 class="font-semibold text-hb-gray mb-2">No GIL</h3>
-          <p class="text-hb-gray/60 text-sm">Erlang handles concurrency. Python stays simple.</p>
+          <h3 class="font-semibold text-hb-text mb-2">No GIL</h3>
+          <p class="text-hb-muted text-sm">Erlang handles concurrency. Python stays simple.</p>
         </div>
       </div>
     </div>
@@ -250,17 +552,68 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="py-20 px-4 bg-gradient-to-t from-hb-black to-hb-green-dark/10">
     <div class="container mx-auto max-w-4xl text-center">
       <h2 class="text-3xl font-bold mb-4">Ready to Get Started?</h2>
-      <p class="text-hb-gray/60 mb-8">
+      <p class="text-hb-muted mb-8">
         Check out the documentation or explore the source code.
       </p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
         <a href="/docs" class="bg-hb-green hover:bg-hb-green-dark text-white px-8 py-3 rounded-lg text-lg font-semibold transition">
           Read the Docs
         </a>
-        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-gray px-8 py-3 rounded-lg text-lg transition">
+        <a href="https://github.com/benoitc/hornbeam" class="border border-hb-green-dark/50 hover:border-hb-green-light text-hb-text px-8 py-3 rounded-lg text-lg transition">
           View on GitHub
         </a>
       </div>
     </div>
   </section>
+  <style>
+    .demo-tab {
+      color: var(--hb-muted);
+    }
+    .demo-tab:hover {
+      color: var(--hb-text);
+    }
+    .demo-tab.active {
+      background-color: #4a7c50;
+      color: white;
+    }
+    .demo-panel {
+      opacity: 1;
+      transition: opacity 0.2s ease-in-out;
+    }
+    .demo-panel.hidden {
+      display: none;
+    }
+    .demo-panel pre {
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+  </style>
+
+  <script is:inline>
+    document.addEventListener('DOMContentLoaded', () => {
+      const tabs = document.querySelectorAll('.demo-tab');
+      const panels = document.querySelectorAll('.demo-panel');
+
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          const targetId = tab.dataset.tab;
+
+          // Update tab states
+          tabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+
+          // Update panel visibility
+          panels.forEach(panel => {
+            if (panel.id === `panel-${targetId}`) {
+              panel.classList.remove('hidden');
+            } else {
+              panel.classList.add('hidden');
+            }
+          });
+        });
+      });
+    });
+  </script>
 </BaseLayout>

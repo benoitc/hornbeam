@@ -1,0 +1,61 @@
+# Hornbeam Demo Examples - Docker Compose
+#
+# Run all three demo examples:
+#   docker-compose up
+#
+# Run individual examples:
+#   docker-compose up ml-caching
+#   docker-compose up distributed-rpc
+#   docker-compose up realtime-chat
+#
+# Build:
+#   docker-compose build
+
+services:
+  # ML Caching Demo - FastAPI + ETS caching
+  ml-caching:
+    build:
+      context: ../..
+      dockerfile: examples/demo/Dockerfile.demo
+      args:
+        EXAMPLE: ml_caching
+    ports:
+      - "9001:8000"
+    environment:
+      - HORNBEAM_APP=app:app
+      - HORNBEAM_WORKER_CLASS=asgi
+      - PYTHONPATH=/app/example
+    volumes:
+      - ./ml_caching:/app/example:ro
+
+  # Distributed RPC Demo - Cluster simulation
+  distributed-rpc:
+    build:
+      context: ../..
+      dockerfile: examples/demo/Dockerfile.demo
+      args:
+        EXAMPLE: distributed_rpc
+    ports:
+      - "9002:8000"
+    environment:
+      - HORNBEAM_APP=app:app
+      - HORNBEAM_WORKER_CLASS=asgi
+      - PYTHONPATH=/app/example
+    volumes:
+      - ./distributed_rpc:/app/example:ro
+
+  # Real-time Chat Demo - WebSocket + Pub/Sub
+  realtime-chat:
+    build:
+      context: ../..
+      dockerfile: examples/demo/Dockerfile.demo
+      args:
+        EXAMPLE: realtime_chat
+    ports:
+      - "9003:8000"
+    environment:
+      - HORNBEAM_APP=app:app
+      - HORNBEAM_WORKER_CLASS=asgi
+      - PYTHONPATH=/app/example
+    volumes:
+      - ./realtime_chat:/app/example:ro

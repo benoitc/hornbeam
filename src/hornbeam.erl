@@ -276,19 +276,36 @@ start_listener(Config) ->
 parse_bind(Bind) when is_list(Bind) ->
     parse_bind(list_to_binary(Bind));
 parse_bind(Bind) when is_binary(Bind) ->
-    case binary:split(Bind, <<":">>) of
-        [Ip, PortBin] ->
-            Port = binary_to_integer(PortBin),
-            IpTuple = parse_ip(Ip),
-            {IpTuple, Port};
-        [PortBin] ->
-            Port = binary_to_integer(PortBin),
-            {{0, 0, 0, 0}, Port}
+    %% Handle IPv6 with brackets: [::]:8000, [::1]:8000
+    case Bind of
+        <<"[", Rest/binary>> ->
+            case binary:split(Rest, <<"]:">>) of
+                [Ipv6, PortBin] ->
+                    Port = binary_to_integer(PortBin),
+                    IpTuple = parse_ip(Ipv6),
+                    {IpTuple, Port};
+                _ ->
+                    %% Invalid format, default to IPv4 any
+                    {{0, 0, 0, 0}, 8000}
+            end;
+        _ ->
+            %% IPv4 format: ip:port or just port
+            case binary:split(Bind, <<":">>) of
+                [Ip, PortBin] ->
+                    Port = binary_to_integer(PortBin),
+                    IpTuple = parse_ip(Ip),
+                    {IpTuple, Port};
+                [PortBin] ->
+                    Port = binary_to_integer(PortBin),
+                    {{0, 0, 0, 0}, Port}
+            end
     end.
 
 parse_ip(<<"0.0.0.0">>) -> {0, 0, 0, 0};
 parse_ip(<<"127.0.0.1">>) -> {127, 0, 0, 1};
 parse_ip(<<"localhost">>) -> {127, 0, 0, 1};
+parse_ip(<<"::">>) -> {0, 0, 0, 0, 0, 0, 0, 0};
+parse_ip(<<"::1">>) -> {0, 0, 0, 0, 0, 0, 0, 1};
 parse_ip(Ip) ->
     case inet:parse_address(binary_to_list(Ip)) of
         {ok, IpTuple} -> IpTuple;
