@@ -52,6 +52,9 @@ class WebSocketSession:
         self.receive_queue: asyncio.Queue = None
         self.send_queue: deque = deque()
 
+        # Broadcast queue - messages to be published via Erlang pubsub
+        self.broadcast_queue: deque = deque()
+
         # State
         self.accepted = False
         self.closed = False
@@ -101,7 +104,19 @@ class WebSocketSession:
         """Collect all pending messages to send to Erlang."""
         messages = list(self.send_queue)
         self.send_queue.clear()
+        # Include any broadcast requests
+        for broadcast in self.broadcast_queue:
+            messages.append({
+                'type': 'hornbeam.broadcast',
+                'topic': broadcast['topic'],
+                'message': broadcast['message']
+            })
+        self.broadcast_queue.clear()
         return messages
+
+    def add_broadcast(self, topic: str, message: Any) -> None:
+        """Queue a broadcast to be sent via Erlang pubsub."""
+        self.broadcast_queue.append({'topic': topic, 'message': message})
 
 
 def _get_or_create_loop():
@@ -114,6 +129,12 @@ def _get_or_create_loop():
 
 async def _run_app_until_response(session: WebSocketSession, event: dict) -> List[dict]:
     """Run the ASGI app until it produces a response."""
+    # Import SuspensionRequired to avoid catching it
+    try:
+        from erlang import SuspensionRequired
+    except ImportError:
+        SuspensionRequired = None
+
     # Add event to receive queue
     await session.receive_queue.put(event)
 
@@ -136,13 +157,19 @@ async def _run_app_until_response(session: WebSocketSession, event: dict) -> Lis
                 # Check if task raised an exception
                 try:
                     session.task.result()
-                except Exception as e:
+                except BaseException as e:
+                    # Re-raise SuspensionRequired
+                    if SuspensionRequired and isinstance(e, SuspensionRequired):
+                        raise
                     return [{'type': 'websocket.close', 'code': 1011,
                             'reason': str(e)[:125]}]
                 break
             await asyncio.sleep(0.001)
 
-    except Exception as e:
+    except BaseException as e:
+        # Re-raise SuspensionRequired
+        if SuspensionRequired and isinstance(e, SuspensionRequired):
+            raise
         return [{'type': 'websocket.close', 'code': 1011, 'reason': str(e)[:125]}]
 
     return session.collect_messages()
@@ -164,6 +191,9 @@ def start_session(app_module: str, app_callable: str,
     Returns:
         Initial response message (websocket.accept or websocket.close)
     """
+    # Add session_id to scope so the app can access it for pubsub
+    scope['session_id'] = session_id
+
     # Create session
     session = WebSocketSession(scope, app_module, app_callable)
 
@@ -179,6 +209,12 @@ def start_session(app_module: str, app_callable: str,
     # Store session
     _sessions[session_id] = session
 
+    # Import SuspensionRequired to avoid catching it
+    try:
+        from erlang import SuspensionRequired
+    except ImportError:
+        SuspensionRequired = None
+
     # Send connect event and get response
     connect_event = {'type': 'websocket.connect'}
 
@@ -186,7 +222,10 @@ def start_session(app_module: str, app_callable: str,
         responses = loop.run_until_complete(
             _run_app_until_response(session, connect_event)
         )
-    except Exception as e:
+    except BaseException as e:
+        # Re-raise SuspensionRequired
+        if SuspensionRequired and isinstance(e, SuspensionRequired):
+            raise
         # Clean up on error
         del _sessions[session_id]
         loop.close()
@@ -234,6 +273,12 @@ def receive_message(app_module: str, app_callable: str,
             data = data.encode('utf-8')
         event = {'type': 'websocket.receive', 'bytes': data}
 
+    # Import SuspensionRequired to avoid catching it
+    try:
+        from erlang import SuspensionRequired
+    except ImportError:
+        SuspensionRequired = None
+
     # Run app with this event
     try:
         asyncio.set_event_loop(session.loop)
@@ -241,7 +286,10 @@ def receive_message(app_module: str, app_callable: str,
             _run_app_until_response(session, event)
         )
         return responses if responses else []
-    except Exception as e:
+    except BaseException as e:
+        # Re-raise SuspensionRequired
+        if SuspensionRequired and isinstance(e, SuspensionRequired):
+            raise
         return [{'type': 'websocket.close', 'code': 1011, 'reason': str(e)[:125]}]
 
 
@@ -290,3 +338,28 @@ def get_session_count() -> int:
 def get_session_ids() -> List[str]:
     """Get all active session IDs."""
     return list(_sessions.keys())
+
+
+# =============================================================================
+# Broadcast API - queue messages for Erlang to publish after py:call returns
+# =============================================================================
+
+def broadcast(session_id: str, topic: str, message: Any) -> bool:
+    """Queue a message to be broadcast via Erlang pubsub.
+
+    This function queues the message to be published after the current
+    py:call returns to Erlang. This avoids nested Erlang calls.
+
+    Args:
+        session_id: The WebSocket session ID
+        topic: Topic name to publish to
+        message: Message to publish (will be JSON encoded and sent as text frame)
+
+    Returns:
+        True if queued successfully, False if session not found
+    """
+    session = _sessions.get(session_id)
+    if session is None:
+        return False
+    session.add_broadcast(topic, message)
+    return True

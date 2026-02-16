@@ -1,7 +1,7 @@
 # Demo Example Dockerfile
 # Builds Hornbeam and runs a specific demo example
 
-FROM erlang:26
+FROM erlang:28
 
 ARG EXAMPLE=ml_caching
 

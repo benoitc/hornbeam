@@ -31,48 +31,31 @@ For cluster setup:
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-import json
-import asyncio
 from typing import Dict, Set
 from contextlib import asynccontextmanager
 
-# Import hornbeam Erlang integration (with fallback)
+# Try to import hornbeam broadcast (works when running under Hornbeam)
+_state: Dict[str, int] = {}
+USING_HORNBEAM = False
+
 try:
-    from hornbeam_erlang import pubsub_subscribe, pubsub_publish, state_incr, state_get
-    USING_ERLANG = True
+    from hornbeam_websocket_runner import broadcast as hornbeam_broadcast
+    USING_HORNBEAM = True
 except ImportError:
-    USING_ERLANG = False
-    _state = {}
-    _subscribers: Dict[str, Set[asyncio.Queue]] = {}
-
-    async def pubsub_subscribe(topic):
-        """Fallback: local pub/sub for standalone testing."""
-        if topic not in _subscribers:
-            _subscribers[topic] = set()
-        queue = asyncio.Queue()
-        _subscribers[topic].add(queue)
-        try:
-            while True:
-                msg = await queue.get()
-                yield msg
-        finally:
-            _subscribers[topic].discard(queue)
-
-    def pubsub_publish(topic, message):
-        """Fallback: local pub/sub for standalone testing."""
-        if topic in _subscribers:
-            for queue in _subscribers[topic]:
-                queue.put_nowait(message)
-
-    def state_incr(key, delta=1):
-        _state[key] = _state.get(key, 0) + delta
-        return _state[key]
-
-    def state_get(key):
-        return _state.get(key)
+    # Fallback for standalone testing
+    def hornbeam_broadcast(session_id, topic, message):
+        return False
 
 
-# Track connections per room (for local broadcasting fallback)
+def state_incr(key, delta=1):
+    _state[key] = _state.get(key, 0) + delta
+    return _state[key]
+
+def state_get(key):
+    return _state.get(key)
+
+
+# Track connections per room (for local broadcasting fallback when not using Erlang)
 room_connections: Dict[str, Set[WebSocket]] = {}
 
 
@@ -181,31 +164,32 @@ async def home():
 
 @app.websocket("/chat/{room}")
 async def chat(websocket: WebSocket, room: str):
-    """WebSocket chat endpoint with Erlang pub/sub."""
+    """WebSocket chat endpoint with Erlang pubsub.
+
+    Erlang auto-subscribes this WebSocket to the topic based on URL path:
+    /chat/general -> topic "chat:general"
+
+    We use hornbeam_broadcast() to queue messages for Erlang to publish
+    after the py:call returns (avoiding nested Erlang calls).
+    """
     await websocket.accept()
     username = "Anonymous"
+    topic = f"chat:{room}"
+
+    # Get session_id from ASGI scope (set by hornbeam)
+    session_id = websocket.scope.get("session_id")
+    print(f"DEBUG: session_id={session_id}, USING_HORNBEAM={USING_HORNBEAM}", flush=True)
 
     # Track connection
     state_incr(f"room:{room}:connections")
     state_incr("ws_total_connections")
 
+    # For local fallback when not running under Hornbeam
     if room not in room_connections:
         room_connections[room] = set()
     room_connections[room].add(websocket)
 
     try:
-        # If using Erlang, subscribe to pg group for this room
-        if USING_ERLANG:
-            # Start subscription task
-            async def handle_pubsub():
-                async for msg in pubsub_subscribe(f"chat:{room}"):
-                    try:
-                        await websocket.send_json(msg)
-                    except:
-                        break
-
-            pubsub_task = asyncio.create_task(handle_pubsub())
-
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type", "message")
@@ -231,37 +215,33 @@ async def chat(websocket: WebSocket, room: str):
                 continue
 
             # Broadcast to all clients
-            if USING_ERLANG:
-                # Publish to Erlang pg - reaches all nodes in cluster
-                pubsub_publish(f"chat:{room}", broadcast_msg)
+            if session_id and USING_HORNBEAM:
+                # Queue for Erlang pubsub - Erlang publishes after py:call returns
+                hornbeam_broadcast(session_id, topic, broadcast_msg)
             else:
                 # Local broadcast for standalone testing
-                for conn in room_connections.get(room, set()):
+                for conn in list(room_connections.get(room, set())):
                     try:
                         await conn.send_json(broadcast_msg)
                     except:
-                        pass
+                        room_connections.get(room, set()).discard(conn)
 
     except WebSocketDisconnect:
         pass
     finally:
-        # Cleanup
         room_connections.get(room, set()).discard(websocket)
         state_incr(f"room:{room}:connections", -1)
 
-        if USING_ERLANG:
-            pubsub_task.cancel()
-
-        # Notify room
+        # Notify remaining users
         leave_msg = {
             "type": "system",
             "text": f"{username} left the room",
             "users": len(room_connections.get(room, set()))
         }
-        if USING_ERLANG:
-            pubsub_publish(f"chat:{room}", leave_msg)
+        if session_id and USING_HORNBEAM:
+            hornbeam_broadcast(session_id, topic, leave_msg)
         else:
-            for conn in room_connections.get(room, set()):
+            for conn in list(room_connections.get(room, set())):
                 try:
                     await conn.send_json(leave_msg)
                 except:
@@ -274,5 +254,5 @@ async def stats():
     return {
         "total_connections": state_get("ws_total_connections") or 0,
         "total_messages": state_get("ws_messages") or 0,
-        "using_erlang": USING_ERLANG
+        "using_hornbeam": USING_HORNBEAM
     }

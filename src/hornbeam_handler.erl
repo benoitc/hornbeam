@@ -19,7 +19,11 @@
 %%% for ASGI applications.
 -module(hornbeam_handler).
 
+-behaviour(cowboy_websocket).
+
 -export([init/2]).
+%% WebSocket callbacks (delegate to hornbeam_websocket)
+-export([websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
 init(Req, State) ->
     WorkerClass = maps:get(worker_class, State, wsgi),
@@ -240,3 +244,19 @@ to_lower_binary(V) when is_binary(V) -> string:lowercase(V);
 to_lower_binary(V) when is_list(V) -> string:lowercase(list_to_binary(V));
 to_lower_binary(V) when is_atom(V) -> string:lowercase(atom_to_binary(V, utf8));
 to_lower_binary(V) -> string:lowercase(to_binary(V)).
+
+%%% ============================================================================
+%%% WebSocket callbacks (delegate to hornbeam_websocket)
+%%% ============================================================================
+
+websocket_init(State) ->
+    hornbeam_websocket:websocket_init(State).
+
+websocket_handle(Frame, State) ->
+    hornbeam_websocket:websocket_handle(Frame, State).
+
+websocket_info(Info, State) ->
+    hornbeam_websocket:websocket_info(Info, State).
+
+terminate(Reason, Req, State) ->
+    hornbeam_websocket:terminate(Reason, Req, State).

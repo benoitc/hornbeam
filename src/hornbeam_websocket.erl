@@ -43,13 +43,23 @@
     terminate/3
 ]).
 
+%% Pubsub API for Python
+-export([
+    subscribe/2,
+    unsubscribe/2,
+    publish/2,
+    register_session/2,
+    unregister_session/1
+]).
+
 -record(state, {
     scope :: map(),
     app_module :: binary(),
     app_callable :: binary(),
     session_id :: binary(),
     accepted = false :: boolean(),
-    subprotocol :: binary() | undefined
+    subprotocol :: binary() | undefined,
+    subscriptions = [] :: [term()]
 }).
 
 %% @doc Initialize WebSocket connection.
@@ -91,14 +101,32 @@ init(Req, _Opts) ->
 %% Sends websocket.connect event to Python app.
 websocket_init(#state{scope = Scope, app_module = AppModule,
                       app_callable = AppCallable, session_id = SessionId} = State) ->
+    %% Register session
+    register_session(SessionId, self()),
+
+    %% Auto-subscribe to pubsub topic based on path (e.g., /chat/general -> chat:general)
+    Path = maps:get(<<"path">>, Scope, <<>>),
+    Topic = path_to_topic(Path),
+    case Topic of
+        undefined -> ok;
+        _ -> hornbeam_pubsub:subscribe(Topic, self())
+    end,
+
     %% Start Python WebSocket session
     case start_websocket_session(AppModule, AppCallable, Scope, SessionId) of
         {ok, Response} ->
-            handle_connect_response(Response, State);
+            handle_connect_response(Response, State#state{subscriptions = [Topic]});
         {error, Reason} ->
+            unregister_session(SessionId),
             error_logger:error_msg("WebSocket init error: ~p~n", [Reason]),
             {stop, State}
     end.
+
+%% Convert URL path to pubsub topic: /chat/general -> <<"chat:general">>
+path_to_topic(<<"/", Rest/binary>>) ->
+    binary:replace(Rest, <<"/">>, <<":">>, [global]);
+path_to_topic(_) ->
+    undefined.
 
 %% @doc Handle incoming WebSocket frames.
 websocket_handle({text, Data}, State) ->
@@ -122,6 +150,12 @@ websocket_info({websocket_close, Code, Reason}, State) ->
     {[{close, Code, Reason}], State};
 websocket_info({websocket_close, Code}, State) ->
     {[{close, Code, <<>>}], State};
+%% Handle pubsub messages - forward to WebSocket as JSON
+websocket_info({pubsub, _Topic, Message}, State) when is_map(Message) ->
+    Json = json:encode(Message),
+    {[{text, Json}], State};
+websocket_info({pubsub, _Topic, Message}, State) when is_binary(Message) ->
+    {[{text, Message}], State};
 websocket_info(_Info, State) ->
     {ok, State}.
 
@@ -129,9 +163,14 @@ websocket_info(_Info, State) ->
 terminate(Reason, _Req, #state{session_id = SessionId,
                                app_module = AppModule,
                                app_callable = AppCallable} = _State) ->
+    %% Unregister session from pubsub
+    unregister_session(SessionId),
     %% Send disconnect event to Python
     Code = reason_to_code(Reason),
     _ = send_disconnect(AppModule, AppCallable, SessionId, Code),
+    ok;
+terminate(_Reason, _Req, _State) ->
+    %% Non-WebSocket request or request without proper state
     ok.
 
 %%% ============================================================================
@@ -269,6 +308,18 @@ handle_receive(Type, Data, #state{session_id = SessionId,
 process_responses([], State) ->
     {ok, State};
 process_responses(Responses, State) ->
+    %% First, handle any broadcast requests
+    lists:foreach(fun(Response) ->
+        case maps:get(<<"type">>, Response, undefined) of
+            <<"hornbeam.broadcast">> ->
+                Topic = maps:get(<<"topic">>, Response),
+                Message = maps:get(<<"message">>, Response),
+                hornbeam_pubsub:publish(Topic, Message);
+            _ ->
+                ok
+        end
+    end, Responses),
+    %% Then collect WebSocket frames to send
     Frames = lists:filtermap(fun(Response) ->
         case maps:get(<<"type">>, Response, undefined) of
             <<"websocket.send">> ->
@@ -308,3 +359,72 @@ reason_to_code(timeout) -> 1002;
 reason_to_code(remote) -> 1000;
 reason_to_code({remote, Code, _Reason}) -> Code;
 reason_to_code(_) -> 1006.
+
+%%% ============================================================================
+%%% Pubsub API for Python
+%%% ============================================================================
+
+-define(SESSION_TABLE, hornbeam_ws_sessions).
+
+%% @doc Register a WebSocket session (called from websocket_init).
+-spec register_session(binary(), pid()) -> ok.
+register_session(SessionId, Pid) ->
+    ensure_session_table(),
+    ets:insert(?SESSION_TABLE, {SessionId, Pid}),
+    error_logger:info_msg("WS register: session=~p pid=~p~n", [SessionId, Pid]),
+    ok.
+
+%% @doc Unregister a WebSocket session.
+-spec unregister_session(binary()) -> ok.
+unregister_session(SessionId) ->
+    catch ets:delete(?SESSION_TABLE, SessionId),
+    ok.
+
+%% @doc Subscribe a WebSocket session to a pubsub topic.
+-spec subscribe(binary(), term()) -> ok | {error, session_not_found}.
+subscribe(SessionId, Topic) ->
+    error_logger:info_msg("WS subscribe: session=~p topic=~p~n", [SessionId, Topic]),
+    case lookup_session(SessionId) of
+        {ok, Pid} ->
+            error_logger:info_msg("WS subscribe: found pid=~p~n", [Pid]),
+            hornbeam_pubsub:subscribe(Topic, Pid),
+            ok;
+        error ->
+            error_logger:warning_msg("WS subscribe: session not found~n"),
+            {error, session_not_found}
+    end.
+
+%% @doc Unsubscribe a WebSocket session from a pubsub topic.
+-spec unsubscribe(binary(), term()) -> ok.
+unsubscribe(SessionId, Topic) ->
+    case lookup_session(SessionId) of
+        {ok, Pid} ->
+            hornbeam_pubsub:unsubscribe(Topic, Pid),
+            ok;
+        error ->
+            ok
+    end.
+
+%% @doc Publish a message to a topic (broadcasts to all subscribed WebSockets).
+-spec publish(term(), term()) -> non_neg_integer().
+publish(Topic, Message) ->
+    Count = hornbeam_pubsub:publish(Topic, Message),
+    error_logger:info_msg("WS publish: topic=~p count=~p~n", [Topic, Count]),
+    Count.
+
+%% @private
+lookup_session(SessionId) ->
+    ensure_session_table(),
+    case ets:lookup(?SESSION_TABLE, SessionId) of
+        [{_, Pid}] -> {ok, Pid};
+        [] -> error
+    end.
+
+%% @private
+ensure_session_table() ->
+    case ets:whereis(?SESSION_TABLE) of
+        undefined ->
+            ets:new(?SESSION_TABLE, [named_table, public, set, {read_concurrency, true}]);
+        _ ->
+            ok
+    end.
