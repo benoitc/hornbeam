@@ -300,6 +300,35 @@ hornbeam:start("myapp:application", #{
 | `cached_inference(fn, input, cache_key=None, cache_prefix="ml")` | Run inference with ETS caching |
 | `cache_stats()` | Get cache hit/miss statistics |
 
+## Performance
+
+Hornbeam achieves high throughput by leveraging Erlang's lightweight process model and avoiding Python's GIL limitations.
+
+### Benchmark Results
+
+Tested on Apple M4 Pro, Python 3.14, OTP 28:
+
+| Test | Requests/sec | Latency (mean) | Failed |
+|------|--------------|----------------|--------|
+| Simple (100 concurrent) | **33,754** | 2.96ms | 0 |
+| High concurrency (500 concurrent) | **30,312** | 16.5ms | 0 |
+| Large response (64KB) | **27,355** | 1.83ms | 0 |
+
+### Run Your Own Benchmarks
+
+```bash
+# Quick benchmark
+./benchmarks/quick_bench.sh
+
+# Full benchmark suite
+python benchmarks/run_benchmark.py
+
+# Compare with gunicorn
+python benchmarks/compare_servers.py
+```
+
+See the [Benchmarking Guide](https://hornbeam.dev/docs/guides/benchmarking) for details.
+
 ## Development
 
 ```bash

@@ -36,24 +36,34 @@ This runs three test scenarios against the WSGI worker:
 2. **High concurrency**: 5,000 requests, 500 concurrent connections
 3. **Large response**: 1,000 requests with 64KB response bodies
 
-Example output:
+Example output (Apple M4 Pro, Python 3.14, OTP 28):
 
 ```
 === Benchmark: Simple requests (10000 requests, 100 concurrent) ===
-Requests per second:    12543.21 [#/sec] (mean)
-Time per request:       7.973 [ms] (mean)
+Requests per second:    33753.57 [#/sec] (mean)
+Time per request:       2.963 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: High concurrency (5000 requests, 500 concurrent) ===
-Requests per second:    11892.34 [#/sec] (mean)
-Time per request:       42.044 [ms] (mean)
+Requests per second:    30312.22 [#/sec] (mean)
+Time per request:       16.495 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: Large response (1000 requests, 50 concurrent) ===
-Requests per second:    8234.56 [#/sec] (mean)
-Time per request:       6.072 [ms] (mean)
+Requests per second:    27355.29 [#/sec] (mean)
+Time per request:       1.828 [ms] (mean)
 Failed requests:        0
 ```
+
+## Results Summary
+
+| Test | Requests/sec | Latency (mean) | Failed |
+|------|--------------|----------------|--------|
+| Simple (100 concurrent) | **33,754** | 2.96ms | 0 |
+| High concurrency (500 concurrent) | **30,312** | 16.5ms | 0 |
+| Large response (64KB) | **27,355** | 1.83ms | 0 |
+
+These numbers demonstrate that hornbeam maintains consistent high throughput even under heavy concurrency, thanks to Erlang's lightweight process model.
 
 ## Python Benchmark Script
 
