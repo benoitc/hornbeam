@@ -151,6 +151,15 @@ async def _run_asgi_async(module_name: str, callable_name: str,
     # Load the application
     app = load_app(module_name, callable_name)
 
+    # Use Python-side lifespan state for ASGI compliance
+    # This ensures scope['state'] is the same dict across all requests
+    try:
+        from hornbeam_lifespan_runner import get_state
+        scope['state'] = get_state()
+    except ImportError:
+        # Lifespan runner not available, use whatever was passed
+        pass
+
     # Ensure body is bytes
     if isinstance(body, str):
         body = body.encode('utf-8')

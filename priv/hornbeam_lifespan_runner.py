@@ -63,12 +63,13 @@ async def _run_lifespan(app, scope: dict):
         })
 
 
-def startup(app_module: str, app_callable: str) -> dict:
+def startup(app_module: str, app_callable: str, timeout_ms: int = 30000) -> dict:
     """Run lifespan startup protocol.
 
     Args:
         app_module: Python module containing the ASGI app
         app_callable: Name of the ASGI callable
+        timeout_ms: Timeout for startup in milliseconds (default: 30000)
 
     Returns:
         Response dict with type and optional state
@@ -118,7 +119,7 @@ def startup(app_module: str, app_callable: str) -> dict:
             return None
 
         # Wait for response with timeout, checking periodically if task finished
-        total_timeout = 30.0
+        total_timeout = timeout_ms / 1000.0
         check_interval = 0.5
         elapsed = 0.0
 
@@ -243,10 +244,10 @@ def _cleanup():
 def get_state() -> dict:
     """Get the lifespan state dict.
 
-    This can be used by request handlers to access shared state
-    that was initialized during lifespan startup.
+    This returns the actual dict (not a copy) so that modifications
+    by request handlers persist across requests - as per ASGI spec.
     """
-    return _lifespan_state.copy()
+    return _lifespan_state
 
 
 def set_state(key: str, value: Any) -> None:

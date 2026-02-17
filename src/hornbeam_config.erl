@@ -44,6 +44,7 @@
 %%% === ASGI ===
 %%% - root_path: ASGI root_path (default: "")
 %%% - lifespan: Lifespan protocol mode: auto, on, off (default: auto)
+%%% - lifespan_timeout: Lifespan startup/shutdown timeout in ms (default: 30000)
 %%%
 %%% === WebSocket ===
 %%% - websocket_timeout: WebSocket idle timeout in ms (default: 60000)
@@ -151,6 +152,7 @@ defaults() ->
         %% ASGI
         root_path => <<>>,
         lifespan => auto,
+        lifespan_timeout => 30000,  %% Lifespan startup/shutdown timeout in ms
 
         %% WebSocket
         websocket_timeout => 60000,
@@ -228,7 +230,7 @@ load_app_env() ->
         %% Request limits
         max_request_line_size, max_header_size, max_headers,
         %% ASGI
-        root_path, lifespan,
+        root_path, lifespan, lifespan_timeout,
         %% WebSocket
         websocket_timeout, websocket_max_frame_size,
         %% Python

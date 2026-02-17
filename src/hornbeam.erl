@@ -64,6 +64,7 @@
     preload_app => boolean(),
     pythonpath => [string() | binary()],
     lifespan => auto | on | off,
+    lifespan_timeout => pos_integer(),
     websocket_timeout => pos_integer(),
     websocket_max_frame_size => pos_integer(),
     routes => [{Path :: binary(), Handler :: module(), Opts :: map()}]
@@ -91,6 +92,7 @@ start(AppSpec) ->
 %%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
+%%   <li>`lifespan_timeout' - Lifespan startup/shutdown timeout in ms (default: 30000)</li>
 %%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
 %%   <li>`websocket_max_frame_size' - Max WebSocket frame size (default: 16MB)</li>
 %%   <li>`routes' - Custom Cowboy routes [{Path, Handler, Opts}] (default: [])</li>

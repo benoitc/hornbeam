@@ -153,8 +153,17 @@ handle_asgi(Req, State) ->
             T -> T
         end,
 
-        Result = py:call(hornbeam_asgi_runner, run_asgi,
-                        [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs),
+        %% Get Python context for affinity (shares module state across requests)
+        PyContext = hornbeam_lifespan:get_context(),
+
+        Result = case PyContext of
+            undefined ->
+                py:call(hornbeam_asgi_runner, run_asgi,
+                       [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs);
+            Ctx ->
+                py:ctx_call(Ctx, hornbeam_asgi_runner, run_asgi,
+                           [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs)
+        end,
 
         case Result of
             {ok, Response} ->
