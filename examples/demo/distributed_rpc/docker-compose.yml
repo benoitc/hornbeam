@@ -1,0 +1,64 @@
+# Distributed RPC Demo - 3 Node Cluster
+#
+# Demonstrates Erlang distribution across multiple containers.
+#
+# Run:
+#   cd examples/demo/distributed_rpc
+#   docker-compose up --build
+#
+# Test:
+#   curl http://localhost:8002/cluster
+#   curl http://localhost:8002/nodes
+#   curl -X POST http://localhost:8002/infer \
+#        -H "Content-Type: application/json" \
+#        -d '{"prompts": ["Hello", "World", "Test"]}'
+
+services:
+  # Worker node 1 - starts first
+  worker1:
+    build:
+      context: ../../..
+      dockerfile: examples/demo/distributed_rpc/Dockerfile
+    hostname: worker1
+    environment:
+      - NODE_NAME=worker1
+      - COOKIE=demo_cluster
+      - IS_MAIN=false
+    networks:
+      - cluster
+
+  # Worker node 2 - starts second
+  worker2:
+    build:
+      context: ../../..
+      dockerfile: examples/demo/distributed_rpc/Dockerfile
+    hostname: worker2
+    environment:
+      - NODE_NAME=worker2
+      - COOKIE=demo_cluster
+      - IS_MAIN=false
+    networks:
+      - cluster
+
+  # Main node - runs the HTTP server, connects to workers
+  main:
+    build:
+      context: ../../..
+      dockerfile: examples/demo/distributed_rpc/Dockerfile
+    hostname: main
+    ports:
+      - "8002:8000"
+    environment:
+      - NODE_NAME=main
+      - COOKIE=demo_cluster
+      - IS_MAIN=true
+      - CONNECT_TO=worker1@worker1,worker2@worker2
+    networks:
+      - cluster
+    depends_on:
+      - worker1
+      - worker2
+
+networks:
+  cluster:
+    driver: bridge

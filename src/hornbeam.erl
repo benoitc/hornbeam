@@ -318,12 +318,19 @@ ensure_binary(V) when is_atom(V) -> atom_to_binary(V, utf8).
 
 %% Register hornbeam functions so Python can call them via erlang.call()
 register_python_callbacks() ->
+    %% Hook registration (called from Python to register/unregister hooks)
+    py:register_function(hornbeam_hooks, fun([Action, Args]) ->
+        dispatch_hooks_action(Action, Args)
+    end),
     %% Hook execution
     py:register_function(hornbeam_hooks_execute, fun([AppPath, Action, Args, Kwargs]) ->
         hornbeam_hooks:execute(AppPath, Action, Args, Kwargs)
     end),
     py:register_function(hornbeam_hooks_execute_async, fun([AppPath, Action, Args, Kwargs]) ->
         hornbeam_hooks:execute_async(AppPath, Action, Args, Kwargs)
+    end),
+    py:register_function(hornbeam_hooks_await_result, fun([TaskId, Timeout]) ->
+        hornbeam_hooks:await_result(TaskId, Timeout)
     end),
     %% State functions
     py:register_function(hornbeam_state_get, fun([Key]) ->
@@ -341,4 +348,36 @@ register_python_callbacks() ->
     py:register_function(hornbeam_state_decr, fun([Key, Delta]) ->
         hornbeam_state:decr(Key, Delta)
     end),
+    %% Distributed Erlang functions
+    py:register_function(hornbeam_dist, fun([Func, Args]) ->
+        dispatch_dist_action(Func, Args)
+    end),
     ok.
+
+%% Dispatch distributed Erlang actions from Python
+dispatch_dist_action(<<"rpc_call">>, [Node, Module, Function, Args, Timeout]) ->
+    hornbeam_dist:rpc_call(Node, Module, Function, Args, Timeout);
+dispatch_dist_action(<<"rpc_cast">>, [Node, Module, Function, Args]) ->
+    hornbeam_dist:rpc_cast(Node, Module, Function, Args);
+dispatch_dist_action(<<"connected_nodes">>, []) ->
+    hornbeam_dist:connected_nodes();
+dispatch_dist_action(<<"nodes">>, []) ->
+    hornbeam_dist:nodes();
+dispatch_dist_action(<<"node">>, []) ->
+    hornbeam_dist:node();
+dispatch_dist_action(<<"ping">>, [Node]) ->
+    hornbeam_dist:ping(Node);
+dispatch_dist_action(<<"connect">>, [Node]) ->
+    hornbeam_dist:connect(Node);
+dispatch_dist_action(<<"disconnect">>, [Node]) ->
+    hornbeam_dist:disconnect(Node);
+dispatch_dist_action(Action, Args) ->
+    {error, {unknown_dist_action, Action, Args}}.
+
+%% Dispatch hooks actions from Python
+dispatch_hooks_action(<<"reg_python">>, [AppPath]) ->
+    hornbeam_hooks:reg_python(ensure_binary(AppPath));
+dispatch_hooks_action(<<"unreg">>, [AppPath]) ->
+    hornbeam_hooks:unreg(ensure_binary(AppPath));
+dispatch_hooks_action(Action, Args) ->
+    {error, {unknown_hooks_action, Action, Args}}.

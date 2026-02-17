@@ -75,11 +75,29 @@ curl http://localhost:8000/metrics
 
 ### Distributed RPC Example
 
+The distributed_rpc demo shows Erlang clustering with work distributed across nodes.
+
+**With Docker (3-node cluster):**
+```bash
+cd distributed_rpc
+docker-compose up --build
+```
+
+Test:
+```bash
+# View cluster (3 nodes)
+curl http://localhost:8002/cluster
+
+# Distribute inference across nodes
+curl -X POST http://localhost:8002/infer \
+     -H "Content-Type: application/json" \
+     -d '{"prompts": ["Hello", "World", "Test"]}'
+```
+
+**Manual setup:**
 ```bash
 # Terminal 1 - Main node
-cd /path/to/hornbeam
 rebar3 shell --sname main
-
 hornbeam:start("app:app", #{
     worker_class => asgi,
     pythonpath => ["examples/demo/distributed_rpc"]
@@ -88,17 +106,6 @@ hornbeam:start("app:app", #{
 # Terminal 2 - Worker node
 rebar3 shell --sname worker
 net_adm:ping('main@yourhostname').
-```
-
-Test:
-```bash
-# View cluster status
-curl http://localhost:8000/cluster
-
-# Distribute inference
-curl -X POST http://localhost:8000/infer \
-     -H "Content-Type: application/json" \
-     -d '{"prompts": ["Hello", "World", "Test"]}'
 ```
 
 ### Real-time Chat Example
