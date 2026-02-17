@@ -1,5 +1,5 @@
 # Demo Example Dockerfile
-# Builds Hornbeam and runs a specific demo example
+# Builds Hornbeam demo as an OTP release
 
 FROM erlang:28
 
@@ -20,54 +20,42 @@ RUN apt-get update && apt-get install -y \
 # Install rebar3
 RUN wget -q https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3 && mv rebar3 /usr/local/bin/
 
-WORKDIR /build
-
-# Copy Hornbeam source
-COPY rebar.config rebar.lock ./
-COPY src ./src
-COPY priv ./priv
-COPY config ./config
-
-# Build Hornbeam
-RUN rebar3 compile
-
-# Create Python venv and install dependencies
+# Create Python venv
 RUN python3 -m venv /app/venv
 ENV PATH="/app/venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/venv"
 
-# Copy example
-COPY examples/demo/${EXAMPLE} /app/example
+# Copy Hornbeam source
+WORKDIR /build
+COPY . /build/hornbeam
+
+# Store example name for runtime
+RUN echo "${EXAMPLE}" > /app/example_name
+
+# Set up example directory
+WORKDIR /build/hornbeam/examples/demo/${EXAMPLE}
+
+# Clean any local build artifacts and create _checkouts symlink
+RUN rm -rf _checkouts _build rebar.lock && \
+    rm -rf /build/hornbeam/_build && \
+    mkdir -p _checkouts && ln -s /build/hornbeam _checkouts/hornbeam
 
 # Install Python dependencies
-RUN if [ -f /app/example/requirements.txt ]; then \
-        pip install --no-cache-dir -r /app/example/requirements.txt; \
+RUN if [ -f requirements.txt ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
     fi
 
-WORKDIR /build
+# Pre-download ML models for ml_caching example
+RUN if [ "${EXAMPLE}" = "ml_caching" ]; then \
+        python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; \
+    fi
+
+# Build the release
+RUN rebar3 release
 
 # Expose port
 EXPOSE 8000
 
-# Start script that runs Hornbeam with the example
-COPY <<'STARTSCRIPT' /app/start.sh
-#!/bin/bash
-set -e
-
-cd /build
-
-# Start Hornbeam with the example app
-# bind to [::] for IPv6 (also accepts IPv4 on most systems)
-exec erl -pa _build/default/lib/*/ebin \
-    -eval "application:ensure_all_started(hornbeam), \
-           hornbeam:start(\"app:app\", #{ \
-               bind => \"[::]:8000\", \
-               worker_class => asgi, \
-               pythonpath => [\"/app/example\"] \
-           })." \
-    -noshell
-STARTSCRIPT
-
-RUN chmod +x /app/start.sh
-
-CMD ["/app/start.sh"]
+# Start the release
+CMD EXAMPLE=$(cat /app/example_name) && \
+    /build/hornbeam/examples/demo/${EXAMPLE}/_build/default/rel/${EXAMPLE}/bin/${EXAMPLE} foreground

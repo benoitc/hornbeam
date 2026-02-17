@@ -1,0 +1,19 @@
+%% Copyright 2026 Benoit Chesneau
+%% Licensed under the Apache License, Version 2.0
+
+{application, ml_caching, [
+    {description, "ML Caching Demo - Erlang OTP App with Python Embeddings"},
+    {vsn, "0.1.0"},
+    {registered, [ml_caching_sup, ml_caching_embedder]},
+    {mod, {ml_caching_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        erlang_python,
+        hornbeam
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
