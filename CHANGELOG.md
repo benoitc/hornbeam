@@ -87,6 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Erlang/OTP 27+
 - Python 3.12+ (3.13+ recommended for free-threading)
 - Cowboy 2.12.0
-- erlang_python 1.2.0
+- erlang_python 1.3.2
 
 [1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/1.0.0
