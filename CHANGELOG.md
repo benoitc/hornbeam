@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-02-15
+## [1.0.0] - 2026-02-17
 
 ### Added
 
@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ASGI Support**: Full ASGI 3.0 protocol implementation
   - HTTP scope with streaming responses
   - WebSocket scope with RFC 6455 support
-  - Lifespan protocol for startup/shutdown events
+  - Lifespan protocol with `hornbeam_lifespan` gen_server
+  - `lifespan_timeout` configuration for startup/shutdown timeout
+  - Python context affinity for module state persistence
   - Informational responses (1xx)
 
 - **HTTP Features** (via Cowboy)
@@ -59,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WebSocket timeout and frame size limits
   - Python path and virtual environment support
 
+- **Demo Examples**
+  - ML Caching: OTP application with hook-based architecture
+  - Distributed RPC: 3-node Erlang cluster with Docker Compose
+  - Real-time Chat: WebSocket with Erlang pub/sub
+  - Docker support for all demo applications
+
 - **Documentation**
   - Getting started guide
   - WSGI, ASGI, WebSocket guides
@@ -67,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Flask, FastAPI, WebSocket chat examples
   - Embedding service and distributed ML examples
   - Configuration reference
+  - Benchmarking guide
 
 - **Website**
   - https://hornbeam.dev
