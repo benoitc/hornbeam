@@ -1,7 +1,7 @@
 ---
 title: Benchmarking
 description: How to benchmark hornbeam and compare performance with other WSGI/ASGI servers.
-order: 6
+order: 20
 ---
 
 # Benchmarking
