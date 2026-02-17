@@ -36,22 +36,22 @@ This runs three test scenarios against the WSGI worker:
 2. **High concurrency**: 5,000 requests, 500 concurrent connections
 3. **Large response**: 1,000 requests with 64KB response bodies
 
-Example output (Apple M4 Pro, Python 3.14, OTP 28):
+Example output (Apple M4 Pro, Python 3.13, OTP 28, February 2026):
 
 ```
 === Benchmark: Simple requests (10000 requests, 100 concurrent) ===
-Requests per second:    33753.57 [#/sec] (mean)
-Time per request:       2.963 [ms] (mean)
+Requests per second:    33642.73 [#/sec] (mean)
+Time per request:       2.972 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: High concurrency (5000 requests, 500 concurrent) ===
-Requests per second:    30312.22 [#/sec] (mean)
-Time per request:       16.495 [ms] (mean)
+Requests per second:    28889.54 [#/sec] (mean)
+Time per request:       17.307 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: Large response (1000 requests, 50 concurrent) ===
-Requests per second:    27355.29 [#/sec] (mean)
-Time per request:       1.828 [ms] (mean)
+Requests per second:    29118.02 [#/sec] (mean)
+Time per request:       1.717 [ms] (mean)
 Failed requests:        0
 ```
 
@@ -59,9 +59,9 @@ Failed requests:        0
 
 | Test | Requests/sec | Latency (mean) | Failed |
 |------|--------------|----------------|--------|
-| Simple (100 concurrent) | **34,731** | 2.88ms | 0 |
-| High concurrency (500 concurrent) | **30,114** | 16.6ms | 0 |
-| Large response (64KB) | **27,697** | 1.81ms | 0 |
+| Simple (100 concurrent) | **33,643** | 2.97ms | 0 |
+| High concurrency (500 concurrent) | **28,890** | 17.3ms | 0 |
+| Large response (64KB) | **29,118** | 1.72ms | 0 |
 
 These numbers demonstrate that hornbeam maintains consistent high throughput even under heavy concurrency, thanks to Erlang's lightweight process model.
 
@@ -69,11 +69,19 @@ These numbers demonstrate that hornbeam maintains consistent high throughput eve
 
 Direct comparison using identical WSGI app (4 workers, gunicorn with gthread and 4 threads):
 
-| Test | Hornbeam | Gunicorn sync | Gunicorn gthread | Speedup |
-|------|----------|---------------|------------------|---------|
-| Simple (100 concurrent) | **34,731** req/s | 3,607 req/s | 3,636 req/s | **9.5x** |
-| High concurrency (500 concurrent) | **30,114** req/s | 3,589 req/s | 3,677 req/s | **8.2x** |
-| Large response (64KB) | **27,697** req/s | 3,526 req/s | 3,613 req/s | **7.7x** |
+| Test | Hornbeam | Gunicorn gthread | Speedup |
+|------|----------|------------------|---------|
+| Simple (100 concurrent) | **33,643** req/s | 3,661 req/s | **9.2x** |
+| High concurrency (500 concurrent) | **28,890** req/s | 3,631 req/s | **8.0x** |
+| Large response (64KB) | **29,118** req/s | 3,599 req/s | **8.1x** |
+
+### Latency Comparison
+
+| Test | Hornbeam | Gunicorn |
+|------|----------|----------|
+| Simple (100 concurrent) | **2.97ms** | 27.3ms |
+| High concurrency (500 concurrent) | **17.3ms** | 137.7ms |
+| Large response (64KB) | **1.72ms** | 13.9ms |
 
 ### Why the Difference?
 
