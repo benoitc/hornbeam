@@ -28,23 +28,37 @@ docker-compose up realtime-chat    # http://localhost:9003
 
 ### ML Caching Example
 
+The ml_caching demo is a full OTP application that demonstrates:
+- Loading a Python ML model from Erlang via erlang_python
+- Registering Erlang hooks that route through to the Python model
+- Running FastAPI via Hornbeam with hook-based architecture
+
 ```bash
+cd ml_caching
+
 # Install Python dependencies
-pip install -r ml_caching/requirements.txt
+pip install -r requirements.txt
 
-# Start Hornbeam
-cd /path/to/hornbeam
-rebar3 shell
+# Build and run as OTP release
+rebar3 release
+_build/default/rel/ml_caching/bin/ml_caching foreground
+```
 
-# In the Erlang shell:
-hornbeam:start("app:app", #{
-    worker_class => asgi,
-    pythonpath => ["examples/demo/ml_caching"]
-}).
+Or with Docker:
+```bash
+# From hornbeam root directory
+docker build -f examples/demo/Dockerfile.demo \
+    --build-arg EXAMPLE=ml_caching \
+    -t ml_caching_demo .
+
+docker run -p 8000:8000 ml_caching_demo
 ```
 
 Test:
 ```bash
+# Health check
+curl http://localhost:8000/health
+
 # First request - computes embedding
 curl -X POST http://localhost:8000/embed \
      -H "Content-Type: application/json" \
@@ -107,9 +121,10 @@ Test:
 ## What These Examples Demonstrate
 
 ### ML Caching
-- **Python**: FastAPI endpoint that generates embeddings
-- **Erlang**: ETS caching with TTL, cache survives Python crashes
-- **Benefit**: ~0.1ms cached vs ~45ms inference
+- **Erlang**: OTP app loads ML model via erlang_python, registers hooks
+- **Python**: FastAPI calls `hornbeam.hooks.execute("embeddings", ...)` which routes to Erlang
+- **Architecture**: Model initialization happens once in Erlang's supervision tree
+- **Benefit**: ~0.1ms cached vs ~45ms inference, model survives worker restarts
 
 ### Distributed RPC
 - **Python**: Fan-out work to cluster nodes

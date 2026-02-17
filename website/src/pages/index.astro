@@ -154,22 +154,20 @@ import BaseLayout from '../layouts/BaseLayout.astro';
                 <span class="ml-2 text-xs text-hb-muted">app.py</span>
               </div>
               <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">fastapi</span> <span class="text-[#c586c0]">import</span> FastAPI
-<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_erlang</span> <span class="text-[#c586c0]">import</span> state
-<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">sentence_transformers</span> <span class="text-[#c586c0]">import</span> SentenceTransformer
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam</span> <span class="text-[#c586c0]">import</span> hooks, state
 
 app = FastAPI()
-model = SentenceTransformer(<span class="text-[#ce9178]">'all-MiniLM-L6-v2'</span>)
 
 <span class="text-[#dcdcaa]">@app.post</span>(<span class="text-[#ce9178]">"/embed"</span>)
 <span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">embed</span>(text: <span class="text-[#4ec9b0]">str</span>):
     <span class="text-[#6a9955]"># Check Erlang ETS cache first</span>
-    cached = state.get(<span class="text-[#ce9178]">"embed"</span>, text)
+    cached = state.get(<span class="text-[#ce9178]">f"embed:{'{'}text{'}'}"</span>)
     <span class="text-[#c586c0]">if</span> cached:
         <span class="text-[#c586c0]">return</span> {'{'}<span class="text-[#ce9178]">"embedding"</span>: cached, <span class="text-[#ce9178]">"cached"</span>: <span class="text-[#569cd6]">True</span>{'}'}
 
-    <span class="text-[#6a9955]"># Compute and cache in ETS</span>
-    embedding = model.encode(text).tolist()
-    state.set(<span class="text-[#ce9178]">"embed"</span>, text, embedding, ttl=<span class="text-[#b5cea8]">3600</span>)
+    <span class="text-[#6a9955]"># Call Erlang hook → routes to ML model</span>
+    embedding = hooks.execute(<span class="text-[#ce9178]">"embeddings"</span>, <span class="text-[#ce9178]">"embed"</span>, [text])
+    state.set(<span class="text-[#ce9178]">f"embed:{'{'}text{'}'}"</span>, embedding)
     <span class="text-[#c586c0]">return</span> {'{'}<span class="text-[#ce9178]">"embedding"</span>: embedding{'}'}</code></pre>
             </div>
 
@@ -185,6 +183,13 @@ model = SentenceTransformer(<span class="text-[#ce9178]">'all-MiniLM-L6-v2'</spa
                 <li class="flex items-start gap-3">
                   <span class="text-hb-green-light mt-0.5">●</span>
                   <div>
+                    <span class="text-hb-text font-medium">Hook Routing</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Erlang loads ML model, Python calls via hooks</p>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-hb-green-light mt-0.5">●</span>
+                  <div>
                     <span class="text-hb-text font-medium">ETS Cache</span>
                     <p class="text-hb-muted text-xs mt-0.5">In-memory, ~0.1ms lookups, survives Python crashes</p>
                   </div>
@@ -192,15 +197,8 @@ model = SentenceTransformer(<span class="text-[#ce9178]">'all-MiniLM-L6-v2'</spa
                 <li class="flex items-start gap-3">
                   <span class="text-hb-green-light mt-0.5">●</span>
                   <div>
-                    <span class="text-hb-text font-medium">Auto-replication</span>
-                    <p class="text-hb-muted text-xs mt-0.5">Cache syncs across cluster nodes automatically</p>
-                  </div>
-                </li>
-                <li class="flex items-start gap-3">
-                  <span class="text-hb-green-light mt-0.5">●</span>
-                  <div>
-                    <span class="text-hb-text font-medium">TTL Management</span>
-                    <p class="text-hb-muted text-xs mt-0.5">Erlang cleans up expired entries, not Python</p>
+                    <span class="text-hb-text font-medium">Supervision</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Model in OTP supervisor, auto-restarts on failure</p>
                   </div>
                 </li>
               </ul>
