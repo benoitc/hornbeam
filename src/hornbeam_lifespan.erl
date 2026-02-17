@@ -70,6 +70,7 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_TIMEOUT, 30000).
+-define(CACHE_TABLE, hornbeam_lifespan_cache).
 
 -record(state, {
     app_module :: binary() | undefined,
@@ -112,22 +113,33 @@ shutdown() ->
     gen_server:call(?SERVER, shutdown, infinity).
 
 %% @doc Get the lifespan state (shared across requests).
+%% Uses ETS cache for fast concurrent reads.
 -spec get_state() -> map().
 get_state() ->
-    gen_server:call(?SERVER, get_state).
+    case ets:lookup(?CACHE_TABLE, lifespan_state) of
+        [{lifespan_state, State}] -> State;
+        [] -> #{}
+    end.
 
 %% @doc Check if lifespan is running.
 -spec is_running() -> boolean().
 is_running() ->
-    gen_server:call(?SERVER, is_running).
+    case ets:lookup(?CACHE_TABLE, started) of
+        [{started, Started}] -> Started;
+        [] -> false
+    end.
 
 %% @doc Get the Python context for ASGI calls.
 %%
 %% This context provides affinity - all calls using this context
 %% share the same Python worker and module state.
+%% Uses ETS cache for fast concurrent reads (avoids gen_server bottleneck).
 -spec get_context() -> term() | undefined.
 get_context() ->
-    gen_server:call(?SERVER, get_context).
+    case ets:lookup(?CACHE_TABLE, py_context) of
+        [{py_context, Ctx}] -> Ctx;
+        [] -> undefined
+    end.
 
 %%% ============================================================================
 %%% gen_server callbacks
@@ -135,12 +147,28 @@ get_context() ->
 
 init(Opts) ->
     LifespanMode = maps:get(lifespan, Opts, auto),
+
+    %% Create ETS table for fast concurrent reads (avoids gen_server bottleneck)
+    ?CACHE_TABLE = ets:new(?CACHE_TABLE, [
+        named_table,
+        public,
+        {read_concurrency, true}
+    ]),
+
     %% Create a dedicated Python context for ASGI affinity
     %% This ensures module-level state persists across requests
     PyContext = case py:bind(new) of
         {ok, Ctx} -> Ctx;
         _ -> undefined
     end,
+
+    %% Cache initial values
+    ets:insert(?CACHE_TABLE, [
+        {py_context, PyContext},
+        {lifespan_state, #{}},
+        {started, false}
+    ]),
+
     {ok, #state{
         lifespan_mode = LifespanMode,
         lifespan_state = #{},
@@ -154,11 +182,18 @@ handle_call({startup, Opts}, _From, #state{py_context = PyContext} = State) ->
 
     case LifespanMode of
         off ->
+            %% Update ETS cache
+            ets:insert(?CACHE_TABLE, {started, true}),
             {reply, ok, State#state{started = true, supported = false}};
         _ ->
             %% Try to run lifespan startup with context
             case run_startup(AppModule, AppCallable, PyContext) of
                 {ok, LifespanState} ->
+                    %% Update ETS cache
+                    ets:insert(?CACHE_TABLE, [
+                        {lifespan_state, LifespanState},
+                        {started, true}
+                    ]),
                     {reply, ok, State#state{
                         app_module = AppModule,
                         app_callable = AppCallable,
@@ -169,6 +204,8 @@ handle_call({startup, Opts}, _From, #state{py_context = PyContext} = State) ->
                     }};
                 {error, not_supported} when LifespanMode =:= auto ->
                     %% Lifespan not supported, but that's OK in auto mode
+                    %% Update ETS cache
+                    ets:insert(?CACHE_TABLE, {started, true}),
                     {reply, ok, State#state{
                         app_module = AppModule,
                         app_callable = AppCallable,
@@ -188,12 +225,16 @@ handle_call(shutdown, _From, #state{started = false} = State) ->
     {reply, ok, State};
 
 handle_call(shutdown, _From, #state{supported = false} = State) ->
+    %% Update ETS cache
+    ets:insert(?CACHE_TABLE, [{started, false}, {lifespan_state, #{}}]),
     {reply, ok, State#state{started = false}};
 
 handle_call(shutdown, _From, #state{app_module = AppModule,
                                      app_callable = AppCallable,
                                      py_context = PyContext} = State) ->
     Result = run_shutdown(AppModule, AppCallable, PyContext),
+    %% Update ETS cache
+    ets:insert(?CACHE_TABLE, [{started, false}, {lifespan_state, #{}}]),
     {reply, Result, State#state{started = false, lifespan_state = #{}}};
 
 handle_call(get_state, _From, #state{lifespan_state = LifespanState} = State) ->

@@ -80,6 +80,7 @@ def stop_gunicorn(proc):
 def start_hornbeam(bind):
     """Start hornbeam server."""
     erl_cmd = f'''
+        code:add_pathsz(filelib:wildcard("_build/default/lib/*/ebin")),
         application:ensure_all_started(hornbeam),
         hornbeam:start("simple_app:application", #{{
             bind => <<"{bind}">>,
@@ -90,7 +91,6 @@ def start_hornbeam(bind):
 
     cmd = [
         'erl',
-        '-pa', '_build/default/lib/*/ebin',
         '-noshell',
         '-eval', erl_cmd.strip().replace('\n', ' '),
     ]

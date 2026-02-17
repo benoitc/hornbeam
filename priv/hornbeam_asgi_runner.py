@@ -29,6 +29,28 @@ from typing import List, Dict, Any, Optional
 _app_cache: Dict[tuple, Any] = {}
 _app_cache_lock = threading.Lock()
 
+# Persistent event loop per thread (reused across requests)
+_thread_local = threading.local()
+
+
+def _get_event_loop() -> asyncio.AbstractEventLoop:
+    """Get or create a persistent event loop for this thread.
+
+    Reusing the event loop avoids the overhead of creating a new one
+    for each request, which is a major performance bottleneck.
+    """
+    loop = getattr(_thread_local, 'loop', None)
+    if loop is None or loop.is_closed():
+        # Try to use uvloop if available for better performance
+        try:
+            import uvloop
+            loop = uvloop.new_event_loop()
+        except ImportError:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _thread_local.loop = loop
+    return loop
+
 
 def load_app(module_name: str, callable_name: str):
     """Load an ASGI application with thread-safe caching."""
@@ -202,15 +224,11 @@ def run_asgi(module_name: str, callable_name: str,
     Returns:
         Dict with status, headers, body, and optional early_hints/trailers
     """
-    # Create a new event loop for this request
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(
-            _run_asgi_async(module_name, callable_name, scope, body)
-        )
-    finally:
-        loop.close()
+    # Reuse persistent event loop for this thread (major perf improvement)
+    loop = _get_event_loop()
+    return loop.run_until_complete(
+        _run_asgi_async(module_name, callable_name, scope, body)
+    )
 
 
 # Streaming support for real-time responses

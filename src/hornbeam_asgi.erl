@@ -135,13 +135,17 @@ format_http_version('HTTP/1.1') -> <<"1.1">>;
 format_http_version('HTTP/2') -> <<"2">>.
 
 %% @private
-%% IPv4
+%% IPv4 - optimized to avoid io_lib:format overhead
 format_ip({A, B, C, D}) ->
-    iolist_to_binary(io_lib:format("~B.~B.~B.~B", [A, B, C, D]));
-%% IPv6
-format_ip({A, B, C, D, E, F, G, H}) ->
-    iolist_to_binary(io_lib:format("~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B",
-                                   [A, B, C, D, E, F, G, H])).
+    list_to_binary([
+        integer_to_list(A), $.,
+        integer_to_list(B), $.,
+        integer_to_list(C), $.,
+        integer_to_list(D)
+    ]);
+%% IPv6 - use inet:ntoa which is implemented in C
+format_ip(Addr = {_, _, _, _, _, _, _, _}) ->
+    list_to_binary(inet:ntoa(Addr)).
 
 %% @private
 ensure_binary(V) when is_binary(V) -> V;

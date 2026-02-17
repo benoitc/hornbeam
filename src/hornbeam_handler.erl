@@ -62,16 +62,10 @@ handle_wsgi(Req, State) ->
         %% Build WSGI environ dict
         Environ = hornbeam_wsgi:build_environ(Req),
 
-        %% Get app module and callable from config
-        AppModule = hornbeam_config:get_config(app_module),
-        AppCallable = hornbeam_config:get_config(app_callable),
-
-        %% Call the WSGI application via Python runner
-        Timeout = hornbeam_config:get_config(timeout),
-        TimeoutMs = case Timeout of
-            undefined -> 30000;
-            T -> T
-        end,
+        %% Get app module and callable from cached state (avoids ETS lookups)
+        AppModule = maps:get(app_module, State),
+        AppCallable = maps:get(app_callable, State),
+        TimeoutMs = maps:get(timeout, State, 30000),
 
         Result = py:call(hornbeam_wsgi_runner, run_wsgi,
                         [AppModule, AppCallable, Environ], #{}, TimeoutMs),
@@ -139,19 +133,13 @@ handle_asgi(Req, State) ->
         %% Build ASGI scope
         Scope = hornbeam_asgi:build_scope(Req),
 
-        %% Get app module and callable from config
-        AppModule = hornbeam_config:get_config(app_module),
-        AppCallable = hornbeam_config:get_config(app_callable),
+        %% Get app module and callable from cached state (avoids ETS lookups)
+        AppModule = maps:get(app_module, State),
+        AppCallable = maps:get(app_callable, State),
+        TimeoutMs = maps:get(timeout, State, 30000),
 
         %% Read request body
         {ok, ReqBody, Req2} = cowboy_req:read_body(Req),
-
-        %% Call the ASGI application via Python runner
-        Timeout = hornbeam_config:get_config(timeout),
-        TimeoutMs = case Timeout of
-            undefined -> 30000;
-            T -> T
-        end,
 
         %% Get Python context for affinity (shares module state across requests)
         PyContext = hornbeam_lifespan:get_context(),

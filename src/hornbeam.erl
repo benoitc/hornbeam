@@ -255,8 +255,17 @@ start_listener(Config) ->
     %% Build custom routes (WebSocket handlers, etc.)
     CustomRoutes = maps:get(routes, Config, []),
 
+    %% Cache frequently accessed config values in handler state to avoid
+    %% repeated ETS lookups per request
+    HandlerState = #{
+        worker_class => WorkerClass,
+        app_module => maps:get(app_module, Config),
+        app_callable => maps:get(app_callable, Config),
+        timeout => maps:get(timeout, Config, 30000)
+    },
+
     %% Default catchall route for Python app
-    DefaultRoute = {'_', hornbeam_handler, #{worker_class => WorkerClass}},
+    DefaultRoute = {'_', hornbeam_handler, HandlerState},
 
     %% Combine custom routes with default (custom routes take precedence)
     AllRoutes = CustomRoutes ++ [DefaultRoute],
