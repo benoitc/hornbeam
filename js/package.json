@@ -1,0 +1,49 @@
+{
+  "name": "hornbeam-js",
+  "version": "1.0.0",
+  "description": "JavaScript client for Hornbeam real-time channels and presence",
+  "main": "dist/hornbeam.cjs.js",
+  "module": "dist/hornbeam.esm.js",
+  "browser": "dist/hornbeam.umd.js",
+  "types": "dist/hornbeam.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/hornbeam.esm.js",
+      "require": "./dist/hornbeam.cjs.js",
+      "browser": "./dist/hornbeam.umd.js"
+    }
+  },
+  "files": [
+    "dist",
+    "hornbeam.js"
+  ],
+  "scripts": {
+    "build": "node build.js",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/benoitc/hornbeam.git",
+    "directory": "js"
+  },
+  "keywords": [
+    "hornbeam",
+    "websocket",
+    "channels",
+    "presence",
+    "real-time",
+    "erlang"
+  ],
+  "author": "Benoit Chesneau",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/benoitc/hornbeam/issues"
+  },
+  "homepage": "https://github.com/benoitc/hornbeam#readme",
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

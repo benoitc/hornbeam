@@ -59,7 +59,10 @@
     session_id :: binary(),
     accepted = false :: boolean(),
     subprotocol :: binary() | undefined,
-    subscriptions = [] :: [term()]
+    subscriptions = [] :: [term()],
+    %% Channel protocol support
+    mode = undefined :: undefined | asgi | channel,
+    channel_pid :: pid() | undefined
 }).
 
 %% @doc Initialize WebSocket connection.
@@ -129,9 +132,23 @@ path_to_topic(_) ->
     undefined.
 
 %% @doc Handle incoming WebSocket frames.
-websocket_handle({text, Data}, State) ->
+websocket_handle({text, Data}, #state{mode = undefined} = State) ->
+    %% First message - detect protocol
+    handle_first_message(text, Data, State);
+websocket_handle({text, Data}, #state{mode = channel, channel_pid = Pid} = State) ->
+    %% Channel protocol mode - route to channel process
+    handle_channel_message(text, Data, Pid, State);
+websocket_handle({text, Data}, #state{mode = asgi} = State) ->
+    %% ASGI mode - standard handling
     handle_receive(text, Data, State);
-websocket_handle({binary, Data}, State) ->
+websocket_handle({binary, Data}, #state{mode = undefined} = State) ->
+    %% Binary data - assume ASGI mode
+    State1 = State#state{mode = asgi},
+    handle_receive(binary, Data, State1);
+websocket_handle({binary, Data}, #state{mode = channel, channel_pid = Pid} = State) ->
+    %% Channel protocol doesn't use binary, but forward anyway
+    handle_channel_message(binary, Data, Pid, State);
+websocket_handle({binary, Data}, #state{mode = asgi} = State) ->
     handle_receive(binary, Data, State);
 websocket_handle(ping, State) ->
     %% Cowboy handles ping/pong automatically
@@ -150,24 +167,42 @@ websocket_info({websocket_close, Code, Reason}, State) ->
     {[{close, Code, Reason}], State};
 websocket_info({websocket_close, Code}, State) ->
     {[{close, Code, <<>>}], State};
-%% Handle pubsub messages - forward to WebSocket as JSON
-websocket_info({pubsub, _Topic, Message}, State) when is_map(Message) ->
+%% Handle pubsub messages - forward to WebSocket as JSON (ASGI mode only)
+websocket_info({pubsub, _Topic, Message}, #state{mode = asgi} = State) when is_map(Message) ->
     Json = json:encode(Message),
     {[{text, Json}], State};
-websocket_info({pubsub, _Topic, Message}, State) when is_binary(Message) ->
+websocket_info({pubsub, _Topic, Message}, #state{mode = asgi} = State) when is_binary(Message) ->
     {[{text, Message}], State};
+websocket_info({pubsub, _Topic, _Message}, #state{mode = channel} = State) ->
+    %% Channel mode handles pubsub through the channel process
+    {ok, State};
+%% Handle channel process death
+websocket_info({'DOWN', _Ref, process, Pid, _Reason}, #state{channel_pid = Pid} = State) ->
+    %% Channel process died - close WebSocket
+    {[{close, 1011, <<"Channel terminated">>}], State#state{channel_pid = undefined}};
 websocket_info(_Info, State) ->
     {ok, State}.
 
 %% @doc Handle WebSocket termination.
 terminate(Reason, _Req, #state{session_id = SessionId,
                                app_module = AppModule,
-                               app_callable = AppCallable} = _State) ->
+                               app_callable = AppCallable,
+                               mode = Mode,
+                               channel_pid = ChannelPid} = _State) ->
     %% Unregister session from pubsub
     unregister_session(SessionId),
-    %% Send disconnect event to Python
-    Code = reason_to_code(Reason),
-    _ = send_disconnect(AppModule, AppCallable, SessionId, Code),
+    %% Handle mode-specific cleanup
+    case Mode of
+        channel when is_pid(ChannelPid) ->
+            %% Stop the channel process (it will handle cleanup)
+            catch gen_server:stop(ChannelPid, normal, 5000);
+        asgi ->
+            %% Send disconnect event to Python ASGI app
+            Code = reason_to_code(Reason),
+            _ = send_disconnect(AppModule, AppCallable, SessionId, Code);
+        _ ->
+            ok
+    end,
     ok;
 terminate(_Reason, _Req, _State) ->
     %% Non-WebSocket request or request without proper state
@@ -361,6 +396,57 @@ reason_to_code({remote, Code, _Reason}) -> Code;
 reason_to_code(_) -> 1006.
 
 %%% ============================================================================
+%%% Channel Protocol Support
+%%% ============================================================================
+
+%% @doc Handle first message to detect protocol.
+%% Channel protocol uses JSON arrays: [join_ref, ref, topic, event, payload]
+handle_first_message(text, Data, State) ->
+    case try_parse_channel_message(Data) of
+        {ok, Message} when is_list(Message), length(Message) =:= 5 ->
+            %% Detected channel protocol
+            start_channel_mode(Message, State);
+        _ ->
+            %% Not channel protocol, use ASGI mode
+            State1 = State#state{mode = asgi},
+            handle_receive(text, Data, State1)
+    end.
+
+try_parse_channel_message(Data) ->
+    try
+        {ok, json:decode(Data)}
+    catch
+        _:_ -> error
+    end.
+
+start_channel_mode(Message, #state{session_id = SessionId} = State) ->
+    %% Start channel process for this connection
+    case hornbeam_channel:start_link(self(), SessionId) of
+        {ok, Pid} ->
+            %% Monitor the channel process
+            erlang:monitor(process, Pid),
+            %% Route the initial message
+            hornbeam_channel:handle_message(Pid, Message),
+            {ok, State#state{mode = channel, channel_pid = Pid, accepted = true}};
+        {error, Reason} ->
+            error_logger:error_msg("Failed to start channel process: ~p~n", [Reason]),
+            {[{close, 1011, <<"Server error">>}], State}
+    end.
+
+handle_channel_message(text, Data, Pid, State) ->
+    case try_parse_channel_message(Data) of
+        {ok, Message} ->
+            hornbeam_channel:handle_message(Pid, Message),
+            {ok, State};
+        error ->
+            %% Invalid JSON - close connection
+            {[{close, 1007, <<"Invalid JSON">>}], State}
+    end;
+handle_channel_message(binary, _Data, _Pid, State) ->
+    %% Channel protocol is text-only
+    {ok, State}.
+
+%%% ============================================================================
 %%% Pubsub API for Python
 %%% ============================================================================
 
@@ -369,7 +455,7 @@ reason_to_code(_) -> 1006.
 %% @doc Register a WebSocket session (called from websocket_init).
 -spec register_session(binary(), pid()) -> ok.
 register_session(SessionId, Pid) ->
-    ensure_session_table(),
+    _ = ensure_session_table(),
     ets:insert(?SESSION_TABLE, {SessionId, Pid}),
     error_logger:info_msg("WS register: session=~p pid=~p~n", [SessionId, Pid]),
     ok.
@@ -414,7 +500,7 @@ publish(Topic, Message) ->
 
 %% @private
 lookup_session(SessionId) ->
-    ensure_session_table(),
+    _ = ensure_session_table(),
     case ets:lookup(?SESSION_TABLE, SessionId) of
         [{_, Pid}] -> {ok, Pid};
         [] -> error

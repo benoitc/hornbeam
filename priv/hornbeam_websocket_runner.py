@@ -29,11 +29,18 @@ from typing import Dict, Any, Optional, List
 
 
 # Install uvloop as the default event loop policy (once per interpreter)
+_uvloop_installed = False
+
+
 def _install_uvloop() -> bool:
     """Install uvloop as the default asyncio event loop policy."""
+    global _uvloop_installed
+    if _uvloop_installed:
+        return True
     try:
         import uvloop
         uvloop.install()
+        _uvloop_installed = True
         return True
     except ImportError:
         return False

@@ -1,0 +1,19 @@
+# Channels Chat Example - Docker Compose
+#
+# Build and run:
+#   docker-compose up --build
+#
+# Then open http://localhost:9004 in your browser
+
+services:
+  channels-chat:
+    build:
+      context: ../..
+      dockerfile: examples/channels_chat/Dockerfile
+    network_mode: host
+    volumes:
+      # Mount for development
+      - ./app.py:/app/hornbeam/examples/channels_chat/app.py:ro
+      - ./index.html:/app/hornbeam/examples/channels_chat/index.html:ro
+      - ../../js/hornbeam.js:/app/hornbeam/js/hornbeam.js:ro
+      - ../../priv:/app/hornbeam/priv:ro

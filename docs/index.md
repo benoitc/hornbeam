@@ -19,6 +19,7 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 - [ASGI Guide](./guides/asgi.md) - Run FastAPI, Starlette, and async apps
 
 ### Guides
+- [Channels & Presence](./guides/channels.md) - Real-time multiplexed channels
 - [WebSocket Guide](./guides/websocket.md) - Real-time bidirectional communication
 - [Erlang Integration](./guides/erlang-integration.md) - ETS, RPC, Pub/Sub
 - [ML Integration](./guides/ml-integration.md) - Caching, distributed inference
@@ -26,6 +27,7 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 ### Examples
 - [Flask Application](./examples/flask-app.md) - Traditional WSGI app
 - [FastAPI Application](./examples/fastapi-app.md) - Modern async API
+- [Channels Chat](./examples/channels-chat.md) - Channels and presence
 - [WebSocket Chat](./examples/websocket-chat.md) - Real-time chat
 - [Embedding Service](./examples/embedding-service.md) - ML with ETS caching
 - [Distributed ML](./examples/distributed-ml.md) - Cluster inference
