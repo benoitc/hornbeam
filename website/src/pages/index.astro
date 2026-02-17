@@ -327,19 +327,17 @@ cluster_nodes = nodes()
                 <span class="ml-2 text-xs text-hb-muted">chat.py</span>
               </div>
               <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">fastapi</span> <span class="text-[#c586c0]">import</span> WebSocket
-<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_erlang</span> <span class="text-[#c586c0]">import</span> pubsub
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam</span> <span class="text-[#c586c0]">import</span> broadcast
 
 <span class="text-[#dcdcaa]">@app.websocket</span>(<span class="text-[#ce9178]">"/chat/{'{'}room{'}'}"</span>)
 <span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">chat</span>(ws: WebSocket, room: <span class="text-[#4ec9b0]">str</span>):
     <span class="text-[#c586c0]">await</span> ws.accept()
+    session_id = ws.scope[<span class="text-[#ce9178]">"session_id"</span>]
 
-    <span class="text-[#6a9955]"># Subscribe via Erlang pg groups</span>
-    <span class="text-[#c586c0]">async for</span> msg <span class="text-[#c586c0]">in</span> pubsub.subscribe(room):
-        <span class="text-[#c586c0]">await</span> ws.send_json(msg)
-
-<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">broadcast</span>(room: <span class="text-[#4ec9b0]">str</span>, message: <span class="text-[#4ec9b0]">dict</span>):
-    <span class="text-[#6a9955]"># Publish to all nodes in cluster</span>
-    pubsub.publish(room, message)</code></pre>
+    <span class="text-[#c586c0]">while</span> <span class="text-[#569cd6]">True</span>:
+        data = <span class="text-[#c586c0]">await</span> ws.receive_json()
+        <span class="text-[#6a9955]"># Publish to all nodes via Erlang pg</span>
+        broadcast(session_id, <span class="text-[#ce9178]">f"chat:{'{'}room{'}'}"</span>, data)</code></pre>
             </div>
 
             <!-- Erlang Benefits -->
