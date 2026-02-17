@@ -26,18 +26,11 @@ from typing import List, Dict, Any, Optional
 
 
 # Install uvloop as the default event loop policy (once per interpreter)
-# This makes all asyncio.new_event_loop() calls use uvloop automatically
 _uvloop_installed = False
 
 
 def _install_uvloop() -> bool:
-    """Install uvloop as the default asyncio event loop policy.
-
-    Should be called once per worker/interpreter. After this,
-    asyncio.new_event_loop() will create uvloop event loops.
-
-    Returns True if uvloop was installed, False if not available.
-    """
+    """Install uvloop as the default asyncio event loop policy."""
     global _uvloop_installed
     if _uvloop_installed:
         return True
@@ -54,6 +47,16 @@ def _install_uvloop() -> bool:
 _install_uvloop()
 
 
+def get_event_loop_info() -> dict:
+    """Get information about the current event loop for debugging."""
+    loop = _get_event_loop()
+    return {
+        'loop_type': type(loop).__name__,
+        'loop_module': type(loop).__module__,
+        'policy_type': type(asyncio.get_event_loop_policy()).__name__,
+    }
+
+
 # Thread-safe app cache to avoid race conditions under concurrent load
 _app_cache: Dict[tuple, Any] = {}
 _app_cache_lock = threading.Lock()
@@ -68,8 +71,8 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
     Reusing the event loop avoids the overhead of creating a new one
     for each request, which is a major performance bottleneck.
 
-    Note: uvloop is installed as the default policy at module import,
-    so asyncio.new_event_loop() automatically creates uvloop instances.
+    Note: erlang event loop is installed as the default policy at module import,
+    so asyncio.new_event_loop() automatically creates erlang loop instances.
     """
     loop = getattr(_thread_local, 'loop', None)
     if loop is None or loop.is_closed():
@@ -238,6 +241,40 @@ async def _run_asgi_async(module_name: str, callable_name: str,
     return response.to_dict()
 
 
+def _run_sync_coroutine(coro):
+    """Run a coroutine synchronously without an event loop.
+
+    This is faster for simple coroutines that don't do real async I/O.
+    It manually drives the coroutine by catching StopIteration.
+    """
+    try:
+        # Start the coroutine
+        result = coro.send(None)
+        # Keep driving until done
+        while True:
+            # For awaited coroutines, drive them too
+            if hasattr(result, 'send'):
+                # It's a coroutine/awaitable, drive it
+                try:
+                    inner_result = result.send(None)
+                    while True:
+                        if hasattr(inner_result, 'send'):
+                            try:
+                                inner_result = inner_result.send(None)
+                            except StopIteration as e:
+                                inner_result = e.value
+                                break
+                        else:
+                            break
+                    result = coro.send(inner_result)
+                except StopIteration as e:
+                    result = coro.send(e.value)
+            else:
+                result = coro.send(result)
+    except StopIteration as e:
+        return e.value
+
+
 def run_asgi(module_name: str, callable_name: str,
              scope: dict, body: bytes) -> dict:
     """Run an ASGI application and return the response.
@@ -251,11 +288,43 @@ def run_asgi(module_name: str, callable_name: str,
     Returns:
         Dict with status, headers, body, and optional early_hints/trailers
     """
-    # Reuse persistent event loop for this thread (major perf improvement)
-    loop = _get_event_loop()
-    return loop.run_until_complete(
-        _run_asgi_async(module_name, callable_name, scope, body)
-    )
+    # Load the application
+    app = load_app(module_name, callable_name)
+
+    # Use Python-side lifespan state for ASGI compliance
+    try:
+        from hornbeam_lifespan_runner import get_state
+        scope['state'] = get_state()
+    except ImportError:
+        pass
+
+    # Ensure body is bytes
+    if isinstance(body, str):
+        body = body.encode('utf-8')
+    elif not isinstance(body, bytes):
+        body = b''
+
+    # Create receive callable - simple sync version
+    body_sent = [False]
+
+    async def receive():
+        if not body_sent[0]:
+            body_sent[0] = True
+            return {
+                'type': 'http.request',
+                'body': body,
+                'more_body': False
+            }
+        return {'type': 'http.disconnect'}
+
+    # Create response collector
+    response = ASGIResponse()
+
+    # Run the app using fast sync path
+    coro = app(scope, receive, response.send)
+    _run_sync_coroutine(coro)
+
+    return response.to_dict()
 
 
 # Streaming support for real-time responses

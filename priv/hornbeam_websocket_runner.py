@@ -28,18 +28,18 @@ from collections import deque
 from typing import Dict, Any, Optional, List
 
 
-# Install uvloop as the default event loop policy (once per interpreter)
-def _install_uvloop() -> bool:
-    """Install uvloop as the default asyncio event loop policy."""
+# Install erlang event loop as the default event loop policy (once per interpreter)
+def _install_erlang_loop() -> bool:
+    """Install erlang event loop as the default asyncio event loop policy."""
     try:
-        import uvloop
-        uvloop.install()
+        from erlang_loop import get_event_loop_policy
+        asyncio.set_event_loop_policy(get_event_loop_policy())
         return True
-    except ImportError:
+    except (ImportError, AttributeError, RuntimeError):
         return False
 
 
-_install_uvloop()
+_install_erlang_loop()
 
 
 # Active WebSocket sessions

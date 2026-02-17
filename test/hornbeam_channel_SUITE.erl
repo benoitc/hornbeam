@@ -134,7 +134,7 @@ test_broadcast_from(_Config) ->
 
     %% Spawn a receiver
     TestPid = self(),
-    ReceiverPid = spawn_link(fun() ->
+    _ReceiverPid = spawn_link(fun() ->
         hornbeam_pubsub:subscribe(Topic, self()),
         TestPid ! receiver_ready,
         receive
