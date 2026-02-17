@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-17
+
+### Added
+
+- **uvloop Integration**: Install uvloop as default event loop policy per worker for improved async performance
+- **ASGI Benchmarks**: Added ASGI benchmark suite and optimized request handling
+
+### Changed
+
+- Moved Benchmarking to bottom of Guides section in documentation
+
+### Fixed
+
+- Fixed syntax highlighting contrast in documentation
+
 ## [1.0.0] - 2026-02-17
 
 ### Added
@@ -89,4 +104,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowboy 2.12.0
 - erlang_python 1.3.2
 
-[1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/1.0.0
+[1.1.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.1.0
+[1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.0.0
