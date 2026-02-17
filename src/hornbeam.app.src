@@ -1,6 +1,6 @@
 {application, hornbeam,
  [{description, "WSGI/ASGI HTTP server powered by the BEAM"},
-  {vsn, "1.0.0"},
+  {vsn, "1.1.0"},
   {registered, [hornbeam_sup, hornbeam_config]},
   {mod, {hornbeam_app, []}},
   {applications,
