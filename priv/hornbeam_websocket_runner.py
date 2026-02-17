@@ -27,6 +27,21 @@ import sys
 from collections import deque
 from typing import Dict, Any, Optional, List
 
+
+# Install uvloop as the default event loop policy (once per interpreter)
+def _install_uvloop() -> bool:
+    """Install uvloop as the default asyncio event loop policy."""
+    try:
+        import uvloop
+        uvloop.install()
+        return True
+    except ImportError:
+        return False
+
+
+_install_uvloop()
+
+
 # Active WebSocket sessions
 # Each session stores the ASGI app instance and message queues
 _sessions: Dict[str, 'WebSocketSession'] = {}

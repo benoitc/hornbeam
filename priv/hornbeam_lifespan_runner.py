@@ -28,6 +28,21 @@ import importlib
 import sys
 from typing import Dict, Any, Optional
 
+
+# Install uvloop as the default event loop policy (once per interpreter)
+def _install_uvloop() -> bool:
+    """Install uvloop as the default asyncio event loop policy."""
+    try:
+        import uvloop
+        uvloop.install()
+        return True
+    except ImportError:
+        return False
+
+
+_install_uvloop()
+
+
 # Global lifespan state shared across requests
 _lifespan_state: Dict[str, Any] = {}
 _lifespan_app = None

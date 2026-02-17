@@ -25,6 +25,35 @@ import threading
 from typing import List, Dict, Any, Optional
 
 
+# Install uvloop as the default event loop policy (once per interpreter)
+# This makes all asyncio.new_event_loop() calls use uvloop automatically
+_uvloop_installed = False
+
+
+def _install_uvloop() -> bool:
+    """Install uvloop as the default asyncio event loop policy.
+
+    Should be called once per worker/interpreter. After this,
+    asyncio.new_event_loop() will create uvloop event loops.
+
+    Returns True if uvloop was installed, False if not available.
+    """
+    global _uvloop_installed
+    if _uvloop_installed:
+        return True
+    try:
+        import uvloop
+        uvloop.install()
+        _uvloop_installed = True
+        return True
+    except ImportError:
+        return False
+
+
+# Install uvloop at module import time
+_install_uvloop()
+
+
 # Thread-safe app cache to avoid race conditions under concurrent load
 _app_cache: Dict[tuple, Any] = {}
 _app_cache_lock = threading.Lock()
@@ -38,15 +67,13 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
 
     Reusing the event loop avoids the overhead of creating a new one
     for each request, which is a major performance bottleneck.
+
+    Note: uvloop is installed as the default policy at module import,
+    so asyncio.new_event_loop() automatically creates uvloop instances.
     """
     loop = getattr(_thread_local, 'loop', None)
     if loop is None or loop.is_closed():
-        # Try to use uvloop if available for better performance
-        try:
-            import uvloop
-            loop = uvloop.new_event_loop()
-        except ImportError:
-            loop = asyncio.new_event_loop()
+        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _thread_local.loop = loop
     return loop
