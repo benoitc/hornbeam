@@ -370,5 +370,5 @@ Open http://localhost:8000 in multiple browsers to test.
 
 ## Next Steps
 
-- [Embedding Service](./embedding-service) - ML with ETS caching
-- [WebSocket Guide](../guides/websocket) - WebSocket details
+- [Embedding Service](./embedding-service.md) - ML with ETS caching
+- [WebSocket Guide](../guides/websocket.md) - WebSocket details

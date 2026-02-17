@@ -442,6 +442,6 @@ def timed_inference(model, input):
 
 ## Next Steps
 
-- [Embedding Service Example](../examples/embedding-service) - Complete service
-- [Distributed ML Example](../examples/distributed-ml) - Cluster setup
+- [Embedding Service Example](../examples/embedding-service.md) - Complete service
+- [Distributed ML Example](../examples/distributed-ml.md) - Cluster setup
 - [Erlang Python AI Guide](https://hexdocs.pm/erlang_python/ai-integration.html) - Low-level AI integration

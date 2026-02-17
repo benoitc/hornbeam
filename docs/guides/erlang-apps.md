@@ -544,6 +544,6 @@ For complete Erlang API documentation, see:
 
 ## See Also
 
-- [Custom Apps Guide](./custom-apps) - Python-focused patterns
-- [Hooks Guide](./hooks) - Bidirectional callbacks
-- [Distributed RPC Guide](./distributed-rpc) - Cluster communication
+- [Custom Apps Guide](./custom-apps.md) - Python-focused patterns
+- [Hooks Guide](./hooks.md) - Bidirectional callbacks
+- [Distributed RPC Guide](./distributed-rpc.md) - Cluster communication

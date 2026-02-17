@@ -330,5 +330,5 @@ numpy>=1.20
 
 ## Next Steps
 
-- [Distributed ML](./distributed-ml) - Scale across cluster
-- [ML Integration Guide](../guides/ml-integration) - More patterns
+- [Distributed ML](./distributed-ml.md) - Scale across cluster
+- [ML Integration Guide](../guides/ml-integration.md) - More patterns

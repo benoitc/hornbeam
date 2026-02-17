@@ -404,6 +404,6 @@ def handler(action, *args, **kwargs):
 
 ## See Also
 
-- [Python API Reference](../reference/python-api) - Full function documentation
+- [Python API Reference](../reference/python-api.md) - Full function documentation
 - [Erlang API Reference](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)
-- [Custom Apps Guide](./custom-apps) - Building full applications
+- [Custom Apps Guide](./custom-apps.md) - Building full applications

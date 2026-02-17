@@ -395,6 +395,6 @@ if value is None:
 
 ## Next Steps
 
-- [ML Integration](./ml-integration) - Caching ML inference
-- [Distributed ML Example](../examples/distributed-ml) - Cluster inference
+- [ML Integration](./ml-integration.md) - Caching ML inference
+- [Distributed ML Example](../examples/distributed-ml.md) - Cluster inference
 - [Erlang API Reference](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)

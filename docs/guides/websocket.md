@@ -368,6 +368,6 @@ asyncio.run(test())
 
 ## Next Steps
 
-- [Erlang Integration](./erlang-integration) - ETS, RPC, Pub/Sub details
-- [WebSocket Chat Example](../examples/websocket-chat) - Full chat application
-- [Configuration Reference](../reference/configuration) - All WebSocket options
+- [Erlang Integration](./erlang-integration.md) - ETS, RPC, Pub/Sub details
+- [WebSocket Chat Example](../examples/websocket-chat.md) - Full chat application
+- [Configuration Reference](../reference/configuration.md) - All WebSocket options

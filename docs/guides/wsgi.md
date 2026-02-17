@@ -270,6 +270,6 @@ hornbeam:start("app:application", #{
 
 ## Next Steps
 
-- [ASGI Guide](./asgi) - For async applications
-- [Erlang Integration](./erlang-integration) - ETS, RPC, Pub/Sub
-- [Flask Example](../examples/flask-app) - Complete Flask application
+- [ASGI Guide](./asgi.md) - For async applications
+- [Erlang Integration](./erlang-integration.md) - ETS, RPC, Pub/Sub
+- [Flask Example](../examples/flask-app.md) - Complete Flask application

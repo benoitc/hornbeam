@@ -589,5 +589,5 @@ from hornbeam_ml import cached_inference, cache_stats
 ## See Also
 
 - [Erlang API Reference](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)
-- [Hooks Guide](../guides/hooks) - Using hooks for bidirectional calls
-- [ML Integration Guide](../guides/ml-integration) - ML caching patterns
+- [Hooks Guide](../guides/hooks.md) - Using hooks for bidirectional calls
+- [ML Integration Guide](../guides/ml-integration.md) - ML caching patterns
