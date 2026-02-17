@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hornbeam Channels Chat</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        input, button {
+            padding: 10px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input {
+            width: 100%;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+        .message {
+            margin-bottom: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            background: white;
+        }
+        .message .username {
+            font-weight: bold;
+            color: #007bff;
+        }
+        .message .body {
+            margin-top: 4px;
+        }
+        .message.system {
+            background: #e7f3ff;
+            font-style: italic;
+        }
+        #presence-list {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        #presence-list h3 {
+            margin-top: 0;
+            font-size: 14px;
+        }
+        .presence-user {
+            display: inline-block;
+            padding: 4px 8px;
+            margin: 2px;
+            background: #28a745;
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        #status {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        #status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        #status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        #status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .typing-indicator {
+            font-style: italic;
+            color: #666;
+            font-size: 12px;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Hornbeam Channels Chat</h1>
+
+    <div class="container">
+        <div id="status" class="disconnected">Disconnected</div>
+
+        <div id="join-form">
+            <div class="form-group">
+                <label for="username">Username:</label>
+                <input type="text" id="username" placeholder="Enter your username">
+            </div>
+            <div class="form-group">
+                <label for="room">Room:</label>
+                <input type="text" id="room" value="lobby" placeholder="Room name">
+            </div>
+            <button id="join-btn" onclick="joinRoom()">Join Room</button>
+        </div>
+
+        <div id="chat-area" style="display: none;">
+            <div id="messages"></div>
+            <div class="typing-indicator" id="typing-indicator"></div>
+            <div class="form-group">
+                <input type="text" id="message-input" placeholder="Type a message..."
+                       onkeypress="handleKeyPress(event)" oninput="handleTyping()">
+            </div>
+            <button onclick="sendMessage()">Send</button>
+            <button onclick="leaveRoom()">Leave Room</button>
+
+            <div id="presence-list">
+                <h3>Online Users</h3>
+                <div id="users"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/hornbeam.js?v=2"></script>
+    <script>
+        let socket, channel, presence;
+        let typingTimeout;
+
+        function updateStatus(status, text) {
+            const el = document.getElementById('status');
+            el.className = status;
+            el.textContent = text;
+        }
+
+        function addMessage(username, body, isSystem = false) {
+            const messages = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = 'message' + (isSystem ? ' system' : '');
+            div.innerHTML = `
+                <span class="username">${escapeHtml(username)}</span>
+                <div class="body">${escapeHtml(body)}</div>
+            `;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function renderPresences() {
+            const users = document.getElementById('users');
+            const presenceList = presence.list((id, {metas}) => metas[0]);
+            users.innerHTML = presenceList.map(meta =>
+                `<span class="presence-user">${escapeHtml(meta.username)}</span>`
+            ).join('');
+        }
+
+        function joinRoom() {
+            const username = document.getElementById('username').value.trim();
+            const room = document.getElementById('room').value.trim();
+
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+
+            updateStatus('connecting', 'Connecting...');
+
+            // Create socket connection
+            socket = new Hornbeam.Socket('/ws', {
+                params: { token: 'demo' },
+                logger: (kind, msg, data) => console.log(`${kind}: ${msg}`, data)
+            });
+
+            socket.onOpen(() => {
+                updateStatus('connected', 'Connected');
+            });
+
+            socket.onClose(() => {
+                updateStatus('disconnected', 'Disconnected');
+            });
+
+            socket.onError((error) => {
+                console.error('Socket error:', error);
+                updateStatus('disconnected', 'Error');
+            });
+
+            // Create channel
+            channel = socket.channel(`room:${room}`, { username: username });
+
+            // Set up presence
+            presence = new Hornbeam.Presence(channel);
+
+            presence.onJoin((id, current, newPres) => {
+                if (!current) {
+                    addMessage('System', `${newPres.metas[0].username} joined`, true);
+                }
+            });
+
+            presence.onLeave((id, current, leftPres) => {
+                if (current.metas.length === 0) {
+                    addMessage('System', `${leftPres.metas[0].username} left`, true);
+                }
+            });
+
+            presence.onSync(() => {
+                renderPresences();
+            });
+
+            // Handle incoming messages
+            channel.on('new_msg', (payload) => {
+                addMessage(payload.username, payload.body);
+            });
+
+            channel.on('typing', (payload) => {
+                if (payload.typing) {
+                    document.getElementById('typing-indicator').textContent =
+                        `${payload.username} is typing...`;
+                } else {
+                    document.getElementById('typing-indicator').textContent = '';
+                }
+            });
+
+            // Join the channel
+            channel.join()
+                .receive('ok', (resp) => {
+                    console.log('Joined successfully', resp);
+                    addMessage('System', resp.message || `Joined room:${room}`, true);
+                    document.getElementById('join-form').style.display = 'none';
+                    document.getElementById('chat-area').style.display = 'block';
+                    document.getElementById('message-input').focus();
+                })
+                .receive('error', (resp) => {
+                    console.error('Join error', resp);
+                    alert('Failed to join: ' + (resp.reason || 'Unknown error'));
+                    updateStatus('disconnected', 'Join failed');
+                })
+                .receive('timeout', () => {
+                    console.error('Join timeout');
+                    alert('Join timed out');
+                    updateStatus('disconnected', 'Timeout');
+                });
+
+            socket.connect();
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('message-input');
+            const body = input.value.trim();
+
+            if (!body) return;
+
+            channel.push('new_msg', { body: body })
+                .receive('ok', () => {
+                    // Add our own message to the list
+                    addMessage(document.getElementById('username').value, body);
+                    input.value = '';
+                })
+                .receive('error', (resp) => {
+                    console.error('Send error', resp);
+                });
+
+            // Stop typing indicator
+            channel.push('typing', { typing: false });
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function handleTyping() {
+            // Send typing indicator
+            channel.push('typing', { typing: true });
+
+            // Clear previous timeout
+            clearTimeout(typingTimeout);
+
+            // Stop typing after 2 seconds of no input
+            typingTimeout = setTimeout(() => {
+                channel.push('typing', { typing: false });
+            }, 2000);
+        }
+
+        function leaveRoom() {
+            if (channel) {
+                channel.leave()
+                    .receive('ok', () => {
+                        console.log('Left room');
+                    });
+            }
+            if (socket) {
+                socket.disconnect();
+            }
+
+            document.getElementById('join-form').style.display = 'block';
+            document.getElementById('chat-area').style.display = 'none';
+            document.getElementById('messages').innerHTML = '';
+            document.getElementById('users').innerHTML = '';
+            updateStatus('disconnected', 'Disconnected');
+        }
+    </script>
+</body>
+</html>

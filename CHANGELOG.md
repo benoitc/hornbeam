@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - Unreleased
+
+### Added
+
+- **Channels & Presence**: Real-time multiplexed channels with presence tracking
+  - `hornbeam_channel` gen_server for channel lifecycle management
+  - `hornbeam_channel_registry` for pattern-based channel routing
+  - `hornbeam_presence` for CRDT-backed distributed presence
+  - Python decorator API (`@channel.on_join`, `@channel.on("event")`)
+  - Broadcasting (`broadcast`, `broadcast_from`)
+  - Presence tracking (`Presence.track`, `Presence.list`)
+  - JavaScript client with Socket, Channel, and Presence classes
+
+- **Documentation**
+  - Channels & Presence guide
+  - Channels Chat example
+
+### Fixed
+
+- Fixed dialyzer warnings in channel and websocket modules
+
 ## [1.1.0] - 2026-02-17
 
 ### Added
@@ -104,5 +125,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowboy 2.12.0
 - erlang_python 1.3.2
 
+[1.2.0]: https://github.com/benoitc/hornbeam/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.1.0
 [1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.0.0

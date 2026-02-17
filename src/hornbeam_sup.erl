@@ -22,6 +22,8 @@
 %%% - hornbeam_pubsub: Pub/sub messaging
 %%% - hornbeam_lifespan: ASGI lifespan management
 %%% - hornbeam_hooks: Hooks-style execution API
+%%% - hornbeam_channel_registry: Channel topic pattern matching
+%%% - hornbeam_presence: Distributed presence tracking (CRDT)
 -module(hornbeam_sup).
 
 -behaviour(supervisor).
@@ -97,6 +99,22 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [hornbeam_hooks]
+        },
+        #{
+            id => hornbeam_channel_registry,
+            start => {hornbeam_channel_registry, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_channel_registry]
+        },
+        #{
+            id => hornbeam_presence,
+            start => {hornbeam_presence, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_presence]
         }
     ],
 

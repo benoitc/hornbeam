@@ -135,7 +135,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             data-tab="realtime"
             class="demo-tab px-4 py-2 rounded-md text-sm font-medium transition-all"
           >
-            Real-time Chat
+            Channels & Presence
           </button>
         </div>
       </div>
@@ -326,18 +326,21 @@ cluster_nodes = nodes()
                 <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
                 <span class="ml-2 text-xs text-hb-muted">chat.py</span>
               </div>
-              <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">fastapi</span> <span class="text-[#c586c0]">import</span> WebSocket
-<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam</span> <span class="text-[#c586c0]">import</span> broadcast
+              <pre class="text-sm leading-relaxed"><code class="text-hb-text"><span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_channels</span> <span class="text-[#c586c0]">import</span> channel, broadcast_from
+<span class="text-[#c586c0]">from</span> <span class="text-[#4ec9b0]">hornbeam_presence</span> <span class="text-[#c586c0]">import</span> Presence
 
-<span class="text-[#dcdcaa]">@app.websocket</span>(<span class="text-[#ce9178]">"/chat/{'{'}room{'}'}"</span>)
-<span class="text-[#c586c0]">async def</span> <span class="text-[#dcdcaa]">chat</span>(ws: WebSocket, room: <span class="text-[#4ec9b0]">str</span>):
-    <span class="text-[#c586c0]">await</span> ws.accept()
-    session_id = ws.scope[<span class="text-[#ce9178]">"session_id"</span>]
+room = channel(<span class="text-[#ce9178]">"room:*"</span>)
 
-    <span class="text-[#c586c0]">while</span> <span class="text-[#569cd6]">True</span>:
-        data = <span class="text-[#c586c0]">await</span> ws.receive_json()
-        <span class="text-[#6a9955]"># Publish to all nodes via Erlang pg</span>
-        broadcast(session_id, <span class="text-[#ce9178]">f"chat:{'{'}room{'}'}"</span>, data)</code></pre>
+<span class="text-[#dcdcaa]">@room.on_join</span>
+<span class="text-[#c586c0]">def</span> <span class="text-[#dcdcaa]">join</span>(topic, params, socket):
+    username = params[<span class="text-[#ce9178]">"username"</span>]
+    Presence(topic).track(socket, username, {'{'}<span class="text-[#ce9178]">"name"</span>: username{'}'})
+    <span class="text-[#c586c0]">return</span> (<span class="text-[#ce9178]">'ok'</span>, {'{'}<span class="text-[#ce9178]">"msg"</span>: <span class="text-[#ce9178]">"Welcome!"</span>{'}'}, socket)
+
+<span class="text-[#dcdcaa]">@room.on</span>(<span class="text-[#ce9178]">"new_msg"</span>)
+<span class="text-[#c586c0]">def</span> <span class="text-[#dcdcaa]">handle_msg</span>(payload, socket):
+    broadcast_from(socket, <span class="text-[#ce9178]">"new_msg"</span>, payload)
+    <span class="text-[#c586c0]">return</span> (<span class="text-[#ce9178]">'reply'</span>, {'{'}<span class="text-[#ce9178]">"status"</span>: <span class="text-[#ce9178]">"ok"</span>{'}'}, socket)</code></pre>
             </div>
 
             <!-- Erlang Benefits -->
@@ -352,22 +355,22 @@ cluster_nodes = nodes()
                 <li class="flex items-start gap-3">
                   <span class="text-hb-green-light mt-0.5">●</span>
                   <div>
-                    <span class="text-hb-text font-medium">pg Process Groups</span>
-                    <p class="text-hb-muted text-xs mt-0.5">Built-in pub/sub, no external broker needed</p>
+                    <span class="text-hb-text font-medium">Decorator API</span>
+                    <p class="text-hb-muted text-xs mt-0.5">@room.on_join, @room.on("event") handlers</p>
                   </div>
                 </li>
                 <li class="flex items-start gap-3">
                   <span class="text-hb-green-light mt-0.5">●</span>
                   <div>
-                    <span class="text-hb-text font-medium">Cluster-wide Broadcast</span>
-                    <p class="text-hb-muted text-xs mt-0.5">Messages reach all nodes automatically</p>
+                    <span class="text-hb-text font-medium">Presence Tracking</span>
+                    <p class="text-hb-muted text-xs mt-0.5">CRDT-backed, cluster-wide user tracking</p>
                   </div>
                 </li>
                 <li class="flex items-start gap-3">
                   <span class="text-hb-green-light mt-0.5">●</span>
                   <div>
-                    <span class="text-hb-text font-medium">Millions of Connections</span>
-                    <p class="text-hb-muted text-xs mt-0.5">BEAM handles WebSocket connections efficiently</p>
+                    <span class="text-hb-text font-medium">Topic Multiplexing</span>
+                    <p class="text-hb-muted text-xs mt-0.5">Many channels over single WebSocket</p>
                   </div>
                 </li>
               </ul>
@@ -376,15 +379,15 @@ cluster_nodes = nodes()
                 <div class="space-y-2">
                   <div class="flex items-center gap-2 text-xs">
                     <span class="text-hb-green-light">→</span>
-                    <span class="text-hb-muted">alice joined #general</span>
+                    <span class="text-hb-muted">presence_state: alice, bob online</span>
                   </div>
                   <div class="flex items-center gap-2 text-xs">
                     <span class="text-hb-green-light">→</span>
-                    <span class="text-hb-muted">bob: Hello from node2!</span>
+                    <span class="text-hb-muted">new_msg: Hello from node2!</span>
                   </div>
                   <div class="flex items-center gap-2 text-xs animate-pulse">
                     <span class="text-hb-amber">→</span>
-                    <span class="text-hb-muted">typing...</span>
+                    <span class="text-hb-muted">presence_diff: charlie joined</span>
                   </div>
                 </div>
                 <p class="text-xs text-hb-muted mt-3 pt-3 border-t border-hb-border">
@@ -394,7 +397,7 @@ cluster_nodes = nodes()
             </div>
           </div>
           <div class="px-6 py-3 border-t border-hb-border bg-hb-bg-secondary/30 flex justify-end">
-            <a href="https://github.com/benoitc/hornbeam/tree/main/examples/demo/realtime_chat" target="_blank" class="text-xs text-hb-green-light hover:underline flex items-center gap-1">
+            <a href="https://github.com/benoitc/hornbeam/tree/main/examples/channels_chat" target="_blank" class="text-xs text-hb-green-light hover:underline flex items-center gap-1">
               View full example
               <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
             </a>
