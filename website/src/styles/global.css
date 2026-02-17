@@ -156,6 +156,32 @@ code {
   margin: 1rem 0;
 }
 
+/* Shiki syntax highlighting - dual theme support */
+/* Override Shiki's inline background color */
+pre.astro-code,
+pre.shiki,
+pre[class*="shiki"] {
+  background-color: var(--hb-code-bg) !important;
+}
+
+pre.astro-code code,
+pre.shiki code {
+  background-color: transparent !important;
+}
+
+/* Use Shiki CSS variables for theme-aware highlighting */
+/* Dark mode (default) - use --shiki-dark colors */
+.astro-code span,
+.shiki span {
+  color: var(--shiki-dark) !important;
+}
+
+/* Light mode - use --shiki-light colors */
+.light .astro-code span,
+.light .shiki span {
+  color: var(--shiki-light) !important;
+}
+
 .prose blockquote {
   border-left: 3px solid #4a7c50;
   padding-left: 1rem;
