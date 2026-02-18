@@ -133,6 +133,7 @@ defaults() ->
         ssl => false,
         certfile => undefined,
         keyfile => undefined,
+        cacertfile => undefined,
 
         %% Protocol
         worker_class => wsgi,
@@ -158,6 +159,7 @@ defaults() ->
         %% WebSocket
         websocket_timeout => 60000,
         websocket_max_frame_size => 16777216,  % 16MB
+        websocket_compress => false,
 
         %% Python
         pythonpath => [<<".">>, <<"examples">>],
@@ -224,7 +226,7 @@ code_change(_OldVsn, State, _Extra) ->
 load_app_env() ->
     Keys = [
         %% Server
-        bind, ssl, certfile, keyfile,
+        bind, ssl, certfile, keyfile, cacertfile,
         %% Protocol
         worker_class, http_version,
         %% Workers
@@ -234,7 +236,7 @@ load_app_env() ->
         %% ASGI
         root_path, lifespan, lifespan_timeout,
         %% WebSocket
-        websocket_timeout, websocket_max_frame_size,
+        websocket_timeout, websocket_max_frame_size, websocket_compress,
         %% Python
         pythonpath, venv
     ],
