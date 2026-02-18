@@ -52,6 +52,7 @@
 %%%
 %%% === Python ===
 %%% - pythonpath: Additional Python paths (default: [".", "examples"])
+%%% - venv: Virtual environment path (default: undefined)
 -module(hornbeam_config).
 
 -behaviour(gen_server).
@@ -159,7 +160,8 @@ defaults() ->
         websocket_max_frame_size => 16777216,  % 16MB
 
         %% Python
-        pythonpath => [<<".">>, <<"examples">>]
+        pythonpath => [<<".">>, <<"examples">>],
+        venv => undefined
     }.
 
 %%% ============================================================================
@@ -234,7 +236,7 @@ load_app_env() ->
         %% WebSocket
         websocket_timeout, websocket_max_frame_size,
         %% Python
-        pythonpath
+        pythonpath, venv
     ],
     lists:foldl(fun(Key, Acc) ->
         case application:get_env(hornbeam, Key) of

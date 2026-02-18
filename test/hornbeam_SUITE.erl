@@ -32,6 +32,7 @@
 -export([
     test_start_stop/1,
     test_config/1,
+    test_config_venv/1,
     test_register_function/1
 ]).
 
@@ -42,6 +43,7 @@ groups() ->
     [{basic, [sequence], [
         test_start_stop,
         test_config,
+        test_config_venv,
         test_register_function
     ]}].
 
@@ -96,6 +98,24 @@ test_config(_Config) ->
     Config = hornbeam_config:get_config(),
     ?assertEqual(bar, maps:get(foo, Config)),
     ?assertEqual(qux, maps:get(baz, Config)).
+
+test_config_venv(_Config) ->
+    %% Test that venv option is recognized in defaults
+    Defaults = hornbeam_config:defaults(),
+    ?assert(maps:is_key(venv, Defaults)),
+    ?assertEqual(undefined, maps:get(venv, Defaults)),
+
+    %% Test that venv option can be set
+    hornbeam_config:set_config(#{venv => <<"/path/to/venv">>}),
+    ?assertEqual(<<"/path/to/venv">>, hornbeam_config:get_config(venv)),
+
+    %% Test that venv is merged with defaults
+    hornbeam_config:set_config(#{venv => <<"/another/venv">>}),
+    Config = hornbeam_config:get_config(),
+    ?assertEqual(<<"/another/venv">>, maps:get(venv, Config)),
+    %% Verify defaults are still present
+    ?assert(maps:is_key(bind, Config)),
+    ?assert(maps:is_key(pythonpath, Config)).
 
 test_register_function(_Config) ->
     %% Register a function

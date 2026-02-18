@@ -63,6 +63,7 @@
     max_concurrent => pos_integer(),
     preload_app => boolean(),
     pythonpath => [string() | binary()],
+    venv => string() | binary() | undefined,
     lifespan => auto | on | off,
     lifespan_timeout => pos_integer(),
     websocket_timeout => pos_integer(),
@@ -91,6 +92,7 @@ start(AppSpec) ->
 %%   <li>`max_concurrent' - Max concurrent requests queued (default: 10000)</li>
 %%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
+%%   <li>`venv' - Virtual environment path (default: undefined)</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
 %%   <li>`lifespan_timeout' - Lifespan startup/shutdown timeout in ms (default: 30000)</li>
 %%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
@@ -184,6 +186,7 @@ default_config() ->
         max_concurrent => 10000,  % High limit for concurrent requests queued
         preload_app => false,
         pythonpath => [<<".">>, <<"examples">>],
+        venv => undefined,
         lifespan => auto,
         websocket_timeout => 60000,
         websocket_max_frame_size => 16777216  % 16MB
@@ -202,6 +205,16 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
     end.
 
 setup_python_paths(Config) ->
+    %% Activate virtual environment if specified
+    case maps:get(venv, Config, undefined) of
+        undefined ->
+            ok;
+        Venv ->
+            VenvBin = ensure_binary(Venv),
+            AbsVenv = list_to_binary(filename:absname(binary_to_list(VenvBin))),
+            py:activate_venv(AbsVenv)
+    end,
+
     %% Get priv directory for runner modules (ensure absolute path)
     PrivDir = case code:priv_dir(hornbeam) of
         {error, _} ->
