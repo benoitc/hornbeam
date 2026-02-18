@@ -59,16 +59,27 @@ handle_websocket_upgrade(Req, State) ->
 
 handle_wsgi(Req, State) ->
     try
-        %% Build WSGI environ dict
-        Environ = hornbeam_wsgi:build_environ(Req),
-
         %% Get app module and callable from cached state (avoids ETS lookups)
         AppModule = maps:get(app_module, State),
         AppCallable = maps:get(app_callable, State),
         TimeoutMs = maps:get(timeout, State, 30000),
 
-        Result = py:call(hornbeam_wsgi_runner, run_wsgi,
-                        [AppModule, AppCallable, Environ], #{}, TimeoutMs),
+        %% Check if context affinity is required (for module-level state sharing)
+        %% Use optimized NIF path by default, fall back to ctx_call when needed
+        UseContextAffinity = maps:get(context_affinity, State, false),
+        PyContext = case UseContextAffinity of
+            true -> hornbeam_lifespan:get_context();
+            false -> undefined
+        end,
+
+        Result = case PyContext of
+            undefined ->
+                %% Optimized py_wsgi:run/4 path (NIF-based marshalling)
+                run_wsgi_optimized(Req, AppModule, AppCallable);
+            Ctx ->
+                %% Context affinity path - uses same worker as lifespan
+                run_wsgi_with_context(Req, AppModule, AppCallable, Ctx, TimeoutMs)
+        end,
 
         case Result of
             {ok, Response} ->
@@ -84,6 +95,103 @@ handle_wsgi(Req, State) ->
                                    [Class, Reason, Stack]),
             error_response(Req, {Class, Reason}, State)
     end.
+
+%% @private
+%% Optimized path using py_wsgi:run/4 with NIF marshalling
+run_wsgi_optimized(Req, AppModule, AppCallable) ->
+    Environ = build_environ_for_nif(Req),
+    case py_wsgi:run(AppModule, AppCallable, Environ,
+                     #{runner => <<"hornbeam_wsgi_runner">>}) of
+        {ok, {Status, Headers, Body}} ->
+            {ok, #{<<"status">> => Status,
+                   <<"headers">> => Headers,
+                   <<"body">> => Body}};
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
+%% Context-aware fallback path using py:ctx_call
+run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs) ->
+    Environ = hornbeam_wsgi:build_environ(Req),
+    py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
+               [AppModule, AppCallable, Environ], #{}, TimeoutMs).
+
+%% @private
+%% Build environ dict for NIF optimization.
+%% Uses binary keys which the NIF optimizes with interned strings.
+build_environ_for_nif(Req) ->
+    Method = cowboy_req:method(Req),
+    Path = cowboy_req:path(Req),
+    Qs = cowboy_req:qs(Req),
+    Headers = cowboy_req:headers(Req),
+    Host = cowboy_req:host(Req),
+    Port = cowboy_req:port(Req),
+    Scheme = cowboy_req:scheme(Req),
+    Version = cowboy_req:version(Req),
+    {ClientIp, _ClientPort} = cowboy_req:peer(Req),
+
+    %% Read body
+    {ok, Body, _Req2} = cowboy_req:read_body(Req),
+
+    %% Build HTTP_* headers
+    HttpHeaders = maps:fold(fun(Name, Value, Acc) ->
+        HeaderKey = header_to_wsgi_key(Name),
+        Acc#{HeaderKey => Value}
+    end, #{}, Headers),
+
+    %% Build base environ
+    BaseEnviron = #{
+        <<"REQUEST_METHOD">> => Method,
+        <<"SCRIPT_NAME">> => <<>>,
+        <<"PATH_INFO">> => Path,
+        <<"QUERY_STRING">> => Qs,
+        <<"SERVER_NAME">> => Host,
+        <<"SERVER_PORT">> => integer_to_binary(Port),
+        <<"SERVER_PROTOCOL">> => format_protocol(Version),
+        <<"REMOTE_ADDR">> => format_ip(ClientIp),
+        <<"wsgi.version">> => {1, 0},
+        <<"wsgi.url_scheme">> => Scheme,
+        <<"wsgi.input">> => Body,
+        <<"wsgi.multithread">> => true,
+        <<"wsgi.multiprocess">> => true,
+        <<"wsgi.run_once">> => false
+    },
+
+    %% Merge HTTP headers
+    Environ1 = maps:merge(BaseEnviron, HttpHeaders),
+
+    %% Add CONTENT_TYPE and CONTENT_LENGTH if present
+    ContentType = maps:get(<<"content-type">>, Headers, undefined),
+    ContentLength = maps:get(<<"content-length">>, Headers, undefined),
+    Environ2 = case ContentType of
+        undefined -> Environ1;
+        CT -> Environ1#{<<"CONTENT_TYPE">> => CT}
+    end,
+    case ContentLength of
+        undefined -> Environ2;
+        CL -> Environ2#{<<"CONTENT_LENGTH">> => CL}
+    end.
+
+%% @private
+header_to_wsgi_key(Name) ->
+    %% Convert header name to WSGI HTTP_* format
+    %% e.g., "content-type" -> "CONTENT_TYPE" (but CONTENT_TYPE is special)
+    %% "accept" -> "HTTP_ACCEPT"
+    case Name of
+        <<"content-type">> -> <<"CONTENT_TYPE">>;
+        <<"content-length">> -> <<"CONTENT_LENGTH">>;
+        _ ->
+            Upper = string:uppercase(Name),
+            Underscored = binary:replace(Upper, <<"-">>, <<"_">>, [global]),
+            <<"HTTP_", Underscored/binary>>
+    end.
+
+%% @private
+format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
+format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
+format_protocol('HTTP/2') -> <<"HTTP/2">>;
+format_protocol(_) -> <<"HTTP/1.1">>.
 
 send_wsgi_response(Req, Response, State) ->
     Status = maps:get(<<"status">>, Response),
