@@ -63,11 +63,24 @@
     max_concurrent => pos_integer(),
     preload_app => boolean(),
     pythonpath => [string() | binary()],
+    venv => string() | binary() | undefined,
     lifespan => auto | on | off,
     lifespan_timeout => pos_integer(),
     websocket_timeout => pos_integer(),
     websocket_max_frame_size => pos_integer(),
-    routes => [{Path :: binary(), Handler :: module(), Opts :: map()}]
+    websocket_compress => boolean(),
+    routes => [{Path :: binary(), Handler :: module(), Opts :: map()}],
+    %% SSL/TLS
+    ssl => boolean(),
+    certfile => string() | binary() | undefined,
+    keyfile => string() | binary() | undefined,
+    cacertfile => string() | binary() | undefined,
+    %% HTTP lifecycle hooks
+    hooks => #{
+        on_request => fun((map()) -> map()),
+        on_response => fun((map()) -> map()),
+        on_error => fun((term(), map()) -> {integer(), binary()})
+    }
 }.
 
 -export_type([app_spec/0, options/0]).
@@ -91,6 +104,7 @@ start(AppSpec) ->
 %%   <li>`max_concurrent' - Max concurrent requests queued (default: 10000)</li>
 %%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
+%%   <li>`venv' - Virtual environment path (default: undefined)</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
 %%   <li>`lifespan_timeout' - Lifespan startup/shutdown timeout in ms (default: 30000)</li>
 %%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
@@ -109,6 +123,10 @@ start(AppSpec, Options) ->
                 app_callable => Callable
             },
             hornbeam_config:set_config(Config1),
+
+            %% Initialize HTTP hooks if provided
+            Hooks = maps:get(hooks, Config1, #{}),
+            hornbeam_http_hooks:set_hooks(Hooks),
 
             %% Register hornbeam functions for Python callbacks
             register_python_callbacks(),
@@ -184,6 +202,7 @@ default_config() ->
         max_concurrent => 10000,  % High limit for concurrent requests queued
         preload_app => false,
         pythonpath => [<<".">>, <<"examples">>],
+        venv => undefined,
         lifespan => auto,
         websocket_timeout => 60000,
         websocket_max_frame_size => 16777216  % 16MB
@@ -202,6 +221,16 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
     end.
 
 setup_python_paths(Config) ->
+    %% Activate virtual environment if specified
+    case maps:get(venv, Config, undefined) of
+        undefined ->
+            ok;
+        Venv ->
+            VenvBin = ensure_binary(Venv),
+            AbsVenv = list_to_binary(filename:absname(binary_to_list(VenvBin))),
+            py:activate_venv(AbsVenv)
+    end,
+
     %% Get priv directory for runner modules (ensure absolute path)
     PrivDir = case code:priv_dir(hornbeam) of
         {error, _} ->
@@ -274,15 +303,48 @@ start_listener(Config) ->
         {'_', AllRoutes}
     ]),
 
-    {ok, _} = cowboy:start_clear(hornbeam_http,
-        [{port, Port}, {ip, Ip}],
-        #{
-            env => #{dispatch => Dispatch},
-            idle_timeout => maps:get(keepalive, Config) * 1000,
-            request_timeout => maps:get(timeout, Config)
-        }
-    ),
-    ok.
+    ProtoOpts = #{
+        env => #{dispatch => Dispatch},
+        idle_timeout => maps:get(keepalive, Config) * 1000,
+        request_timeout => maps:get(timeout, Config)
+    },
+
+    %% Start with SSL/TLS or plain HTTP
+    case maps:get(ssl, Config, false) of
+        true ->
+            start_tls_listener(Ip, Port, Config, ProtoOpts);
+        false ->
+            {ok, _} = cowboy:start_clear(hornbeam_http,
+                [{port, Port}, {ip, Ip}], ProtoOpts),
+            ok
+    end.
+
+%% @private
+%% Start SSL/TLS listener with certificate configuration
+start_tls_listener(Ip, Port, Config, ProtoOpts) ->
+    CertFile = maps:get(certfile, Config, undefined),
+    KeyFile = maps:get(keyfile, Config, undefined),
+    CaCertFile = maps:get(cacertfile, Config, undefined),
+    case {CertFile, KeyFile} of
+        {undefined, _} ->
+            {error, {missing_ssl_option, certfile}};
+        {_, undefined} ->
+            {error, {missing_ssl_option, keyfile}};
+        _ ->
+            SslOpts = [{port, Port}, {ip, Ip},
+                       {certfile, ensure_list(CertFile)},
+                       {keyfile, ensure_list(KeyFile)}] ++
+                      case CaCertFile of
+                          undefined -> [];
+                          _ -> [{cacertfile, ensure_list(CaCertFile)}]
+                      end,
+            {ok, _} = cowboy:start_tls(hornbeam_http, SslOpts, ProtoOpts),
+            ok
+    end.
+
+%% @private
+ensure_list(V) when is_list(V) -> V;
+ensure_list(V) when is_binary(V) -> binary_to_list(V).
 
 parse_bind(Bind) when is_list(Bind) ->
     parse_bind(list_to_binary(Bind));

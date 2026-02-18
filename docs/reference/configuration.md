@@ -96,7 +96,6 @@ hornbeam:start("app:app", #{
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `pythonpath` | list | `[".", "examples"]` | Python module search paths |
-| `python_home` | binary | `undefined` | Python home directory |
 | `venv` | binary | `undefined` | Virtual environment path |
 
 ### Virtual Environment

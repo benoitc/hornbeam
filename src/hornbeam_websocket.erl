@@ -90,10 +90,12 @@ init(Req, _Opts) ->
     %% Get WebSocket options from config
     WsTimeout = hornbeam_config:get_config(websocket_timeout),
     WsMaxFrameSize = hornbeam_config:get_config(websocket_max_frame_size),
+    WsCompress = hornbeam_config:get_config(websocket_compress, false),
 
     WsOpts = #{
         idle_timeout => get_value(WsTimeout, 60000),
-        max_frame_size => get_value(WsMaxFrameSize, 16777216)
+        max_frame_size => get_value(WsMaxFrameSize, 16777216),
+        compress => WsCompress
     },
 
     %% Upgrade to WebSocket

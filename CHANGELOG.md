@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-02-18
+
+### Added
+
+- **SSL/TLS Support**: Full SSL/TLS configuration now working
+  - `ssl` option to enable TLS
+  - `certfile` and `keyfile` for certificate configuration
+  - `cacertfile` for CA certificate chain
+  - Validation ensures cert/key are provided when SSL enabled
+
+- **WebSocket Compression**: `websocket_compress` option to enable per-message deflate
+
+- **HTTP Lifecycle Hooks**: New `hornbeam_http_hooks` module
+  - `on_request` hook for request modification/logging
+  - `on_response` hook for response modification
+  - `on_error` hook for custom error handling
+  - Exception-safe hook execution
+
+### Fixed
+
+- Fixed `venv` configuration option not activating virtual environment
+
+### Changed
+
+- Removed `python_home` from documentation (cannot be controlled by hornbeam)
+
 ## [1.3.0] - 2026-02-18
 
 ### Added
@@ -167,7 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowboy 2.12.0
 - erlang_python 1.3.2
 
-[1.3.0]: https://github.com/benoitc/hornbeam/compare/v1.2.0...HEAD
+[1.3.1]: https://github.com/benoitc/hornbeam/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/benoitc/hornbeam/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/benoitc/hornbeam/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.1.0
 [1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.0.0
