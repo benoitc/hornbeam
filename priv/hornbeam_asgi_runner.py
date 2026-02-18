@@ -25,26 +25,38 @@ import threading
 from typing import List, Dict, Any, Optional
 
 
-# Install uvloop as the default event loop policy (once per interpreter)
-_uvloop_installed = False
-
-
-def _install_uvloop() -> bool:
-    """Install uvloop as the default asyncio event loop policy."""
-    global _uvloop_installed
-    if _uvloop_installed:
-        return True
+# Install erlang event loop as the default event loop policy (once per interpreter)
+def _install_erlang_loop() -> bool:
+    """Install erlang event loop as the default asyncio event loop policy."""
     try:
-        import uvloop
-        uvloop.install()
-        _uvloop_installed = True
+        from erlang_loop import get_event_loop_policy
+        asyncio.set_event_loop_policy(get_event_loop_policy())
         return True
-    except ImportError:
+    except (ImportError, AttributeError, RuntimeError):
         return False
 
 
-# Install uvloop at module import time
-_install_uvloop()
+_install_erlang_loop()
+
+
+# Cache lifespan state getter at module level (avoid import on every request)
+_get_lifespan_state = None
+
+
+def _init_lifespan_getter():
+    global _get_lifespan_state
+    try:
+        from hornbeam_lifespan_runner import get_state
+        _get_lifespan_state = get_state
+    except ImportError:
+        _get_lifespan_state = None
+
+
+_init_lifespan_getter()
+
+
+# Pre-allocated message templates
+_DISCONNECT_MSG = {'type': 'http.disconnect'}
 
 
 def get_event_loop_info() -> dict:
@@ -71,8 +83,9 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
     Reusing the event loop avoids the overhead of creating a new one
     for each request, which is a major performance bottleneck.
 
-    Note: erlang event loop is installed as the default policy at module import,
-    so asyncio.new_event_loop() automatically creates erlang loop instances.
+    Note: The erlang event loop is installed as the default policy at module
+    import, so asyncio.new_event_loop() automatically creates ErlangEventLoop
+    instances that integrate with Erlang's scheduler.
     """
     loop = getattr(_thread_local, 'loop', None)
     if loop is None or loop.is_closed():
@@ -135,19 +148,21 @@ class ASGIResponse:
     - http.response.informational: 1xx responses (103 Early Hints)
     - http.response.trailers: HTTP/2 trailers
     """
+    __slots__ = ('status', 'headers', 'body_parts', 'more_body',
+                 'informational', 'trailers', 'early_hints')
 
     def __init__(self):
-        self.status: Optional[int] = None
-        self.headers: List = []
-        self.body_parts: List[bytes] = []
-        self.more_body: bool = False
-        self.informational: List[Dict] = []  # 1xx responses
-        self.trailers: List = []
-        self.early_hints: List = []
+        self.status = None
+        self.headers = []
+        self.body_parts = []
+        self.more_body = False
+        self.informational = []
+        self.trailers = []
+        self.early_hints = []
 
     async def send(self, message: dict) -> None:
         """ASGI send callable."""
-        msg_type = message.get('type', '')
+        msg_type = message['type'] if 'type' in message else ''
 
         if msg_type == 'http.response.start':
             self.status = message.get('status', 200)
@@ -155,9 +170,9 @@ class ASGIResponse:
 
         elif msg_type == 'http.response.body':
             body_part = message.get('body', b'')
-            if isinstance(body_part, bytes):
+            if body_part.__class__ is bytes:
                 self.body_parts.append(body_part)
-            elif isinstance(body_part, str):
+            elif body_part.__class__ is str:
                 self.body_parts.append(body_part.encode('utf-8'))
             self.more_body = message.get('more_body', False)
 
@@ -203,37 +218,19 @@ async def _run_asgi_async(module_name: str, callable_name: str,
     # Load the application
     app = load_app(module_name, callable_name)
 
-    # Use Python-side lifespan state for ASGI compliance
-    # This ensures scope['state'] is the same dict across all requests
-    try:
-        from hornbeam_lifespan_runner import get_state
-        scope['state'] = get_state()
-    except ImportError:
-        # Lifespan runner not available, use whatever was passed
-        pass
+    # Use cached lifespan state getter
+    if _get_lifespan_state is not None:
+        scope['state'] = _get_lifespan_state()
 
     # Ensure body is bytes
-    if isinstance(body, str):
+    if body.__class__ is str:
         body = body.encode('utf-8')
-    elif not isinstance(body, bytes):
+    elif body.__class__ is not bytes:
         body = b''
 
-    # Create receive callable
-    body_sent = False
-
-    async def receive():
-        nonlocal body_sent
-        if not body_sent:
-            body_sent = True
-            return {
-                'type': 'http.request',
-                'body': body,
-                'more_body': False
-            }
-        return {'type': 'http.disconnect'}
-
-    # Create response collector
+    # Create response collector and receive callable
     response = ASGIResponse()
+    receive = _ReceiveCallable(body)
 
     # Run the app
     await app(scope, receive, response.send)
@@ -253,26 +250,51 @@ def _run_sync_coroutine(coro):
         # Keep driving until done
         while True:
             # For awaited coroutines, drive them too
-            if hasattr(result, 'send'):
-                # It's a coroutine/awaitable, drive it
-                try:
-                    inner_result = result.send(None)
-                    while True:
-                        if hasattr(inner_result, 'send'):
-                            try:
-                                inner_result = inner_result.send(None)
-                            except StopIteration as e:
-                                inner_result = e.value
-                                break
-                        else:
-                            break
-                    result = coro.send(inner_result)
-                except StopIteration as e:
-                    result = coro.send(e.value)
-            else:
+            # Use try/except instead of hasattr for speed
+            try:
+                send_method = result.send
+            except AttributeError:
                 result = coro.send(result)
+                continue
+
+            # It's a coroutine/awaitable, drive it
+            try:
+                inner_result = send_method(None)
+                while True:
+                    try:
+                        inner_send = inner_result.send
+                    except AttributeError:
+                        break
+                    try:
+                        inner_result = inner_send(None)
+                    except StopIteration as e:
+                        inner_result = e.value
+                        break
+                result = coro.send(inner_result)
+            except StopIteration as e:
+                result = coro.send(e.value)
     except StopIteration as e:
         return e.value
+
+
+class _ReceiveCallable:
+    """Optimized receive callable - avoids closure creation per request."""
+    __slots__ = ('body', 'body_sent', '_request_msg')
+
+    def __init__(self, body: bytes):
+        self.body = body
+        self.body_sent = False
+        self._request_msg = {
+            'type': 'http.request',
+            'body': body,
+            'more_body': False
+        }
+
+    async def __call__(self):
+        if not self.body_sent:
+            self.body_sent = True
+            return self._request_msg
+        return _DISCONNECT_MSG
 
 
 def run_asgi(module_name: str, callable_name: str,
@@ -291,34 +313,19 @@ def run_asgi(module_name: str, callable_name: str,
     # Load the application
     app = load_app(module_name, callable_name)
 
-    # Use Python-side lifespan state for ASGI compliance
-    try:
-        from hornbeam_lifespan_runner import get_state
-        scope['state'] = get_state()
-    except ImportError:
-        pass
+    # Use cached lifespan state getter (avoid import on every request)
+    if _get_lifespan_state is not None:
+        scope['state'] = _get_lifespan_state()
 
     # Ensure body is bytes
-    if isinstance(body, str):
+    if body.__class__ is str:
         body = body.encode('utf-8')
-    elif not isinstance(body, bytes):
+    elif body.__class__ is not bytes:
         body = b''
 
-    # Create receive callable - simple sync version
-    body_sent = [False]
-
-    async def receive():
-        if not body_sent[0]:
-            body_sent[0] = True
-            return {
-                'type': 'http.request',
-                'body': body,
-                'more_body': False
-            }
-        return {'type': 'http.disconnect'}
-
-    # Create response collector
+    # Create response collector and receive callable
     response = ASGIResponse()
+    receive = _ReceiveCallable(body)
 
     # Run the app using fast sync path
     coro = app(scope, receive, response.send)

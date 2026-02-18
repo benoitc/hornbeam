@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-02-17
+## [1.2.0] - 2026-02-18
 
 ### Added
 
@@ -24,7 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **ASGI performance optimization**: New sync coroutine driver bypasses asyncio event loop overhead for simple ASGI apps, improving throughput by ~37%
+- **Erlang Event Loop Integration**: Replaced uvloop with erlang_loop for native Erlang scheduler integration
+  - ASGI requests now use the erlang event loop policy from erlang_python
+  - Better integration with Erlang's cooperative scheduling
+
+- **ASGI Runner Optimizations**:
+  - Added `__slots__` to ASGIResponse class for reduced memory allocation
+  - Created `_ReceiveCallable` class to avoid closure creation per request
+  - Cached lifespan state getter at module level (avoids import on every request)
+  - Optimized type checks using `__class__ is` instead of `isinstance()`
+  - Optimized `_run_sync_coroutine` to use try/except instead of hasattr
+
+### Dependencies
+
+- Updated `erlang_python` to 1.4.0 (hex package)
 
 ### Fixed
 
