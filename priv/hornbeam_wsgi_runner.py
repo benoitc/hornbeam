@@ -383,3 +383,27 @@ def run_wsgi(module_name, callable_name, raw_environ):
         result_dict['file_wrapper'] = True
 
     return result_dict
+
+
+def _run_wsgi_sync(module_name: str, callable_name: str,
+                   raw_environ: dict) -> tuple:
+    """Optimized WSGI runner returning tuple for efficient marshalling.
+
+    This function returns a tuple (status, headers, body) instead of a dict,
+    reducing Python-side overhead. Can be used directly or from a future
+    py_wsgi NIF for maximum performance.
+
+    Args:
+        module_name: Python module containing the WSGI app
+        callable_name: Name of the WSGI callable in the module
+        raw_environ: Raw WSGI environ dict from Erlang
+
+    Returns:
+        Tuple of (status: str, headers: list, body: bytes)
+    """
+    result = run_wsgi(module_name, callable_name, raw_environ)
+    return (
+        result.get('status', '500 Internal Server Error'),
+        result.get('headers', []),
+        result.get('body', b'')
+    )

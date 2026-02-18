@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-18
+
+### Added
+
+- **ASGI/WSGI NIF Optimizations**: Direct C-level marshalling for ~2x throughput improvement
+  - `py_asgi:run/5` NIF with interned scope keys and cached constants
+  - `py_wsgi:run/4` NIF with interned environ keys and cached constants
+  - Per-interpreter state for sub-interpreter and free-threading support
+  - Response pooling for reduced memory allocation
+  - ASGI: 27k → 65k req/s (~2.4x improvement)
+  - WSGI: 30k → 65k req/s (~2x improvement)
+
+- **Context Affinity Option**: `context_affinity` configuration option for apps requiring
+  module-level state sharing with lifespan context
+
+### Changed
+
+- ASGI handler now uses `py_asgi:run/5` optimized NIF path by default
+- WSGI handler now uses `py_wsgi:run/4` optimized NIF path by default
+- Fallback to `py:ctx_call` when `context_affinity` is enabled
+
+### Dependencies
+
+- Updated `erlang_python` to 1.5.0 (adds py_asgi and py_wsgi NIF modules)
+
 ## [1.2.0] - 2026-02-18
 
 ### Added
@@ -142,6 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowboy 2.12.0
 - erlang_python 1.3.2
 
-[1.2.0]: https://github.com/benoitc/hornbeam/compare/v1.1.0...HEAD
+[1.3.0]: https://github.com/benoitc/hornbeam/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/benoitc/hornbeam/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.1.0
 [1.0.0]: https://github.com/benoitc/hornbeam/releases/tag/v1.0.0
