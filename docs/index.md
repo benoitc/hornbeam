@@ -14,28 +14,28 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 ## Quick Links
 
 ### Getting Started
-- [Installation & Quick Start](./getting-started.md) - Get up and running
-- [WSGI Guide](./guides/wsgi.md) - Run Flask, Django, and WSGI apps
-- [ASGI Guide](./guides/asgi.md) - Run FastAPI, Starlette, and async apps
+- [Installation & Quick Start](/docs/getting-started) - Get up and running
+- [WSGI Guide](/docs/guides/wsgi) - Run Flask, Django, and WSGI apps
+- [ASGI Guide](/docs/guides/asgi) - Run FastAPI, Starlette, and async apps
 
 ### Guides
-- [Channels & Presence](./guides/channels.md) - Real-time multiplexed channels
-- [WebSocket Guide](./guides/websocket.md) - Real-time bidirectional communication
-- [Erlang Integration](./guides/erlang-integration.md) - ETS, RPC, Pub/Sub
-- [ML Integration](./guides/ml-integration.md) - Caching, distributed inference
+- [Channels & Presence](/docs/guides/channels) - Real-time multiplexed channels
+- [WebSocket Guide](/docs/guides/websocket) - Real-time bidirectional communication
+- [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub
+- [ML Integration](/docs/guides/ml-integration) - Caching, distributed inference
 
 ### Examples
-- [Flask Application](./examples/flask-app.md) - Traditional WSGI app
-- [FastAPI Application](./examples/fastapi-app.md) - Modern async API
-- [Channels Chat](./examples/channels-chat.md) - Channels and presence
-- [WebSocket Chat](./examples/websocket-chat.md) - Real-time chat
-- [Embedding Service](./examples/embedding-service.md) - ML with ETS caching
-- [Distributed ML](./examples/distributed-ml.md) - Cluster inference
+- [Flask Application](/docs/examples/flask-app) - Traditional WSGI app
+- [FastAPI Application](/docs/examples/fastapi-app) - Modern async API
+- [Channels Chat](/docs/examples/channels-chat) - Channels and presence
+- [WebSocket Chat](/docs/examples/websocket-chat) - Real-time chat
+- [Embedding Service](/docs/examples/embedding-service) - ML with ETS caching
+- [Distributed ML](/docs/examples/distributed-ml) - Cluster inference
 
 ### Reference
-- [Configuration](./reference/configuration.md) - All options
+- [Configuration](/docs/reference/configuration) - All options
 - [Erlang API](https://hexdocs.pm/hornbeam) - Erlang modules (hex.pm)
-- [Python API](./reference/python-api.md) - Python modules
+- [Python API](/docs/reference/python-api) - Python modules
 
 ## Why Hornbeam?
 
