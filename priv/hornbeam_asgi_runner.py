@@ -334,6 +334,31 @@ def run_asgi(module_name: str, callable_name: str,
     return response.to_dict()
 
 
+def _run_asgi_sync(module_name: str, callable_name: str,
+                   scope: dict, body: bytes) -> tuple:
+    """Optimized ASGI runner called by py_asgi NIF.
+
+    This function is called directly from the C NIF for maximum performance.
+    Returns a tuple (status, headers, body) for efficient NIF marshalling,
+    avoiding the overhead of dict creation and key lookups.
+
+    Args:
+        module_name: Python module containing the ASGI app
+        callable_name: Name of the ASGI callable in the module
+        scope: ASGI scope dict (already built by NIF with interned keys)
+        body: Request body bytes
+
+    Returns:
+        Tuple of (status: int, headers: list, body: bytes)
+    """
+    result = run_asgi(module_name, callable_name, scope, body)
+    return (
+        result.get('status', 500),
+        result.get('headers', []),
+        result.get('body', b'')
+    )
+
+
 # Streaming support for real-time responses
 
 
