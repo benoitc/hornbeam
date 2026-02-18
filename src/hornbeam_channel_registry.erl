@@ -82,7 +82,7 @@ find_handler(Topic) ->
     gen_server:call(?SERVER, {find_handler, Topic}).
 
 %% @doc Parse topic parameters based on pattern.
-%% Example: pattern "room:*", topic "room:123" -> #{<<"room_id">> => <<"123">>}
+%% Example: pattern "room:*", topic "room:123" returns a map with room_id => "123"
 -spec parse_topic_params(#handler{}, binary()) -> map().
 parse_topic_params(#handler{pattern_parts = PatternParts, param_names = ParamNames}, Topic) ->
     TopicParts = binary:split(Topic, <<":">>, [global]),
