@@ -58,6 +58,12 @@ handle_websocket_upgrade(Req, State) ->
 %%% ============================================================================
 
 handle_wsgi(Req, State) ->
+    %% Build initial request map for hooks
+    ReqInfo = build_request_info(Req),
+
+    %% Run on_request hook
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
     try
         %% Get app module and callable from cached state (avoids ETS lookups)
         AppModule = maps:get(app_module, State),
@@ -83,17 +89,19 @@ handle_wsgi(Req, State) ->
 
         case Result of
             {ok, Response} ->
-                send_wsgi_response(Req, Response, State);
+                %% Run on_response hook
+                Response1 = hornbeam_http_hooks:run_on_response(Response),
+                send_wsgi_response(Req, Response1, State);
             {error, {overloaded, Current, Max}} ->
                 overload_response(Req, Current, Max, State);
             {error, Error} ->
-                error_response(Req, Error, State)
+                handle_error(Req, Error, ReqInfo1, State)
         end
     catch
         Class:Reason:Stack ->
             error_logger:error_msg("WSGI handler error: ~p:~p~n~p~n",
                                    [Class, Reason, Stack]),
-            error_response(Req, {Class, Reason}, State)
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
     end.
 
 %% @private
@@ -237,6 +245,12 @@ parse_status_code(Status) when is_integer(Status) ->
 %%% ============================================================================
 
 handle_asgi(Req, State) ->
+    %% Build initial request map for hooks
+    ReqInfo = build_request_info(Req),
+
+    %% Run on_request hook
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
     try
         %% Get app module and callable from cached state (avoids ETS lookups)
         AppModule = maps:get(app_module, State),
@@ -267,17 +281,19 @@ handle_asgi(Req, State) ->
 
         case Result of
             {ok, Response} ->
-                send_asgi_response(Req2, Response, State);
+                %% Run on_response hook
+                Response1 = hornbeam_http_hooks:run_on_response(Response),
+                send_asgi_response(Req2, Response1, State);
             {error, {overloaded, Current, Max}} ->
                 overload_response(Req2, Current, Max, State);
             {error, Error} ->
-                error_response(Req2, Error, State)
+                handle_error(Req2, Error, ReqInfo1, State)
         end
     catch
         Class:Reason:Stack ->
             error_logger:error_msg("ASGI handler error: ~p:~p~n~p~n",
                                    [Class, Reason, Stack]),
-            error_response(Req, {Class, Reason}, State)
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
     end.
 
 %% @private
@@ -391,11 +407,13 @@ send_asgi_response(Req, Response, State) ->
 %%% Error handling
 %%% ============================================================================
 
-error_response(Req, Error, State) ->
-    ErrorMsg = io_lib:format("Internal Server Error: ~p", [Error]),
-    Req2 = cowboy_req:reply(500,
+%% @private
+%% Handle errors using the on_error hook if configured
+handle_error(Req, Error, ReqInfo, State) ->
+    {StatusCode, Body} = hornbeam_http_hooks:run_on_error(Error, ReqInfo),
+    Req2 = cowboy_req:reply(StatusCode,
                             #{<<"content-type">> => <<"text/plain">>},
-                            iolist_to_binary(ErrorMsg),
+                            Body,
                             Req),
     {ok, Req2, State}.
 
@@ -410,6 +428,20 @@ overload_response(Req, Current, Max, State) ->
                             iolist_to_binary(ErrorMsg),
                             Req),
     {ok, Req2, State}.
+
+%% @private
+%% Build request info map for hooks
+build_request_info(Req) ->
+    #{
+        method => cowboy_req:method(Req),
+        path => cowboy_req:path(Req),
+        query_string => cowboy_req:qs(Req),
+        headers => cowboy_req:headers(Req),
+        host => cowboy_req:host(Req),
+        port => cowboy_req:port(Req),
+        scheme => cowboy_req:scheme(Req),
+        peer => cowboy_req:peer(Req)
+    }.
 
 %%% ============================================================================
 %%% Utilities
