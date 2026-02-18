@@ -4,8 +4,6 @@ description: Detailed guide on how values are automatically converted between Er
 order: 3
 ---
 
-# Type Conversion
-
 This guide details how values are converted between Erlang and Python.
 
 ## Erlang to Python

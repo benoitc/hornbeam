@@ -4,8 +4,6 @@ description: Guide for integrating AI and machine learning capabilities into Erl
 order: 2
 ---
 
-# Add AI to Your Erlang App
-
 This guide shows how to integrate AI and machine learning capabilities into your Erlang application using erlang_python.
 
 ## Overview
@@ -494,7 +492,7 @@ A complete working example is available:
 
 ```bash
 # Run the Erlang concurrency example
- escript examples/erlang_concurrency.erl
+escript examples/erlang_concurrency.erl
 ```
 
 This demonstrates:

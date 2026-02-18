@@ -4,8 +4,6 @@ description: Scalability features of erlang_python including execution modes, ra
 order: 7
 ---
 
-# Scalability and Parallelism
-
 This guide covers the scalability features of erlang_python, including execution modes, rate limiting, and parallel execution.
 
 ## Execution Modes
@@ -336,8 +334,58 @@ rebar3 shell
 2> reentrant_demo:demo_all().
 ```
 
+## Building for Performance
+
+### Standard Build
+
+```bash
+rebar3 compile
+```
+
+Uses `-O2` optimization and standard compiler flags.
+
+### Performance Build
+
+For production deployments where maximum performance is needed:
+
+```bash
+# Clean and rebuild with aggressive optimizations
+rm -rf _build/cmake
+mkdir -p _build/cmake && cd _build/cmake
+cmake ../../c_src -DPERF_BUILD=ON
+cmake --build . -j$(nproc)
+```
+
+The `PERF_BUILD` option enables:
+
+| Flag | Effect |
+|------|--------|
+| `-O3` | Aggressive optimization level |
+| `-flto` | Link-Time Optimization |
+| `-march=native` | CPU-specific instruction set |
+| `-ffast-math` | Relaxed floating-point math |
+| `-funroll-loops` | Loop unrolling |
+
+**Caveats:**
+- Binaries are not portable (tied to build machine's CPU)
+- Build time increases due to LTO
+- `-ffast-math` may affect floating-point precision
+
+### Verifying the Build
+
+```erlang
+%% Check that the NIF loaded successfully
+1> application:ensure_all_started(erlang_python).
+{ok, [erlang_python]}
+
+%% Run basic verification
+2> py:eval("1 + 1").
+{ok, 2}
+```
+
 ## See Also
 
 - [Getting Started](getting-started.md) - Basic usage
 - [Memory Management](memory.md) - GC and memory debugging
 - [Streaming](streaming.md) - Working with generators
+- [Asyncio](asyncio.md) - Event loop performance details

@@ -4,8 +4,6 @@ description: Python memory monitoring and garbage collection from Erlang, includ
 order: 6
 ---
 
-# Memory Management
-
 This guide covers Python memory monitoring and garbage collection from Erlang.
 
 ## Memory Statistics

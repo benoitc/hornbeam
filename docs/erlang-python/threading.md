@@ -4,8 +4,6 @@ description: Calling erlang.call() from Python threads, enabling concurrent Erla
 order: 8
 ---
 
-# Threading Support
-
 erlang_python supports calling `erlang.call()` from Python threads, enabling
 concurrent Erlang callbacks from multithreaded Python code.
 
@@ -162,6 +160,93 @@ for t in threads:
     t.join()
 ```
 
+## Asyncio Support
+
+For asyncio applications (FastAPI, Starlette, aiohttp, etc.), use `erlang.async_call()`
+instead of `erlang.call()`. This integrates properly with asyncio's event loop without
+blocking or raising exceptions for control flow.
+
+### Basic Usage
+
+```python
+import asyncio
+import erlang
+
+async def fetch_data():
+    result = await erlang.async_call('get_user', user_id)
+    return result
+
+# Run in asyncio context
+asyncio.run(fetch_data())
+```
+
+### With FastAPI/Starlette
+
+```python
+from fastapi import FastAPI
+import erlang
+
+app = FastAPI()
+
+@app.get("/user/{user_id}")
+async def get_user(user_id: int):
+    # Use async_call for asyncio compatibility
+    user = await erlang.async_call('get_user', user_id)
+    return {"user": user}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_text()
+        # Safe to use in WebSocket handlers
+        result = await erlang.async_call('process_message', data)
+        await websocket.send_text(result)
+```
+
+### Concurrent Async Calls
+
+```python
+import asyncio
+import erlang
+
+async def parallel_queries():
+    # Run multiple Erlang calls concurrently
+    results = await asyncio.gather(
+        erlang.async_call('query_a', param1),
+        erlang.async_call('query_b', param2),
+        erlang.async_call('query_c', param3)
+    )
+    return results
+```
+
+### Why Use async_call?
+
+The standard `erlang.call()` uses a suspension mechanism that raises a
+`SuspensionRequired` exception internally. While this works in most contexts,
+it can cause issues with ASGI middleware that catches and handles exceptions:
+
+- ASGI middleware (Starlette, FastAPI) catches exceptions during request handling
+- The `SuspensionRequired` exception propagates through middleware layers
+- asyncio logs "Task exception was never retrieved" warnings
+
+`erlang.async_call()` avoids these issues by:
+- Not raising exceptions for control flow
+- Integrating with asyncio's event loop via `add_reader()`
+- Releasing the dirty NIF thread while waiting (non-blocking)
+- Using a Future that resolves when the Erlang callback completes
+
+### When to Use Each
+
+| Context | Recommended API |
+|---------|-----------------|
+| Synchronous Python code | `erlang.call()` |
+| Threading (`threading.Thread`) | `erlang.call()` |
+| ThreadPoolExecutor | `erlang.call()` |
+| Asyncio (async/await) | `erlang.async_call()` |
+| FastAPI/Starlette | `erlang.async_call()` |
+| ASGI applications | `erlang.async_call()` |
+
 ## Error Handling
 
 Errors from Erlang functions are raised as Python exceptions:
@@ -179,4 +264,19 @@ def worker():
 thread = threading.Thread(target=worker)
 thread.start()
 thread.join()
+```
+
+### Async Error Handling
+
+```python
+import asyncio
+import erlang
+
+async def safe_call():
+    try:
+        result = await erlang.async_call('maybe_fail', 42)
+        return result
+    except RuntimeError as e:
+        print(f"Erlang error: {e}")
+        return None
 ```

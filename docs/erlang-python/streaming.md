@@ -4,8 +4,6 @@ description: Working with Python generators from Erlang, including generator exp
 order: 5
 ---
 
-# Streaming
-
 This guide covers working with Python generators from Erlang.
 
 ## Overview

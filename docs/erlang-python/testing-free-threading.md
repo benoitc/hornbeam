@@ -4,8 +4,6 @@ description: How to test erlang_python with Python's experimental free-threading
 order: 9
 ---
 
-# Testing with Free-Threaded Python
-
 This guide explains how to test erlang_python with Python's experimental free-threading mode (no GIL).
 
 ## Overview

@@ -4,8 +4,6 @@ description: How to bind Erlang processes to dedicated Python workers to preserv
 order: 4
 ---
 
-# Context Affinity
-
 Context affinity allows you to bind an Erlang process to a dedicated Python worker, preserving Python state (variables, imports, objects) across multiple `py:call/eval/exec` invocations.
 
 ## Why Context Affinity?
