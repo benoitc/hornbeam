@@ -303,10 +303,15 @@ start_listener(Config) ->
         {'_', AllRoutes}
     ]),
 
+    %% Build protocol options including request limits
     ProtoOpts = #{
         env => #{dispatch => Dispatch},
         idle_timeout => maps:get(keepalive, Config) * 1000,
-        request_timeout => maps:get(timeout, Config)
+        request_timeout => maps:get(timeout, Config),
+        %% Cowboy HTTP options for request limits
+        max_request_line_length => maps:get(max_request_line_size, Config, 4094),
+        max_header_value_length => maps:get(max_header_size, Config, 8190),
+        max_headers => maps:get(max_headers, Config, 100)
     },
 
     %% Start with SSL/TLS or plain HTTP

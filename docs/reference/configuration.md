@@ -44,7 +44,6 @@ hornbeam:start("app:application", #{
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
-| `http_version` | list | `['HTTP/1.1', 'HTTP/2']` | Supported HTTP versions |
 
 ## Worker Options
 
@@ -91,6 +90,14 @@ hornbeam:start("app:app", #{
 | `websocket_max_frame_size` | integer | `16777216` | Max frame size (16MB) |
 | `websocket_compress` | boolean | `false` | Enable WebSocket compression |
 
+## Request Limits
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_request_line_size` | integer | `4094` | Max HTTP request line length |
+| `max_header_size` | integer | `8190` | Max HTTP header value length |
+| `max_headers` | integer | `100` | Max number of HTTP headers |
+
 ## Python Options
 
 | Option | Type | Default | Description |
@@ -116,8 +123,6 @@ Hooks allow you to execute Erlang code at key points in the request lifecycle.
 | `on_request` | `Request` | `Request` | Called before handling request |
 | `on_response` | `Response` | `Response` | Called before sending response |
 | `on_error` | `Error, Request` | `{Code, Body}` | Called on error |
-| `on_worker_start` | `WorkerId` | `ok` | Called when worker starts |
-| `on_worker_exit` | `WorkerId, Reason` | `ok` | Called when worker exits |
 
 ### Hook Examples
 
@@ -157,17 +162,6 @@ hornbeam:start("app:application", #{
                 _ ->
                     {500, <<"Internal Server Error">>}
             end
-        end,
-
-        %% Worker lifecycle hooks
-        on_worker_start => fun(WorkerId) ->
-            logger:info("Worker ~p started", [WorkerId]),
-            ok
-        end,
-
-        on_worker_exit => fun(WorkerId, Reason) ->
-            logger:warning("Worker ~p exited: ~p", [WorkerId, Reason]),
-            ok
         end
     }
 }).

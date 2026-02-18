@@ -137,7 +137,6 @@ defaults() ->
 
         %% Protocol
         worker_class => wsgi,
-        http_version => ['HTTP/1.1', 'HTTP/2'],
 
         %% Workers
         workers => 4,
@@ -228,7 +227,7 @@ load_app_env() ->
         %% Server
         bind, ssl, certfile, keyfile, cacertfile,
         %% Protocol
-        worker_class, http_version,
+        worker_class,
         %% Workers
         workers, timeout, keepalive, max_requests, preload_app,
         %% Request limits
