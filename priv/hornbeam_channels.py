@@ -238,6 +238,14 @@ class Channel:
             result = self._join_handler(topic, topic_params, params, socket)
             return _normalize_join_result(result, socket)
         except Exception as e:
+            # Re-raise SuspensionRequired so the C executor can handle
+            # Erlang callbacks (e.g. state_get/state_set from handlers)
+            try:
+                from erlang import SuspensionRequired
+                if isinstance(e, SuspensionRequired):
+                    raise
+            except ImportError:
+                pass
             return ('error', {"reason": str(e)})
 
     def handle_leave(self, topic: str, socket: Socket) -> None:
@@ -245,8 +253,15 @@ class Channel:
         if self._leave_handler is not None:
             try:
                 self._leave_handler(topic, socket)
-            except Exception:
-                pass  # Ignore errors in leave handler
+            except Exception as e:
+                # Re-raise SuspensionRequired so the C executor can handle
+                # Erlang callbacks (e.g. state_get/state_set from handlers)
+                try:
+                    from erlang import SuspensionRequired
+                    if isinstance(e, SuspensionRequired):
+                        raise
+                except ImportError:
+                    pass
 
     def handle_event(self, event: str, payload: Dict[str, Any],
                      socket: Socket) -> Tuple:
@@ -259,6 +274,14 @@ class Channel:
             result = handler(payload, socket)
             return _normalize_event_result(result, socket)
         except Exception as e:
+            # Re-raise SuspensionRequired so the C executor can handle
+            # Erlang callbacks (e.g. state_get/state_set from handlers)
+            try:
+                from erlang import SuspensionRequired
+                if isinstance(e, SuspensionRequired):
+                    raise
+            except ImportError:
+                pass
             return ('stop', str(e), socket)
 
 
