@@ -1,7 +1,7 @@
 ---
 title: Testing with Free-Threaded Python
 description: How to test erlang_python with Python's experimental free-threading mode (no GIL) for maximum parallel execution performance.
-order: 9
+order: 10
 ---
 
 This guide explains how to test erlang_python with Python's experimental free-threading mode (no GIL).

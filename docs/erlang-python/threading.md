@@ -1,7 +1,7 @@
 ---
 title: Threading Support
 description: Calling erlang.call() from Python threads, enabling concurrent Erlang callbacks from multithreaded Python code with automatic resource management.
-order: 8
+order: 9
 ---
 
 erlang_python supports calling `erlang.call()` from Python threads, enabling

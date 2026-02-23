@@ -233,6 +233,49 @@ py_semaphore:current().         %% Currently executing
 
 See [Scalability](scalability.md) for details on execution modes and performance tuning.
 
+## Logging and Tracing
+
+### Python Logging to Erlang
+
+Forward Python `logging` messages to Erlang's `logger`:
+
+```erlang
+%% Configure Python logging
+ok = py:configure_logging(#{level => info}).
+
+%% Now Python logs appear in Erlang logger
+ok = py:exec(<<"
+import logging
+logging.info('Hello from Python!')
+logging.warning('Something needs attention')
+">>).
+```
+
+### Distributed Tracing
+
+Collect trace spans from Python code:
+
+```erlang
+%% Enable tracing
+ok = py:enable_tracing().
+
+%% Run traced Python code
+ok = py:exec(<<"
+import erlang
+with erlang.Span('my-operation', key='value'):
+    pass  # your code here
+">>).
+
+%% Retrieve spans
+{ok, Spans} = py:get_traces().
+
+%% Clean up
+ok = py:clear_traces().
+ok = py:disable_tracing().
+```
+
+See [Logging and Tracing](logging.md) for details on span events, decorators, and error handling.
+
 ## Using from Elixir
 
 erlang_python works seamlessly with Elixir. The `:py` module can be called directly:
@@ -312,5 +355,6 @@ This demonstrates basic calls, data conversion, callbacks, parallel processing (
 - See [Streaming](streaming.md) for working with generators
 - See [Memory Management](memory.md) for GC and debugging
 - See [Scalability](scalability.md) for parallelism and performance
+- See [Logging and Tracing](logging.md) for Python logging and distributed tracing
 - See [AI Integration](ai-integration.md) for ML/AI examples
 - See [Asyncio Event Loop](asyncio.md) for the Erlang-native asyncio implementation with TCP and UDP support

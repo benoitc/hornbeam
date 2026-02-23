@@ -1,7 +1,7 @@
 ---
 title: Asyncio Event Loop
 description: Erlang-native asyncio event loop implementation with TCP and UDP support, providing sub-millisecond latency and zero polling overhead.
-order: 10
+order: 11
 ---
 
 # Erlang-native asyncio Event Loop
@@ -454,6 +454,99 @@ ok = py_nif:event_loop_set_router(LoopRef, RouterPid).
 ```
 
 Events are delivered as Erlang messages, enabling the event loop to participate in BEAM's supervision trees and distributed computing capabilities.
+
+## Isolated Event Loops
+
+By default, all `ErlangEventLoop` instances share a single underlying native event loop managed by Erlang. For multi-threaded applications where each thread needs its own event loop, you can create isolated loops.
+
+### Creating an Isolated Loop
+
+Use the `isolated=True` parameter to create a loop with its own pending queue:
+
+```python
+from erlang_loop import ErlangEventLoop
+
+# Default: uses shared global loop
+shared_loop = ErlangEventLoop()
+
+# Isolated: creates its own native loop
+isolated_loop = ErlangEventLoop(isolated=True)
+```
+
+### When to Use Isolated Loops
+
+| Use Case | Loop Type |
+|----------|-----------|
+| Single-threaded asyncio applications | Default (shared) |
+| Web frameworks (ASGI/WSGI) | Default (shared) |
+| Multi-threaded Python with separate event loops | `isolated=True` |
+| Sub-interpreters | `isolated=True` |
+| Free-threaded Python (3.13+) | `isolated=True` |
+| Testing loop isolation | `isolated=True` |
+
+### Multi-threaded Example
+
+```python
+from erlang_loop import ErlangEventLoop
+import threading
+
+def run_isolated_tasks(loop_id):
+    """Each thread gets its own isolated event loop."""
+    loop = ErlangEventLoop(isolated=True)
+
+    results = []
+
+    def callback():
+        results.append(loop_id)
+
+    # Schedule callbacks - isolated to this loop
+    loop.call_soon(callback)
+    loop.call_later(0.01, callback)
+
+    # Process events
+    import time
+    deadline = time.time() + 0.5
+    while time.time() < deadline and len(results) < 2:
+        loop._run_once()
+        time.sleep(0.01)
+
+    loop.close()
+    return results
+
+# Run in separate threads
+t1 = threading.Thread(target=run_isolated_tasks, args=('loop_a',))
+t2 = threading.Thread(target=run_isolated_tasks, args=('loop_b',))
+
+t1.start()
+t2.start()
+t1.join()
+t2.join()
+# Each thread only sees its own callbacks
+```
+
+### Architecture
+
+A shared router process handles timer and FD events for all loops:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     py_event_router (shared)                    │
+│                                                                 │
+│  Receives:                                                      │
+│  - Timer expirations from erlang:send_after                    │
+│  - FD ready events from enif_select                            │
+│                                                                 │
+│  Dispatches to correct loop via resource backref                │
+└─────────────────────────────────────────────────────────────────┘
+         ▲                    ▲                    ▲
+         │                    │                    │
+    ┌────┴────┐          ┌────┴────┐          ┌────┴────┐
+    │ Loop A  │          │ Loop B  │          │ Loop C  │
+    │ pending │          │ pending │          │ pending │
+    └─────────┘          └─────────┘          └─────────┘
+```
+
+Each isolated loop has its own pending queue, ensuring callbacks are processed only by the loop that scheduled them. The shared router dispatches timer and FD events to the correct loop based on the resource backref.
 
 ## See Also
 
