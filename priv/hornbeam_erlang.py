@@ -38,6 +38,7 @@ Example:
         yield chunk
 """
 
+import asyncio
 from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Union
 
 # Try to import erlang module (provided by erlang_python when embedded)
@@ -238,6 +239,7 @@ async def stream_async(app_path: str, action: str, *args, **kwargs):
     """Async stream results from an action.
 
     Returns an async generator that yields chunks from the action.
+    Yields control to the event loop between chunks for non-blocking behavior.
 
     Args:
         app_path: App identifier
@@ -252,9 +254,11 @@ async def stream_async(app_path: str, action: str, *args, **kwargs):
         async for chunk in stream_async("myapp.llm:LLMService", "generate", prompt):
             print(chunk, end="", flush=True)
     """
-    # For now, wrap sync stream - could be optimized with proper async
+    # Wrap sync stream with proper event loop yielding
     for chunk in stream(app_path, action, *args, **kwargs):
         yield chunk
+        # Yield control to event loop to allow other tasks to run
+        await asyncio.sleep(0)
 
 
 # =============================================================================

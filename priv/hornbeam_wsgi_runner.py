@@ -239,10 +239,27 @@ def reload_app(module_name, callable_name):
         return app
 
 
+# Pre-computed set of base environ keys to skip during raw environ copy
+_BASE_ENVIRON_KEYS = frozenset({
+    'REQUEST_METHOD', 'SCRIPT_NAME', 'PATH_INFO', 'QUERY_STRING',
+    'SERVER_NAME', 'SERVER_PORT', 'SERVER_PROTOCOL',
+    'wsgi.version', 'wsgi.url_scheme', 'wsgi.input', 'wsgi.errors',
+    'wsgi.multithread', 'wsgi.multiprocess', 'wsgi.run_once',
+    'wsgi.file_wrapper', 'wsgi.input_terminated', 'wsgi.early_hints',
+})
+
+# Shared errors wrapper instance (thread-safe, stateless)
+_SHARED_ERRORS = WSGIErrorsWrapper()
+
+# Cached WSGI version tuple
+_WSGI_VERSION = (1, 0)
+
+
 def create_environ(raw_environ):
     """Create a complete WSGI environ dict from raw environ.
 
     Ensures all required WSGI variables are present and properly typed.
+    Optimized for minimal overhead on hot path.
 
     Args:
         raw_environ: Raw environ dict from Erlang
@@ -250,17 +267,26 @@ def create_environ(raw_environ):
     Returns:
         Complete WSGI environ dict
     """
-    # Create errors stream
-    errors = WSGIErrorsWrapper()
-
-    # Create early hints callback
+    # Create early hints callback (must be per-request)
     early_hints_list = []
 
     def early_hints_callback(headers):
-        """Callback for wsgi.early_hints."""
         early_hints_list.append(headers)
 
+    # Handle wsgi.input - most common case is bytes
+    wsgi_input = raw_environ.get('wsgi.input', b'')
+    wsgi_input_type = type(wsgi_input)
+    if wsgi_input_type is bytes:
+        wsgi_input_stream = io.BytesIO(wsgi_input)
+    elif wsgi_input_type is str:
+        wsgi_input_stream = io.BytesIO(wsgi_input.encode('utf-8'))
+    elif hasattr(wsgi_input, 'read'):
+        wsgi_input_stream = wsgi_input
+    else:
+        wsgi_input_stream = io.BytesIO(b'')
+
     # Build environ with proper types
+    # Use direct access for speed on known keys
     environ = {
         # Required CGI variables with defaults
         'REQUEST_METHOD': raw_environ.get('REQUEST_METHOD', 'GET'),
@@ -271,11 +297,11 @@ def create_environ(raw_environ):
         'SERVER_PORT': str(raw_environ.get('SERVER_PORT', '80')),
         'SERVER_PROTOCOL': raw_environ.get('SERVER_PROTOCOL', 'HTTP/1.1'),
 
-        # Required WSGI variables
-        'wsgi.version': (1, 0),
+        # Required WSGI variables (use cached/shared where possible)
+        'wsgi.version': _WSGI_VERSION,
         'wsgi.url_scheme': raw_environ.get('wsgi.url_scheme', 'http'),
-        'wsgi.input': io.BytesIO(b''),  # Will be replaced below
-        'wsgi.errors': errors,
+        'wsgi.input': wsgi_input_stream,
+        'wsgi.errors': _SHARED_ERRORS,
         'wsgi.multithread': True,
         'wsgi.multiprocess': True,
         'wsgi.run_once': False,
@@ -284,37 +310,31 @@ def create_environ(raw_environ):
         'wsgi.file_wrapper': FileWrapper,
         'wsgi.input_terminated': True,
         'wsgi.early_hints': early_hints_callback,
+
+        # Store early hints list reference
+        '_hornbeam.early_hints': early_hints_list,
     }
 
     # Copy remaining keys (HTTP_*, CONTENT_TYPE, CONTENT_LENGTH, etc.)
+    # Use pre-computed set for O(1) membership test
     for key, value in raw_environ.items():
-        if key not in environ:
-            # Convert binary keys/values to strings if needed
-            if isinstance(key, bytes):
+        if key not in _BASE_ENVIRON_KEYS:
+            # Fast path: most keys are already strings from Erlang
+            key_type = type(key)
+            if key_type is bytes:
                 key = key.decode('utf-8', errors='replace')
-            if isinstance(value, bytes):
+            value_type = type(value)
+            if value_type is bytes:
                 value = value.decode('utf-8', errors='replace')
             environ[key] = value
 
-    # Handle wsgi.input specially
-    wsgi_input = raw_environ.get('wsgi.input', b'')
-    if isinstance(wsgi_input, bytes):
-        environ['wsgi.input'] = io.BytesIO(wsgi_input)
-    elif isinstance(wsgi_input, str):
-        environ['wsgi.input'] = io.BytesIO(wsgi_input.encode('utf-8'))
-    elif hasattr(wsgi_input, 'read'):
-        environ['wsgi.input'] = wsgi_input
-    else:
-        environ['wsgi.input'] = io.BytesIO(b'')
-
-    # Ensure CONTENT_TYPE and CONTENT_LENGTH are strings
-    if 'CONTENT_TYPE' in environ and environ['CONTENT_TYPE'] is not None:
-        environ['CONTENT_TYPE'] = str(environ['CONTENT_TYPE'])
-    if 'CONTENT_LENGTH' in environ and environ['CONTENT_LENGTH'] is not None:
-        environ['CONTENT_LENGTH'] = str(environ['CONTENT_LENGTH'])
-
-    # Store early hints list reference for later retrieval
-    environ['_hornbeam.early_hints'] = early_hints_list
+    # Ensure CONTENT_TYPE and CONTENT_LENGTH are strings (common HTTP headers)
+    content_type = environ.get('CONTENT_TYPE')
+    if content_type is not None and type(content_type) is not str:
+        environ['CONTENT_TYPE'] = str(content_type)
+    content_length = environ.get('CONTENT_LENGTH')
+    if content_length is not None and type(content_length) is not str:
+        environ['CONTENT_LENGTH'] = str(content_length)
 
     return environ
 

@@ -23,9 +23,14 @@ https://github.com/benoitc/gunicorn
 
 import asyncio
 import importlib
+import os
 import sys
 from collections import deque
 from typing import Dict, Any, Optional, List
+
+# Dev reload mode: when True, evicts modules from sys.modules before import
+# Set HORNBEAM_DEV_RELOAD=1 to enable (for hot-reload during development)
+_DEV_RELOAD = os.environ.get('HORNBEAM_DEV_RELOAD', '').lower() in ('1', 'true', 'yes')
 
 
 # Install erlang event loop as the default event loop policy (once per interpreter)
@@ -78,9 +83,12 @@ class WebSocketSession:
         # Event loop for this session
         self.loop = None
 
+        # Event signaled when output is ready (replaces polling)
+        self.output_ready: Optional[asyncio.Event] = None
+
     def load_app(self):
         """Load the ASGI application."""
-        if self.app_module in sys.modules:
+        if _DEV_RELOAD and self.app_module in sys.modules:
             del sys.modules[self.app_module]
         module = importlib.import_module(self.app_module)
         self.app = getattr(module, self.app_callable)
@@ -96,24 +104,34 @@ class WebSocketSession:
         if msg_type == 'websocket.accept':
             self.accepted = True
             self.send_queue.append(message)
+            self._signal_output_ready()
 
         elif msg_type == 'websocket.send':
             if not self.accepted:
                 raise RuntimeError("Cannot send before accepting connection")
             self.send_queue.append(message)
+            self._signal_output_ready()
 
         elif msg_type == 'websocket.close':
             self.closed = True
             self.close_code = message.get('code', 1000)
             self.send_queue.append(message)
+            self._signal_output_ready()
 
         elif msg_type == 'websocket.http.response.start':
             # Denial response - reject with HTTP response
             self.send_queue.append(message)
+            self._signal_output_ready()
 
         elif msg_type == 'websocket.http.response.body':
             # Denial response body
             self.send_queue.append(message)
+            self._signal_output_ready()
+
+    def _signal_output_ready(self):
+        """Signal that output is ready for collection."""
+        if self.output_ready is not None:
+            self.output_ready.set()
 
     def collect_messages(self) -> List[dict]:
         """Collect all pending messages to send to Erlang."""
@@ -153,33 +171,52 @@ async def _run_app_until_response(session: WebSocketSession, event: dict) -> Lis
     # Add event to receive queue
     await session.receive_queue.put(event)
 
+    # Initialize output_ready event if not set
+    if session.output_ready is None:
+        session.output_ready = asyncio.Event()
+    else:
+        session.output_ready.clear()
+
     # If app task isn't running, start it
     if session.task is None or session.task.done():
         session.task = asyncio.create_task(
             session.app(session.scope, session.receive, session.send)
         )
 
-    # Wait a short time for response
+    # Wait for output using event-driven wakeup (replaces polling)
     try:
-        # Give the app a chance to process the event
-        await asyncio.sleep(0.001)
+        # Create a waiter for the output_ready event
+        async def wait_for_output():
+            await session.output_ready.wait()
 
-        # Wait for app to produce output or finish
-        for _ in range(100):  # Max 100 iterations
-            if session.send_queue:
-                break
-            if session.task.done():
-                # Check if task raised an exception
+        output_waiter = asyncio.create_task(wait_for_output())
+
+        # Wait for either output ready or task completion
+        done, pending = await asyncio.wait(
+            [output_waiter, session.task],
+            timeout=0.1,  # 100ms max wait
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel pending waiters
+        for task in pending:
+            if task is output_waiter:
+                task.cancel()
                 try:
-                    session.task.result()
-                except BaseException as e:
-                    # Re-raise SuspensionRequired
-                    if SuspensionRequired and isinstance(e, SuspensionRequired):
-                        raise
-                    return [{'type': 'websocket.close', 'code': 1011,
-                            'reason': str(e)[:125]}]
-                break
-            await asyncio.sleep(0.001)
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        # Check if task raised an exception
+        if session.task in done:
+            try:
+                session.task.result()
+            except BaseException as e:
+                # Re-raise SuspensionRequired
+                if SuspensionRequired and isinstance(e, SuspensionRequired):
+                    raise
+                return [{'type': 'websocket.close', 'code': 1011,
+                        'reason': str(e)[:125]}]
 
     except BaseException as e:
         # Re-raise SuspensionRequired

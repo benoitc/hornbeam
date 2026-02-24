@@ -20,7 +20,12 @@ It is called by hornbeam_channel_registry.erl via py:call.
 
 from typing import Any, Dict, List, Tuple, Optional
 import importlib
+import os
 import sys
+
+# Dev reload mode: when True, evicts modules from sys.modules before import
+# Set HORNBEAM_DEV_RELOAD=1 to enable (for hot-reload during development)
+_DEV_RELOAD = os.environ.get('HORNBEAM_DEV_RELOAD', '').lower() in ('1', 'true', 'yes')
 
 
 def handle_call(module: str, function: str, args: List[Any]) -> Any:
@@ -223,8 +228,8 @@ def register_channels(module_path: str) -> List[Dict[str, Any]]:
     """
     from hornbeam_channels import list_channels
 
-    # Clear and reimport
-    if module_path in sys.modules:
+    # Clear and reimport only in dev mode
+    if _DEV_RELOAD and module_path in sys.modules:
         del sys.modules[module_path]
 
     try:

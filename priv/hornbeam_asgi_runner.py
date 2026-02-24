@@ -116,6 +116,12 @@ def get_event_loop_info() -> dict:
 _app_cache: Dict[tuple, Any] = {}
 _app_cache_lock = threading.Lock()
 
+# Per-app execution mode cache: 'fast' (default) or 'loop'
+# Apps that need the event loop are cached as 'loop' to skip fast path overhead
+_app_execution_mode: Dict[tuple, str] = {}
+_EXEC_MODE_FAST = 'fast'
+_EXEC_MODE_LOOP = 'loop'
+
 # Persistent event loop per thread (reused across requests)
 _thread_local = threading.local()
 
@@ -123,6 +129,7 @@ _thread_local = threading.local()
 _persistent_loop: Optional[asyncio.AbstractEventLoop] = None
 _persistent_loop_thread: Optional[threading.Thread] = None
 _persistent_loop_lock = threading.Lock()
+_persistent_loop_ready = threading.Event()  # Signals when loop is running
 _use_persistent_loop = True  # Enable by default for better performance
 
 
@@ -160,11 +167,16 @@ def _get_persistent_loop() -> asyncio.AbstractEventLoop:
         if _persistent_loop is not None and _persistent_loop.is_running():
             return _persistent_loop
 
+        # Clear ready event for new loop startup
+        _persistent_loop_ready.clear()
+
         # Create new loop
         _persistent_loop = asyncio.new_event_loop()
 
         def run_loop():
             asyncio.set_event_loop(_persistent_loop)
+            # Signal that the loop is about to start
+            _persistent_loop.call_soon(_persistent_loop_ready.set)
             _persistent_loop.run_forever()
 
         _persistent_loop_thread = threading.Thread(
@@ -174,9 +186,8 @@ def _get_persistent_loop() -> asyncio.AbstractEventLoop:
         )
         _persistent_loop_thread.start()
 
-        # Wait for loop to start
-        while not _persistent_loop.is_running():
-            pass
+        # Wait for loop to start (event-driven, not busy-spin)
+        _persistent_loop_ready.wait(timeout=5.0)
 
         return _persistent_loop
 
@@ -308,11 +319,14 @@ def reload_app(module_name: str, callable_name: str):
     """Force reload an ASGI application.
 
     Use this when the application code has changed on disk.
+    Also clears the cached execution mode so the app is re-evaluated.
     """
     cache_key = (module_name, callable_name)
     with _app_cache_lock:
         # Remove from cache
         _app_cache.pop(cache_key, None)
+        # Clear execution mode so it's re-evaluated after reload
+        _app_execution_mode.pop(cache_key, None)
         # Reload module
         if module_name in sys.modules:
             module = importlib.reload(sys.modules[module_name])
@@ -455,6 +469,8 @@ def run_asgi(module_name: str, callable_name: str,
     Returns:
         Dict with status, headers, body, and optional early_hints/trailers
     """
+    cache_key = (module_name, callable_name)
+
     # Load the application
     app = load_app(module_name, callable_name)
 
@@ -472,32 +488,52 @@ def run_asgi(module_name: str, callable_name: str,
     response = ASGIResponse()
     receive = _ReceiveCallable(body)
 
-    # Create the coroutine
-    coro = app(scope, receive, response.send)
+    # Check cached execution mode for this app
+    exec_mode = _app_execution_mode.get(cache_key, _EXEC_MODE_FAST)
 
-    # Try fast path first (avoids Task creation for simple apps)
-    # Falls back to event loop for complex async operations
-    try:
-        _run_coro_fast(coro)
-    except (_NeedEventLoop, RuntimeError) as e:
-        # Fast path can't handle this app - needs real async
-        # RuntimeError with "no running event loop" happens when code
-        # calls asyncio.sleep(), asyncio.gather(), etc.
-        if isinstance(e, RuntimeError) and "no running event loop" not in str(e):
-            raise  # Re-raise other RuntimeErrors
-
-        # Only safe to retry if no response has been sent yet
-        if response.status is None:
-            # Clean slate - recreate everything
-            response = ASGIResponse()
-            receive = _ReceiveCallable(body)
-            coro = app(scope, receive, response.send)
+    if exec_mode == _EXEC_MODE_LOOP:
+        # App is known to need event loop - skip fast path entirely
+        coro = app(scope, receive, response.send)
+        if _use_persistent_loop:
+            try:
+                _run_in_persistent_loop(coro)
+            except Exception:
+                # Fallback to per-thread loop on persistent loop failure
+                response = ASGIResponse()
+                receive = _ReceiveCallable(body)
+                coro = app(scope, receive, response.send)
+                loop = _get_event_loop()
+                loop.run_until_complete(coro)
+        else:
             loop = _get_event_loop()
             loop.run_until_complete(coro)
-        else:
-            # Response already started - can't retry safely
-            # Just return what we have (partial response)
-            pass
+    else:
+        # Try fast path first (avoids Task creation for simple apps)
+        coro = app(scope, receive, response.send)
+        try:
+            _run_coro_fast(coro)
+        except (_NeedEventLoop, RuntimeError) as e:
+            # Fast path can't handle this app - needs real async
+            # RuntimeError with "no running event loop" happens when code
+            # calls asyncio.sleep(), asyncio.gather(), etc.
+            if isinstance(e, RuntimeError) and "no running event loop" not in str(e):
+                raise  # Re-raise other RuntimeErrors
+
+            # Cache this app as needing the event loop
+            _app_execution_mode[cache_key] = _EXEC_MODE_LOOP
+
+            # Only safe to retry if no response has been sent yet
+            if response.status is None:
+                # Clean slate - recreate everything
+                response = ASGIResponse()
+                receive = _ReceiveCallable(body)
+                coro = app(scope, receive, response.send)
+                loop = _get_event_loop()
+                loop.run_until_complete(coro)
+            else:
+                # Response already started - can't retry safely
+                # Just return what we have (partial response)
+                pass
 
     return response.to_dict()
 

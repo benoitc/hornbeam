@@ -35,23 +35,43 @@ Example usage:
 """
 
 from typing import Any, Callable, Dict, Optional, Tuple, Union
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 
 # Registry of channel handlers
 _channels: Dict[str, 'Channel'] = {}
 
-# Pending broadcasts to be executed after handler returns
-# This avoids the "callback pending" error when calling Erlang from inside a callback
-_pending_broadcasts: list = []
+# Request-local pending broadcasts using contextvars
+# This avoids cross-request bleed under concurrent load
+_pending_broadcasts: ContextVar[list] = ContextVar('pending_broadcasts', default=None)
 
-# Pending presence operations to be executed after handler returns
-_pending_presence_ops: list = []
+# Request-local pending presence operations
+_pending_presence_ops: ContextVar[list] = ContextVar('pending_presence_ops', default=None)
+
+
+def _get_broadcasts_list() -> list:
+    """Get or create the request-local broadcasts list."""
+    broadcasts = _pending_broadcasts.get()
+    if broadcasts is None:
+        broadcasts = []
+        _pending_broadcasts.set(broadcasts)
+    return broadcasts
+
+
+def _get_presence_ops_list() -> list:
+    """Get or create the request-local presence ops list."""
+    ops = _pending_presence_ops.get()
+    if ops is None:
+        ops = []
+        _pending_presence_ops.set(ops)
+    return ops
 
 
 def _queue_broadcast(broadcast_type: str, topic: str, event: str, payload: dict, sender_pid=None):
     """Queue a broadcast to be executed after the handler returns."""
-    _pending_broadcasts.append({
+    broadcasts = _get_broadcasts_list()
+    broadcasts.append({
         "type": broadcast_type,
         "topic": topic,
         "event": event,
@@ -61,16 +81,19 @@ def _queue_broadcast(broadcast_type: str, topic: str, event: str, payload: dict,
 
 
 def _get_pending_broadcasts() -> list:
-    """Get and clear pending broadcasts."""
-    global _pending_broadcasts
-    broadcasts = _pending_broadcasts[:]
-    _pending_broadcasts = []
+    """Get and clear pending broadcasts for this request context."""
+    broadcasts = _pending_broadcasts.get()
+    if broadcasts is None:
+        return []
+    # Clear the context var for next request
+    _pending_broadcasts.set(None)
     return broadcasts
 
 
 def _queue_presence_op(op_type: str, topic: str, key: str, meta: dict = None):
     """Queue a presence operation to be executed after the handler returns."""
-    _pending_presence_ops.append({
+    ops = _get_presence_ops_list()
+    ops.append({
         "op": op_type,
         "topic": topic,
         "key": key,
@@ -79,10 +102,12 @@ def _queue_presence_op(op_type: str, topic: str, key: str, meta: dict = None):
 
 
 def _get_pending_presence_ops() -> list:
-    """Get and clear pending presence operations."""
-    global _pending_presence_ops
-    ops = _pending_presence_ops[:]
-    _pending_presence_ops = []
+    """Get and clear pending presence operations for this request context."""
+    ops = _pending_presence_ops.get()
+    if ops is None:
+        return []
+    # Clear the context var for next request
+    _pending_presence_ops.set(None)
     return ops
 
 

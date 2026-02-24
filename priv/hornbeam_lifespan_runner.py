@@ -25,8 +25,13 @@ The lifespan protocol allows ASGI applications to:
 
 import asyncio
 import importlib
+import os
 import sys
 from typing import Dict, Any, Optional
+
+# Dev reload mode: when True, evicts modules from sys.modules before import
+# Set HORNBEAM_DEV_RELOAD=1 to enable (for hot-reload during development)
+_DEV_RELOAD = os.environ.get('HORNBEAM_DEV_RELOAD', '').lower() in ('1', 'true', 'yes')
 
 
 # Install erlang event loop as the default event loop policy (once per interpreter)
@@ -54,7 +59,7 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 
 def load_app(module_name: str, callable_name: str):
     """Load an ASGI application."""
-    if module_name in sys.modules:
+    if _DEV_RELOAD and module_name in sys.modules:
         del sys.modules[module_name]
     module = importlib.import_module(module_name)
     return getattr(module, callable_name)
