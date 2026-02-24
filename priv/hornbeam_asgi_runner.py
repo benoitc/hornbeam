@@ -76,6 +76,12 @@ _app_cache_lock = threading.Lock()
 # Persistent event loop per thread (reused across requests)
 _thread_local = threading.local()
 
+# Global persistent loop for high-performance mode
+_persistent_loop: Optional[asyncio.AbstractEventLoop] = None
+_persistent_loop_thread: Optional[threading.Thread] = None
+_persistent_loop_lock = threading.Lock()
+_use_persistent_loop = True  # Enable by default for better performance
+
 
 def _get_event_loop() -> asyncio.AbstractEventLoop:
     """Get or create a persistent event loop for this thread.
@@ -93,6 +99,106 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
         asyncio.set_event_loop(loop)
         _thread_local.loop = loop
     return loop
+
+
+def _get_persistent_loop() -> asyncio.AbstractEventLoop:
+    """Get or create a persistent running event loop.
+
+    This loop runs continuously in a background thread, allowing
+    tasks to be submitted without run_until_complete() overhead.
+    """
+    global _persistent_loop, _persistent_loop_thread
+
+    if _persistent_loop is not None and _persistent_loop.is_running():
+        return _persistent_loop
+
+    with _persistent_loop_lock:
+        # Double-check after acquiring lock
+        if _persistent_loop is not None and _persistent_loop.is_running():
+            return _persistent_loop
+
+        # Create new loop
+        _persistent_loop = asyncio.new_event_loop()
+
+        def run_loop():
+            asyncio.set_event_loop(_persistent_loop)
+            _persistent_loop.run_forever()
+
+        _persistent_loop_thread = threading.Thread(
+            target=run_loop,
+            daemon=True,
+            name="asgi-loop"
+        )
+        _persistent_loop_thread.start()
+
+        # Wait for loop to start
+        while not _persistent_loop.is_running():
+            pass
+
+        return _persistent_loop
+
+
+def _run_in_persistent_loop(coro) -> Any:
+    """Run a coroutine in the persistent loop and wait for result.
+
+    This is faster than run_until_complete() because:
+    1. The loop is already running (no startup overhead)
+    2. Uses run_coroutine_threadsafe which is optimized for this pattern
+    """
+    loop = _get_persistent_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()  # Block until done
+
+
+def _run_coro_fast(coro):
+    """Fast coroutine runner for simple ASGI apps.
+
+    Manually steps through the coroutine without creating a Task.
+    Falls back to event loop for complex async operations.
+
+    This optimization works because most ASGI request handlers:
+    1. Only await receive() once (for body)
+    2. Call send() a few times (start + body)
+    3. Don't do real async I/O
+
+    For these simple cases, we avoid Task creation overhead entirely.
+    """
+    try:
+        # Start the coroutine
+        awaitable = coro.send(None)
+
+        # Keep stepping through awaitables
+        while True:
+            # Check if it's a simple awaitable we can resolve directly
+            if hasattr(awaitable, 'send'):
+                # It's a coroutine - step into it
+                try:
+                    inner = awaitable.send(None)
+                    # If inner returns immediately, continue outer
+                    if inner is None:
+                        awaitable = coro.send(None)
+                    else:
+                        # Chain the inner coroutine
+                        while hasattr(inner, 'send'):
+                            try:
+                                inner = inner.send(None)
+                            except StopIteration as e:
+                                inner = e.value
+                                break
+                        awaitable = coro.send(inner)
+                except StopIteration as e:
+                    # Inner coroutine completed
+                    awaitable = coro.send(e.value)
+            elif awaitable is None:
+                # Simple None yield - continue
+                awaitable = coro.send(None)
+            else:
+                # Complex awaitable (Future, Task, etc.) - fall back to event loop
+                loop = _get_event_loop()
+                return loop.run_until_complete(coro)
+
+    except StopIteration as e:
+        return e.value
 
 
 def load_app(module_name: str, callable_name: str):
@@ -238,45 +344,6 @@ async def _run_asgi_async(module_name: str, callable_name: str,
     return response.to_dict()
 
 
-def _run_sync_coroutine(coro):
-    """Run a coroutine synchronously without an event loop.
-
-    This is faster for simple coroutines that don't do real async I/O.
-    It manually drives the coroutine by catching StopIteration.
-    """
-    try:
-        # Start the coroutine
-        result = coro.send(None)
-        # Keep driving until done
-        while True:
-            # For awaited coroutines, drive them too
-            # Use try/except instead of hasattr for speed
-            try:
-                send_method = result.send
-            except AttributeError:
-                result = coro.send(result)
-                continue
-
-            # It's a coroutine/awaitable, drive it
-            try:
-                inner_result = send_method(None)
-                while True:
-                    try:
-                        inner_send = inner_result.send
-                    except AttributeError:
-                        break
-                    try:
-                        inner_result = inner_send(None)
-                    except StopIteration as e:
-                        inner_result = e.value
-                        break
-                result = coro.send(inner_result)
-            except StopIteration as e:
-                result = coro.send(e.value)
-    except StopIteration as e:
-        return e.value
-
-
 class _ReceiveCallable:
     """Optimized receive callable - avoids closure creation per request."""
     __slots__ = ('body', 'body_sent', '_request_msg')
@@ -327,9 +394,21 @@ def run_asgi(module_name: str, callable_name: str,
     response = ASGIResponse()
     receive = _ReceiveCallable(body)
 
-    # Run the app using fast sync path
+    # Create the coroutine
     coro = app(scope, receive, response.send)
-    _run_sync_coroutine(coro)
+
+    # Try fast path first (avoids Task creation for simple apps)
+    # Falls back to event loop for complex async operations
+    try:
+        _run_coro_fast(coro)
+    except Exception:
+        # Fast path failed, use full event loop
+        # Need to recreate coroutine since the previous one may be partially consumed
+        response = ASGIResponse()
+        receive = _ReceiveCallable(body)
+        coro = app(scope, receive, response.send)
+        loop = _get_event_loop()
+        loop.run_until_complete(coro)
 
     return response.to_dict()
 
@@ -361,6 +440,10 @@ def _run_asgi_sync(module_name: str, callable_name: str,
 
 # Streaming support for real-time responses
 
+# Thread-safe streaming session storage
+_streaming_sessions: Dict[str, 'StreamingASGIRunner'] = {}
+_streaming_sessions_lock = threading.Lock()
+
 
 class StreamingASGIRunner:
     """Runner for streaming ASGI responses.
@@ -376,22 +459,33 @@ class StreamingASGIRunner:
         self.callable_name = callable_name
         self.scope = scope
         self.app = None
-        self.response_started = False
         self.status = None
         self.headers = []
         self.body_queue: asyncio.Queue = None
         self.finished = False
         self.loop = None
+        self._response_started_event: asyncio.Event = None
+        self._error: Optional[Exception] = None
 
-    def start(self, body: bytes) -> dict:
+    def start(self, body: bytes, timeout_ms: int = 5000) -> dict:
         """Start the streaming response.
+
+        Args:
+            body: Request body bytes
+            timeout_ms: Max time to wait for response headers (default 5s)
 
         Returns the initial response headers.
         """
         self.app = load_app(self.module_name, self.callable_name)
+
+        # Inject lifespan state if available
+        if _get_lifespan_state is not None:
+            self.scope['state'] = _get_lifespan_state()
+
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.body_queue = asyncio.Queue()
+        self._response_started_event = asyncio.Event()
 
         # Create receive/send callables
         body_sent = False
@@ -405,14 +499,14 @@ class StreamingASGIRunner:
                     'body': body,
                     'more_body': False
                 }
-            return {'type': 'http.disconnect'}
+            return _DISCONNECT_MSG
 
         async def send(message):
             msg_type = message.get('type', '')
             if msg_type == 'http.response.start':
-                self.response_started = True
                 self.status = message.get('status', 200)
                 self.headers = message.get('headers', [])
+                self._response_started_event.set()
             elif msg_type == 'http.response.body':
                 body_part = message.get('body', b'')
                 more_body = message.get('more_body', False)
@@ -425,16 +519,33 @@ class StreamingASGIRunner:
             try:
                 await self.app(self.scope, receive, send)
             except Exception as e:
+                self._error = e
+                self._response_started_event.set()  # Unblock waiter on error
                 await self.body_queue.put((b'', False))
                 self.finished = True
 
         self.loop.create_task(run_app())
 
-        # Wait for response to start
-        for _ in range(1000):  # Max iterations
-            self.loop.run_until_complete(asyncio.sleep(0.001))
-            if self.response_started:
-                break
+        # Wait for response to start using event (not polling)
+        async def wait_for_start():
+            await asyncio.wait_for(
+                self._response_started_event.wait(),
+                timeout=timeout_ms / 1000.0
+            )
+
+        try:
+            self.loop.run_until_complete(wait_for_start())
+        except asyncio.TimeoutError:
+            # Timeout waiting for response headers
+            self.finished = True
+            return {'status': 504, 'headers': [], 'error': 'timeout'}
+
+        if self._error is not None:
+            return {
+                'status': 500,
+                'headers': [],
+                'error': str(self._error)
+            }
 
         return {
             'status': self.status or 500,
@@ -465,29 +576,38 @@ class StreamingASGIRunner:
     def close(self):
         """Clean up resources."""
         if self.loop:
-            self.loop.close()
+            try:
+                self.loop.close()
+            except Exception:
+                pass
             self.loop = None
 
 
-# Module-level streaming session storage
-_streaming_sessions: Dict[str, StreamingASGIRunner] = {}
-
-
 def start_streaming(session_id: str, module_name: str, callable_name: str,
-                    scope: dict, body: bytes) -> dict:
+                    scope: dict, body: bytes, timeout_ms: int = 5000) -> dict:
     """Start a streaming ASGI response session.
+
+    Args:
+        session_id: Unique identifier for this streaming session
+        module_name: Python module containing the ASGI app
+        callable_name: Name of the ASGI callable
+        scope: ASGI scope dict
+        body: Request body bytes
+        timeout_ms: Max time to wait for response headers
 
     Returns initial response headers.
     """
     runner = StreamingASGIRunner(module_name, callable_name, scope)
-    _streaming_sessions[session_id] = runner
 
-    if isinstance(body, str):
+    with _streaming_sessions_lock:
+        _streaming_sessions[session_id] = runner
+
+    if body.__class__ is str:
         body = body.encode('utf-8')
-    elif not isinstance(body, bytes):
+    elif body.__class__ is not bytes:
         body = b''
 
-    return runner.start(body)
+    return runner.start(body, timeout_ms)
 
 
 def get_streaming_chunk(session_id: str, timeout_ms: int = 30000) -> dict:
@@ -495,7 +615,9 @@ def get_streaming_chunk(session_id: str, timeout_ms: int = 30000) -> dict:
 
     Returns {'chunk': bytes, 'more_body': bool}
     """
-    runner = _streaming_sessions.get(session_id)
+    with _streaming_sessions_lock:
+        runner = _streaming_sessions.get(session_id)
+
     if runner is None:
         return {'chunk': b'', 'more_body': False, 'error': 'session_not_found'}
 
@@ -505,6 +627,29 @@ def get_streaming_chunk(session_id: str, timeout_ms: int = 30000) -> dict:
 
 def end_streaming(session_id: str) -> None:
     """End a streaming session and clean up resources."""
-    runner = _streaming_sessions.pop(session_id, None)
+    with _streaming_sessions_lock:
+        runner = _streaming_sessions.pop(session_id, None)
+
     if runner:
         runner.close()
+
+
+def cleanup_streaming_sessions() -> int:
+    """Clean up finished streaming sessions.
+
+    Call this periodically to prevent memory leaks from abandoned sessions.
+
+    Returns the number of sessions cleaned up.
+    """
+    cleaned = 0
+    with _streaming_sessions_lock:
+        finished_ids = [
+            sid for sid, runner in _streaming_sessions.items()
+            if runner.finished or runner.loop is None
+        ]
+        for sid in finished_ids:
+            runner = _streaming_sessions.pop(sid, None)
+            if runner:
+                runner.close()
+                cleaned += 1
+    return cleaned
