@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Erlang-Asyncio Integration**: Native Erlang timer support for async operations
+  - Auto-detection of `asyncio.sleep()` in ASGI fast path
+  - Uses Erlang's native timer via `_erlang_sleep` for ~8x performance improvement
+  - Requires `erlang_python` feature/scalable-io-model branch
+
+### Changed
+
+- **6-Stage ASGI/WSGI Performance Optimizations**:
+  - Per-app execution mode caching to skip fast path overhead for apps requiring event loop
+  - Persistent event loop uses `threading.Event` instead of busy-spin polling
+  - Dev-only module eviction via `HORNBEAM_DEV_RELOAD` environment variable
+  - Event-driven WebSocket wakeups using `asyncio.Event` + `asyncio.wait`
+  - Request-local queues via `contextvars` to prevent cross-request bleed under concurrent load
+  - WSGI environ optimization with cached values and shared instances
+  - Non-blocking `stream_async()` yields control between chunks
+
+### Performance
+
+- `/concurrent` endpoint: +97% (2,390 → 4,715 req/s)
+- `/sleep?ms=1` endpoint: +38% (5,611 → 7,747 req/s)
+- `/chain` endpoint: +22% (4,036 → 4,921 req/s)
+
 ## [1.3.2] - 2026-02-23
 
 ### Fixed
