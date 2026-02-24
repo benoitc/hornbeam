@@ -150,11 +150,16 @@ def _run_in_persistent_loop(coro) -> Any:
     return future.result()  # Block until done
 
 
+class _NeedEventLoop(Exception):
+    """Raised when fast path cannot handle an awaitable."""
+    pass
+
+
 def _run_coro_fast(coro):
     """Fast coroutine runner for simple ASGI apps.
 
     Manually steps through the coroutine without creating a Task.
-    Falls back to event loop for complex async operations.
+    Raises _NeedEventLoop for complex async operations.
 
     This optimization works because most ASGI request handlers:
     1. Only await receive() once (for body)
@@ -178,13 +183,16 @@ def _run_coro_fast(coro):
                     if inner is None:
                         awaitable = coro.send(None)
                     else:
-                        # Chain the inner coroutine
+                        # Chain the inner coroutine (only one level deep)
                         while hasattr(inner, 'send'):
                             try:
                                 inner = inner.send(None)
                             except StopIteration as e:
                                 inner = e.value
                                 break
+                        if inner is not None and not isinstance(inner, (int, str, bytes, bool, type(None))):
+                            # Complex result - needs event loop
+                            raise _NeedEventLoop()
                         awaitable = coro.send(inner)
                 except StopIteration as e:
                     # Inner coroutine completed
@@ -193,9 +201,8 @@ def _run_coro_fast(coro):
                 # Simple None yield - continue
                 awaitable = coro.send(None)
             else:
-                # Complex awaitable (Future, Task, etc.) - fall back to event loop
-                loop = _get_event_loop()
-                return loop.run_until_complete(coro)
+                # Complex awaitable (Future, Task, asyncio.sleep, etc.)
+                raise _NeedEventLoop()
 
     except StopIteration as e:
         return e.value
@@ -401,14 +408,25 @@ def run_asgi(module_name: str, callable_name: str,
     # Falls back to event loop for complex async operations
     try:
         _run_coro_fast(coro)
-    except Exception:
-        # Fast path failed, use full event loop
-        # Need to recreate coroutine since the previous one may be partially consumed
-        response = ASGIResponse()
-        receive = _ReceiveCallable(body)
-        coro = app(scope, receive, response.send)
-        loop = _get_event_loop()
-        loop.run_until_complete(coro)
+    except (_NeedEventLoop, RuntimeError) as e:
+        # Fast path can't handle this app - needs real async
+        # RuntimeError with "no running event loop" happens when code
+        # calls asyncio.sleep(), asyncio.gather(), etc.
+        if isinstance(e, RuntimeError) and "no running event loop" not in str(e):
+            raise  # Re-raise other RuntimeErrors
+
+        # Only safe to retry if no response has been sent yet
+        if response.status is None:
+            # Clean slate - recreate everything
+            response = ASGIResponse()
+            receive = _ReceiveCallable(body)
+            coro = app(scope, receive, response.send)
+            loop = _get_event_loop()
+            loop.run_until_complete(coro)
+        else:
+            # Response already started - can't retry safely
+            # Just return what we have (partial response)
+            pass
 
     return response.to_dict()
 
