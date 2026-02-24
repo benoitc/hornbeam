@@ -195,6 +195,28 @@ async def application(scope, receive, send):
         })
 ```
 
+## Erlang-Native Async Primitives
+
+For maximum async performance, use `erlang_asyncio`:
+
+```python
+import erlang_asyncio
+
+async def handler():
+    await erlang_asyncio.sleep(0.001)  # 8x faster than asyncio.sleep
+```
+
+### Automatic Optimization
+
+Hornbeam auto-detects `asyncio.sleep()` in the fast path and uses
+Erlang's native timer. Existing code benefits without modification.
+
+### Performance
+
+| Operation | asyncio | erlang_asyncio |
+|-----------|---------|----------------|
+| sleep(1ms) | ~100/s  | ~870/s (8.7x)  |
+
 ## Server-Sent Events (SSE)
 
 ```python

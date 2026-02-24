@@ -260,23 +260,27 @@ handle_asgi(Req, State) ->
         %% Read request body
         {ok, ReqBody, Req2} = cowboy_req:read_body(Req),
 
-        %% Check if context affinity is required (for module-level state sharing)
-        %% Use optimized NIF path by default, fall back to ctx_call when needed
+        %% Determine ASGI execution mode:
+        %% - context_affinity: Use lifespan context (for shared module state)
+        %% - bind_context: Bind a fresh context per-request (reduces GIL overhead)
+        %% - default: Use optimized NIF path (fastest for simple apps)
         UseContextAffinity = maps:get(context_affinity, State, false),
-        PyContext = case UseContextAffinity of
-            true -> hornbeam_lifespan:get_context();
-            false -> undefined
-        end,
+        BindContext = maps:get(bind_context, State, false),
 
-        Result = case PyContext of
-            undefined ->
-                %% Optimized py_asgi:run/5 path (NIF-based marshalling)
-                %% ~2x throughput vs py:call path
-                run_asgi_optimized(Req, AppModule, AppCallable, ReqBody);
-            Ctx ->
+        Result = case {UseContextAffinity, BindContext} of
+            {true, _} ->
                 %% Context affinity path - uses same worker as lifespan
                 %% Required when app stores resources in module-level variables
-                run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, Ctx, TimeoutMs)
+                PyContext = hornbeam_lifespan:get_context(),
+                run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs);
+            {false, true} ->
+                %% Bound context path - binds worker for request duration
+                %% Better for apps with multiple async operations
+                run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs);
+            {false, false} ->
+                %% Optimized py_asgi:run/5 path (NIF-based marshalling)
+                %% Best for simple request/response apps
+                run_asgi_optimized(Req, AppModule, AppCallable, ReqBody)
         end,
 
         case Result of
@@ -316,6 +320,18 @@ run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs
     Scope = hornbeam_asgi:build_scope(Req),
     py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
                [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs).
+
+%% @private
+%% Bound context path - binds a worker for the request duration.
+%% This reduces overhead for apps with multiple async operations by
+%% keeping the same Python worker/GIL for the entire request.
+run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs) ->
+    Scope = hornbeam_asgi:build_scope(Req),
+    %% Use with_context to bind a worker for the request duration
+    py:with_context(fun() ->
+        py:call(hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs)
+    end).
 
 %% @private
 %% Build scope with atom keys for NIF optimization.

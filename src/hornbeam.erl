@@ -56,6 +56,7 @@
 -type options() :: #{
     bind => string() | binary(),
     workers => pos_integer(),
+    num_acceptors => pos_integer(),
     worker_class => wsgi | asgi,
     timeout => pos_integer(),
     keepalive => pos_integer(),
@@ -97,6 +98,7 @@ start(AppSpec) ->
 %% <ul>
 %%   <li>`bind' - Address to bind to (default: "127.0.0.1:8000")</li>
 %%   <li>`workers' - Number of Python workers (default: 4)</li>
+%%   <li>`num_acceptors' - Number of Cowboy acceptor processes (default: 100)</li>
 %%   <li>`worker_class' - wsgi or asgi (default: wsgi)</li>
 %%   <li>`timeout' - Request timeout in ms (default: 30000)</li>
 %%   <li>`keepalive' - Keep-alive timeout in seconds (default: 2)</li>
@@ -128,22 +130,29 @@ start(AppSpec, Options) ->
             Hooks = maps:get(hooks, Config1, #{}),
             hornbeam_http_hooks:set_hooks(Hooks),
 
-            %% Register hornbeam functions for Python callbacks
-            register_python_callbacks(),
-
-            %% Configure max concurrent requests
-            MaxConcurrent = maps:get(max_concurrent, Config1),
-            py_semaphore:set_max_concurrent(MaxConcurrent),
-
-            %% Setup Python paths
-            setup_python_paths(Config1),
-
-            %% Run lifespan startup for ASGI apps
-            WorkerClass = maps:get(worker_class, Config1),
-            case maybe_run_lifespan_startup(WorkerClass, Config1) of
+            %% Ensure Python runtime matches requested worker count.
+            %% This may restart erlang_python when workers changed.
+            case ensure_python_runtime(Config1) of
                 ok ->
-                    %% Start the HTTP listener
-                    start_listener(Config1);
+                    %% Register hornbeam functions for Python callbacks
+                    register_python_callbacks(),
+
+                    %% Configure max concurrent requests
+                    MaxConcurrent = maps:get(max_concurrent, Config1),
+                    py_semaphore:set_max_concurrent(MaxConcurrent),
+
+                    %% Setup Python paths
+                    setup_python_paths(Config1),
+
+                    %% Run lifespan startup for ASGI apps
+                    WorkerClass = maps:get(worker_class, Config1),
+                    case maybe_run_lifespan_startup(WorkerClass, Config1) of
+                        ok ->
+                            %% Start the HTTP listener
+                            start_listener(Config1);
+                        {error, _} = Error ->
+                            Error
+                    end;
                 {error, _} = Error ->
                     Error
             end;
@@ -195,6 +204,7 @@ default_config() ->
     #{
         bind => <<"127.0.0.1:8000">>,
         workers => 4,
+        num_acceptors => 100,
         worker_class => wsgi,
         timeout => 30000,
         keepalive => 2,
@@ -218,6 +228,72 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
             {ok, Module, <<"application">>};
         _ ->
             {error, {invalid_app_spec, AppSpec}}
+    end.
+
+ensure_python_runtime(Config) ->
+    Workers = maps:get(workers, Config, 4),
+    ok = application:set_env(erlang_python, num_workers, Workers),
+    case current_python_workers() of
+        {ok, Workers} ->
+            ok;
+        _ ->
+            restart_python_runtime()
+    end.
+
+current_python_workers() ->
+    try py_pool:get_stats() of
+        #{num_workers := NumWorkers} when is_integer(NumWorkers), NumWorkers > 0 ->
+            {ok, NumWorkers};
+        _ ->
+            {error, unknown}
+    catch
+        _:_ ->
+            {error, unavailable}
+    end.
+
+restart_python_runtime() ->
+    case application:stop(erlang_python) of
+        ok ->
+            start_python_runtime();
+        {error, {not_started, erlang_python}} ->
+            start_python_runtime();
+        {error, Reason} ->
+            {error, {python_stop_failed, Reason}}
+    end.
+
+start_python_runtime() ->
+    case application:start(erlang_python) of
+        ok ->
+            refresh_lifespan_manager();
+        {error, {already_started, erlang_python}} ->
+            refresh_lifespan_manager();
+        {error, Reason} ->
+            {error, {python_start_failed, Reason}}
+    end.
+
+refresh_lifespan_manager() ->
+    case whereis(hornbeam_lifespan) of
+        undefined ->
+            ok;
+        _ ->
+            case supervisor:terminate_child(hornbeam_sup, hornbeam_lifespan) of
+                ok ->
+                    restart_lifespan_manager();
+                {error, not_found} ->
+                    ok;
+                {error, Reason} ->
+                    {error, {lifespan_terminate_failed, Reason}}
+            end
+    end.
+
+restart_lifespan_manager() ->
+    case supervisor:restart_child(hornbeam_sup, hornbeam_lifespan) of
+        {ok, _Pid} ->
+            ok;
+        {ok, _Pid, _Info} ->
+            ok;
+        {error, Reason} ->
+            {error, {lifespan_restart_failed, Reason}}
     end.
 
 setup_python_paths(Config) ->
@@ -279,6 +355,7 @@ maybe_run_lifespan_startup(wsgi, _Config) ->
 
 start_listener(Config) ->
     {Ip, Port} = parse_bind(maps:get(bind, Config)),
+    NumAcceptors = maps:get(num_acceptors, Config, 100),
     WorkerClass = maps:get(worker_class, Config),
 
     %% Build custom routes (WebSocket handlers, etc.)
@@ -319,14 +396,19 @@ start_listener(Config) ->
         true ->
             start_tls_listener(Ip, Port, Config, ProtoOpts);
         false ->
+            TransportOpts = #{
+                num_acceptors => NumAcceptors,
+                socket_opts => [{port, Port}, {ip, Ip}]
+            },
             {ok, _} = cowboy:start_clear(hornbeam_http,
-                [{port, Port}, {ip, Ip}], ProtoOpts),
+                TransportOpts, ProtoOpts),
             ok
     end.
 
 %% @private
 %% Start SSL/TLS listener with certificate configuration
 start_tls_listener(Ip, Port, Config, ProtoOpts) ->
+    NumAcceptors = maps:get(num_acceptors, Config, 100),
     CertFile = maps:get(certfile, Config, undefined),
     KeyFile = maps:get(keyfile, Config, undefined),
     CaCertFile = maps:get(cacertfile, Config, undefined),
@@ -336,14 +418,18 @@ start_tls_listener(Ip, Port, Config, ProtoOpts) ->
         {_, undefined} ->
             {error, {missing_ssl_option, keyfile}};
         _ ->
-            SslOpts = [{port, Port}, {ip, Ip},
-                       {certfile, ensure_list(CertFile)},
-                       {keyfile, ensure_list(KeyFile)}] ++
-                      case CaCertFile of
-                          undefined -> [];
-                          _ -> [{cacertfile, ensure_list(CaCertFile)}]
-                      end,
-            {ok, _} = cowboy:start_tls(hornbeam_http, SslOpts, ProtoOpts),
+            SocketOpts = [{port, Port}, {ip, Ip},
+                          {certfile, ensure_list(CertFile)},
+                          {keyfile, ensure_list(KeyFile)}] ++
+                         case CaCertFile of
+                             undefined -> [];
+                             _ -> [{cacertfile, ensure_list(CaCertFile)}]
+                         end,
+            TransportOpts = #{
+                num_acceptors => NumAcceptors,
+                socket_opts => SocketOpts
+            },
+            {ok, _} = cowboy:start_tls(hornbeam_http, TransportOpts, ProtoOpts),
             ok
     end.
 

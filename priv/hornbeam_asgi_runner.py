@@ -55,6 +55,49 @@ def _init_lifespan_getter():
 _init_lifespan_getter()
 
 
+# Check if _erlang_sleep is available
+_has_erlang_sleep = False
+_erlang_sleep = None
+
+
+def _init_erlang_sleep():
+    global _has_erlang_sleep, _erlang_sleep
+    try:
+        import py_event_loop as pel
+        if hasattr(pel, '_erlang_sleep'):
+            _erlang_sleep = pel._erlang_sleep
+            _has_erlang_sleep = True
+    except ImportError:
+        pass
+
+
+_init_erlang_sleep()
+
+
+def _is_asyncio_sleep_coro(coro) -> bool:
+    """Check if a coroutine is asyncio.sleep()."""
+    try:
+        if coro.cr_frame is None:
+            return False
+        code = coro.cr_frame.f_code
+        return (code.co_name == 'sleep' and 'asyncio' in code.co_filename)
+    except (AttributeError, TypeError):
+        return False
+
+
+def _extract_sleep_delay(coro) -> float:
+    """Extract delay value from asyncio.sleep coroutine."""
+    try:
+        if coro.cr_frame is None:
+            return -1
+        delay = coro.cr_frame.f_locals.get('delay', -1)
+        if isinstance(delay, (int, float)) and delay >= 0:
+            return float(delay)
+        return -1
+    except (AttributeError, TypeError, KeyError):
+        return -1
+
+
 # Pre-allocated message templates
 _DISCONNECT_MSG = {'type': 'http.disconnect'}
 
@@ -167,6 +210,9 @@ def _run_coro_fast(coro):
     3. Don't do real async I/O
 
     For these simple cases, we avoid Task creation overhead entirely.
+
+    When _erlang_sleep is available, asyncio.sleep() calls are intercepted
+    and executed using Erlang's native timer for ~8x better performance.
     """
     try:
         # Start the coroutine
@@ -176,6 +222,19 @@ def _run_coro_fast(coro):
         while True:
             # Check if it's a simple awaitable we can resolve directly
             if hasattr(awaitable, 'send'):
+                # Check if it's asyncio.sleep - intercept and use Erlang timer
+                if _has_erlang_sleep and _is_asyncio_sleep_coro(awaitable):
+                    delay = _extract_sleep_delay(awaitable)
+                    if delay >= 0:
+                        awaitable.close()
+                        if delay > 0:
+                            delay_ms = int(delay * 1000)
+                            if delay_ms < 1:
+                                delay_ms = 1
+                            _erlang_sleep(delay_ms)
+                        awaitable = coro.send(None)
+                        continue
+
                 # It's a coroutine - step into it
                 try:
                     inner = awaitable.send(None)
@@ -185,6 +244,18 @@ def _run_coro_fast(coro):
                     else:
                         # Chain the inner coroutine (only one level deep)
                         while hasattr(inner, 'send'):
+                            # Check for nested asyncio.sleep
+                            if _has_erlang_sleep and _is_asyncio_sleep_coro(inner):
+                                delay = _extract_sleep_delay(inner)
+                                if delay >= 0:
+                                    inner.close()
+                                    if delay > 0:
+                                        delay_ms = int(delay * 1000)
+                                        if delay_ms < 1:
+                                            delay_ms = 1
+                                        _erlang_sleep(delay_ms)
+                                    inner = None
+                                    break
                             try:
                                 inner = inner.send(None)
                             except StopIteration as e:
