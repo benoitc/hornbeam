@@ -283,5 +283,5 @@ except ImportError:
 
 ## Next Steps
 
-- [FastAPI Example](./fastapi-app.md) - Async application
-- [Erlang Integration Guide](../guides/erlang-integration.md) - More ETS patterns
+- [FastAPI Example](/docs/examples/fastapi-app) - Async application
+- [Erlang Integration Guide](/docs/guides/erlang-integration) - More ETS patterns

@@ -271,6 +271,6 @@ Messages use the channel protocol format:
 
 ## Next Steps
 
-- [Channels Guide](../guides/channels.md) - Full channels documentation
-- [WebSocket Chat](./websocket-chat.md) - Simpler WebSocket approach
-- [Erlang Integration](../guides/erlang-integration.md) - ETS, RPC, Pub/Sub
+- [Channels Guide](/docs/guides/channels) - Full channels documentation
+- [WebSocket Chat](/docs/examples/websocket-chat) - Simpler WebSocket approach
+- [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub

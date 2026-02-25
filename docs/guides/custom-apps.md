@@ -467,7 +467,7 @@ CMD ["bin/my_app", "foreground"]
 
 ## See Also
 
-- [Hooks Guide](./hooks.md) - Bidirectional callback system
-- [Distributed RPC Guide](./distributed-rpc.md) - Cluster patterns
-- [ML Integration Guide](./ml-integration.md) - ML caching and inference
-- [ASGI Guide](./asgi.md) - ASGI protocol details
+- [Hooks Guide](/docs/guides/hooks) - Bidirectional callback system
+- [Distributed RPC Guide](/docs/guides/distributed-rpc) - Cluster patterns
+- [ML Integration Guide](/docs/guides/ml-integration) - ML caching and inference
+- [ASGI Guide](/docs/guides/asgi) - ASGI protocol details

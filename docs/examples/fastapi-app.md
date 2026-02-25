@@ -391,5 +391,5 @@ numpy>=1.20
 
 ## Next Steps
 
-- [WebSocket Chat Example](./websocket-chat.md) - Full chat application
-- [Embedding Service Example](./embedding-service.md) - Production ML service
+- [WebSocket Chat Example](/docs/examples/websocket-chat) - Full chat application
+- [Embedding Service Example](/docs/examples/embedding-service) - Production ML service

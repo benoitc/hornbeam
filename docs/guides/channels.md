@@ -350,6 +350,6 @@ hornbeam:start("your_module:app", #{
 
 ## Next Steps
 
-- [Channels Chat Example](../examples/channels-chat.md) - Full chat application
-- [WebSocket Guide](./websocket.md) - Raw WebSocket for simpler use cases
-- [Erlang Integration](./erlang-integration.md) - ETS, RPC, Pub/Sub details
+- [Channels Chat Example](/docs/examples/channels-chat) - Full chat application
+- [WebSocket Guide](/docs/guides/websocket) - Raw WebSocket for simpler use cases
+- [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub details

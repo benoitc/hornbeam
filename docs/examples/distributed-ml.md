@@ -385,5 +385,5 @@ async def metrics():
 
 ## Next Steps
 
-- [ML Integration Guide](../guides/ml-integration.md) - Caching patterns
-- [Erlang Integration Guide](../guides/erlang-integration.md) - RPC details
+- [ML Integration Guide](/docs/guides/ml-integration) - Caching patterns
+- [Erlang Integration Guide](/docs/guides/erlang-integration) - RPC details

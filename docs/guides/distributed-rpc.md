@@ -489,6 +489,6 @@ rpc_cast('logger@server', 'audit_log', 'record', [
 ## See Also
 
 - [Erlang API Reference](https://hexdocs.pm/hornbeam) - `hornbeam_dist` module (hex.pm)
-- [Python API Reference](../reference/python-api.md) - RPC functions
-- [Distributed ML Example](../examples/distributed-ml.md) - Complete example
-- [Custom Apps Guide](./custom-apps.md) - Building applications
+- [Python API Reference](/docs/reference/python-api) - RPC functions
+- [Distributed ML Example](/docs/examples/distributed-ml) - Complete example
+- [Custom Apps Guide](/docs/guides/custom-apps) - Building applications

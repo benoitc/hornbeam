@@ -156,7 +156,7 @@ hornbeam:start("myapp:application", #{
 }).
 ```
 
-See [Configuration Reference](./reference/configuration.md) for all options.
+See [Configuration Reference](/docs/reference/configuration) for all options.
 
 ## Using Erlang Features
 
@@ -194,11 +194,11 @@ def application(environ, start_response):
     return [json.dumps(result).encode()]
 ```
 
-See the [Erlang Integration Guide](./guides/erlang-integration.md) for more.
+See the [Erlang Integration Guide](/docs/guides/erlang-integration) for more.
 
 ## Next Steps
 
-- [WSGI Guide](./guides/wsgi.md) - Full WSGI protocol details
-- [ASGI Guide](./guides/asgi.md) - Async apps and WebSocket
-- [Erlang Integration](./guides/erlang-integration.md) - ETS, RPC, Pub/Sub
-- [Examples](./examples/flask-app.md) - Complete working examples
+- [WSGI Guide](/docs/guides/wsgi) - Full WSGI protocol details
+- [ASGI Guide](/docs/guides/asgi) - Async apps and WebSocket
+- [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub
+- [Examples](/docs/examples/flask-app) - Complete working examples

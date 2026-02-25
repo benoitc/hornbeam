@@ -402,6 +402,6 @@ async def application(scope, receive, send):
 
 ## Next Steps
 
-- [WebSocket Guide](./websocket.md) - Real-time communication
-- [Erlang Integration](./erlang-integration.md) - ETS, RPC, Pub/Sub
-- [FastAPI Example](../examples/fastapi-app.md) - Complete FastAPI application
+- [WebSocket Guide](/docs/guides/websocket) - Real-time communication
+- [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub
+- [FastAPI Example](/docs/examples/fastapi-app) - Complete FastAPI application
