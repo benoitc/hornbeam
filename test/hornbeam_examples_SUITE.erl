@@ -131,7 +131,7 @@ init_per_group(asgi_examples, Config) ->
     ProjectRoot = proplists:get_value(project_root, Config),
     PythonPath = filename:join(ProjectRoot, "examples/hello_asgi"),
     Bind = list_to_binary(io_lib:format("~s:~p", [?HOST, ?PORT])),
-    ok = hornbeam:start("app:application", #{
+    ok = hornbeam:start("hello_asgi_app:application", #{
         bind => Bind,
         worker_class => asgi,
         pythonpath => [list_to_binary(PythonPath)]
