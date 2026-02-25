@@ -42,9 +42,9 @@ jobs:
           path: |
             ~/.cache/rebar3
             _build
-          key: ${{ runner.os }}-rebar3-${{ matrix.otp }}-${{ hashFiles('rebar.lock') }}
+          key: ${{ runner.os }}-rebar3-${{ matrix.otp }}-py${{ matrix.python }}-${{ hashFiles('rebar.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rebar3-${{ matrix.otp }}-
+            ${{ runner.os }}-rebar3-${{ matrix.otp }}-py${{ matrix.python }}-
 
       - name: Compile
         run: rebar3 compile
