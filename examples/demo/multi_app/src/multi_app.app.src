@@ -1,0 +1,16 @@
+{application, multi_app, [
+    {description, "Hornbeam Multi-App Demo"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {multi_app_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        sasl,
+        hornbeam
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

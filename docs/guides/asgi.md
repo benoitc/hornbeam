@@ -42,9 +42,9 @@ The scope dict contains request information:
 | `http_version` | str | `"1.1"` or `"2"` |
 | `method` | str | HTTP method |
 | `scheme` | str | `"http"` or `"https"` |
-| `path` | str | URL path |
+| `path` | str | URL path (stripped of mount prefix in [multi-app mode](/docs/guides/multi-app)) |
 | `query_string` | bytes | Query string |
-| `root_path` | str | ASGI root path |
+| `root_path` | str | ASGI root path (set to mount prefix in [multi-app mode](/docs/guides/multi-app)) |
 | `headers` | list | `[[name, value], ...]` |
 | `server` | tuple | `(host, port)` |
 | `client` | tuple | `(host, port)` or None |
@@ -402,6 +402,7 @@ async def application(scope, receive, send):
 
 ## Next Steps
 
+- [Multi-App Guide](/docs/guides/multi-app) - Mount multiple apps at different URLs
 - [WebSocket Guide](/docs/guides/websocket) - Real-time communication
 - [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub
 - [FastAPI Example](/docs/examples/fastapi-app) - Complete FastAPI application

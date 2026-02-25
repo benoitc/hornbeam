@@ -19,6 +19,7 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 - [ASGI Guide](/docs/guides/asgi) - Run FastAPI, Starlette, and async apps
 
 ### Guides
+- [Multi-App Support](/docs/guides/multi-app) - Mount multiple apps at different prefixes
 - [Channels & Presence](/docs/guides/channels) - Real-time multiplexed channels
 - [WebSocket Guide](/docs/guides/websocket) - Real-time bidirectional communication
 - [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub

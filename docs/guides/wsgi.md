@@ -32,8 +32,8 @@ Hornbeam provides all standard WSGI environ variables:
 | Variable | Description |
 |----------|-------------|
 | `REQUEST_METHOD` | HTTP method (GET, POST, etc.) |
-| `SCRIPT_NAME` | URL path prefix |
-| `PATH_INFO` | URL path |
+| `SCRIPT_NAME` | URL path prefix (set by [multi-app mounts](/docs/guides/multi-app)) |
+| `PATH_INFO` | URL path (stripped of mount prefix in multi-app mode) |
 | `QUERY_STRING` | Query string after `?` |
 | `CONTENT_TYPE` | Request content type |
 | `CONTENT_LENGTH` | Request body length |
@@ -270,6 +270,7 @@ hornbeam:start("app:application", #{
 
 ## Next Steps
 
+- [Multi-App Guide](/docs/guides/multi-app) - Mount multiple apps at different URLs
 - [ASGI Guide](/docs/guides/asgi) - For async applications
 - [Erlang Integration](/docs/guides/erlang-integration) - ETS, RPC, Pub/Sub
 - [Flask Example](/docs/examples/flask-app) - Complete Flask application

@@ -59,3 +59,12 @@ services:
       - PYTHONPATH=/app/example
     volumes:
       - ./realtime_chat:/app/example:ro
+
+  # Multi-App Demo - Multiple apps at different URL prefixes
+  # Each mount has its own virtual environment
+  multi-app:
+    build:
+      context: ../..
+      dockerfile: examples/demo/multi_app/Dockerfile
+    ports:
+      - "9004:8000"

@@ -11,12 +11,74 @@ This document covers all Hornbeam configuration options.
 ## Quick Start
 
 ```erlang
+%% Single application
 hornbeam:start("myapp:application", #{
     bind => "0.0.0.0:8000",
     workers => 4,
     worker_class => asgi
 }).
+
+%% Multiple applications
+hornbeam:start(#{
+    mounts => [
+        {"/api", "api:app", #{worker_class => asgi}},
+        {"/", "frontend:app", #{worker_class => wsgi}}
+    ],
+    bind => "0.0.0.0:8000"
+}).
 ```
+
+## Multi-App Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `mounts` | list | Yes | List of mount specs: `{Prefix, AppSpec, Opts}` |
+| `routes` | list | No | Custom Cowboy routes (matched before mounts) |
+
+### Mount Spec
+
+Each mount is a tuple: `{Prefix, AppSpec, Options}`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Prefix` | string/binary | URL prefix (must start with `/`) |
+| `AppSpec` | string/binary | Python `"module:callable"` |
+| `Options` | map | Per-mount options (see below) |
+
+### Per-Mount Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
+| `workers` | integer | `4` | Number of Python workers for this mount |
+| `timeout` | integer | `30000` | Request timeout in ms |
+
+### Multi-App Example
+
+```erlang
+hornbeam:start(#{
+    mounts => [
+        {"/api/v2", "api_v2:app", #{
+            worker_class => asgi,
+            workers => 8,
+            timeout => 60000
+        }},
+        {"/api/v1", "api_v1:app", #{
+            worker_class => wsgi,
+            workers => 4
+        }},
+        {"/", "frontend:app", #{worker_class => wsgi}}
+    ],
+    routes => [
+        {"/health", health_handler, #{}},
+        {"/metrics", metrics_handler, #{}}
+    ],
+    bind => "0.0.0.0:8000",
+    pythonpath => [".", "apps"]
+}).
+```
+
+See [Multi-App Guide](/docs/guides/multi-app) for detailed usage.
 
 ## Server Options
 

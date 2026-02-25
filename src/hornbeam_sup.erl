@@ -15,6 +15,7 @@
 %%% @doc Hornbeam top-level supervisor.
 %%%
 %%% Supervises all hornbeam services:
+%%% - hornbeam_mounts: Multi-app mount registry
 %%% - hornbeam_config: Configuration management
 %%% - hornbeam_state: Shared state ETS
 %%% - hornbeam_tasks: Async task spawning
@@ -44,6 +45,14 @@ init([]) ->
     },
 
     Children = [
+        #{
+            id => hornbeam_mounts,
+            start => {hornbeam_mounts, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_mounts]
+        },
         #{
             id => hornbeam_config,
             start => {hornbeam_config, start_link, []},

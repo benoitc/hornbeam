@@ -35,6 +35,16 @@
 %%%     lifespan => on
 %%% }).
 %%%
+%%% %% Multi-app mode - mount different apps at different prefixes
+%%% hornbeam:start(#{
+%%%     mounts => [
+%%%         {"/api", "api:app", #{worker_class => asgi, workers => 4}},
+%%%         {"/admin", "admin:app", #{worker_class => wsgi}},
+%%%         {"/", "frontend:app", #{worker_class => wsgi}}
+%%%     ],
+%%%     routes => [{"/health", health_handler, #{}}]  %% optional Erlang handlers
+%%% }).
+%%%
 %%% %% Register Erlang functions callable from Python
 %%% hornbeam:register_function(my_func, fun([Arg]) -> process(Arg) end).
 %%%
@@ -53,6 +63,7 @@
 ]).
 
 -type app_spec() :: string() | binary().
+-type mount_spec() :: {Prefix :: string() | binary(), AppSpec :: app_spec(), Opts :: map()}.
 -type options() :: #{
     bind => string() | binary(),
     workers => pos_integer(),
@@ -83,13 +94,38 @@
         on_error => fun((term(), map()) -> {integer(), binary()})
     }
 }.
+-type multi_app_config() :: #{
+    mounts := [mount_spec()],
+    routes => [{Path :: binary(), Handler :: module(), Opts :: map()}],
+    bind => string() | binary(),
+    num_acceptors => pos_integer(),
+    pythonpath => [string() | binary()],
+    venv => string() | binary() | undefined,
+    %% SSL/TLS
+    ssl => boolean(),
+    certfile => string() | binary() | undefined,
+    keyfile => string() | binary() | undefined,
+    cacertfile => string() | binary() | undefined,
+    %% HTTP lifecycle hooks
+    hooks => #{
+        on_request => fun((map()) -> map()),
+        on_response => fun((map()) -> map()),
+        on_error => fun((term(), map()) -> {integer(), binary()})
+    }
+}.
 
--export_type([app_spec/0, options/0]).
+-export_type([app_spec/0, options/0, mount_spec/0, multi_app_config/0]).
 
-%% @doc Start hornbeam with a WSGI/ASGI application.
-%% The application spec is in the format "module:callable" (e.g., "myapp:application").
--spec start(app_spec()) -> ok | {error, term()}.
-start(AppSpec) ->
+%% @doc Start hornbeam with a WSGI/ASGI application or multi-app config.
+%%
+%% For single-app mode, pass the application spec as "module:callable".
+%% For multi-app mode, pass a map with 'mounts' key containing mount specs.
+-spec start(app_spec() | multi_app_config()) -> ok | {error, term()}.
+start(#{mounts := Mounts} = Config) when is_list(Mounts) ->
+    %% Multi-app mode
+    start_multi(Config);
+start(AppSpec) when is_list(AppSpec); is_binary(AppSpec) ->
+    %% Single-app mode
     start(AppSpec, #{}).
 
 %% @doc Start hornbeam with a WSGI/ASGI application and options.
@@ -200,6 +236,276 @@ unregister_function(Name) ->
 %%% Internal functions
 %%% ============================================================================
 
+%% @private
+%% Start in multi-app mode with multiple mounts
+start_multi(Config) ->
+    %% Validate and normalize mounts
+    case validate_mounts(maps:get(mounts, Config), Config) of
+        {ok, NormalizedMounts} ->
+            %% Register mounts
+            hornbeam_mounts:register(NormalizedMounts),
+
+            %% Merge global defaults into config
+            GlobalConfig = maps:merge(default_multi_config(), Config),
+
+            %% Store global configuration
+            hornbeam_config:set_config(GlobalConfig),
+
+            %% Initialize HTTP hooks if provided
+            Hooks = maps:get(hooks, GlobalConfig, #{}),
+            hornbeam_http_hooks:set_hooks(Hooks),
+
+            %% Calculate max workers needed (max across all mounts)
+            MaxWorkers = lists:foldl(fun(Mount, Max) ->
+                max(Max, maps:get(workers, Mount, 4))
+            end, 4, NormalizedMounts),
+
+            %% Ensure Python runtime with max workers
+            case ensure_python_runtime(GlobalConfig#{workers => MaxWorkers}) of
+                ok ->
+                    %% Register hornbeam functions for Python callbacks
+                    register_python_callbacks(),
+
+                    %% Configure max concurrent requests
+                    MaxConcurrent = maps:get(max_concurrent, GlobalConfig, 10000),
+                    py_semaphore:set_max_concurrent(MaxConcurrent),
+
+                    %% Setup global Python paths
+                    setup_python_paths(GlobalConfig),
+
+                    %% Setup pythonpath for all mounts (needed for lifespan and module loading)
+                    setup_mounts_pythonpath(NormalizedMounts),
+
+                    %% Run lifespan startup for ASGI mounts
+                    case maybe_run_multi_lifespan_startup(NormalizedMounts, GlobalConfig) of
+                        ok ->
+                            %% Start the HTTP listener in multi-app mode
+                            start_listener_multi(GlobalConfig);
+                        {error, _} = Error ->
+                            Error
+                    end;
+                {error, _} = Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
+%% Setup pythonpath for all mounts at startup
+setup_mounts_pythonpath(Mounts) ->
+    lists:foreach(fun(Mount) ->
+        Paths = maps:get(pythonpath, Mount, []),
+        lists:foreach(fun(Path) ->
+            add_to_sys_path(Path)
+        end, Paths)
+    end, Mounts).
+
+%% @private
+%% Add a path to Python's sys.path if not already present
+add_to_sys_path(Path) ->
+    PathBin = ensure_binary(Path),
+    py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+            #{p => PathBin}).
+
+%% @private
+%% Default config for multi-app mode (global settings only)
+default_multi_config() ->
+    #{
+        bind => <<"127.0.0.1:8000">>,
+        num_acceptors => 100,
+        max_concurrent => 10000,
+        pythonpath => [<<".">>, <<"examples">>],
+        venv => undefined
+    }.
+
+%% @private
+%% Validate and normalize mount specs into mount records
+validate_mounts(Mounts, GlobalConfig) ->
+    try
+        Validated = lists:map(fun(MountSpec) ->
+            validate_mount(MountSpec, GlobalConfig)
+        end, Mounts),
+        %% Check for duplicate prefixes
+        Prefixes = [maps:get(prefix, M) || M <- Validated],
+        case length(Prefixes) =:= length(lists:usort(Prefixes)) of
+            true -> {ok, Validated};
+            false -> {error, duplicate_mount_prefix}
+        end
+    catch
+        throw:{invalid_mount, Reason} ->
+            {error, {invalid_mount, Reason}}
+    end.
+
+%% @private
+validate_mount({Prefix, AppSpec, Opts}, GlobalConfig) ->
+    %% Validate prefix
+    PrefixBin = ensure_binary(Prefix),
+    case PrefixBin of
+        <<"/", _/binary>> -> ok;
+        _ -> throw({invalid_mount, {prefix_must_start_with_slash, Prefix}})
+    end,
+    %% Check for trailing slash (except root)
+    case PrefixBin of
+        <<"/">> -> ok;
+        _ ->
+            case binary:last(PrefixBin) of
+                $/ -> throw({invalid_mount, {prefix_must_not_end_with_slash, Prefix}});
+                _ -> ok
+            end
+    end,
+    %% Parse app spec
+    case parse_app_spec(AppSpec) of
+        {ok, Module, Callable} ->
+            %% Merge global defaults with mount-specific opts
+            DefaultOpts = #{
+                worker_class => wsgi,
+                workers => maps:get(workers, GlobalConfig, 4),
+                timeout => maps:get(timeout, GlobalConfig, 30000)
+            },
+            MountOpts = maps:merge(DefaultOpts, Opts),
+            %% Build pythonpath for this mount
+            %% Priority: mount pythonpath > mount venv site-packages > global pythonpath
+            MountPythonpath = build_mount_pythonpath(MountOpts, GlobalConfig),
+            #{
+                prefix => PrefixBin,
+                app_module => Module,
+                app_callable => Callable,
+                worker_class => maps:get(worker_class, MountOpts),
+                workers => maps:get(workers, MountOpts),
+                timeout => maps:get(timeout, MountOpts),
+                pythonpath => MountPythonpath
+            };
+        {error, Reason} ->
+            throw({invalid_mount, {invalid_app_spec, AppSpec, Reason}})
+    end;
+validate_mount(Invalid, _GlobalConfig) ->
+    throw({invalid_mount, {invalid_mount_spec, Invalid}}).
+
+%% @private
+%% Build the pythonpath for a mount, including venv site-packages if specified
+build_mount_pythonpath(MountOpts, _GlobalConfig) ->
+    %% Start with mount-specific pythonpath or empty list
+    BasePath = case maps:get(pythonpath, MountOpts, undefined) of
+        undefined -> [];
+        Paths when is_list(Paths) -> [ensure_binary(P) || P <- Paths]
+    end,
+    %% Add venv site-packages if venv is specified
+    VenvPath = case maps:get(venv, MountOpts, undefined) of
+        undefined -> [];
+        Venv ->
+            VenvBin = ensure_binary(Venv),
+            %% Get site-packages path for the venv
+            SitePackages = get_venv_site_packages(VenvBin),
+            case SitePackages of
+                undefined -> [];
+                Path -> [Path]
+            end
+    end,
+    %% Combine: mount paths + venv site-packages
+    %% Note: we don't include global pythonpath as each mount should be isolated
+    BasePath ++ VenvPath.
+
+%% @private
+%% Get the site-packages directory for a virtualenv
+get_venv_site_packages(VenvPath) ->
+    %% Try common site-packages locations
+    Candidates = [
+        %% Linux/macOS
+        filename:join([VenvPath, <<"lib">>, <<"python3.14">>, <<"site-packages">>]),
+        filename:join([VenvPath, <<"lib">>, <<"python3.13">>, <<"site-packages">>]),
+        filename:join([VenvPath, <<"lib">>, <<"python3.12">>, <<"site-packages">>]),
+        filename:join([VenvPath, <<"lib">>, <<"python3.11">>, <<"site-packages">>]),
+        filename:join([VenvPath, <<"lib">>, <<"python3.10">>, <<"site-packages">>]),
+        %% Windows
+        filename:join([VenvPath, <<"Lib">>, <<"site-packages">>])
+    ],
+    find_existing_path(Candidates).
+
+%% @private
+find_existing_path([]) -> undefined;
+find_existing_path([Path | Rest]) ->
+    case filelib:is_dir(Path) of
+        true -> Path;
+        false -> find_existing_path(Rest)
+    end.
+
+%% @private
+%% Run lifespan startup for all ASGI mounts
+maybe_run_multi_lifespan_startup(Mounts, Config) ->
+    AsgiMounts = [M || M <- Mounts, maps:get(worker_class, M) =:= asgi],
+    LifespanMode = maps:get(lifespan, Config, auto),
+    case {AsgiMounts, LifespanMode} of
+        {[], _} -> ok;
+        {_, off} -> ok;
+        {_, _} ->
+            %% For now, run lifespan for all ASGI mounts sequentially
+            %% TODO: Could be optimized to run in parallel
+            run_lifespan_for_mounts(AsgiMounts, #{lifespan => LifespanMode})
+    end.
+
+%% @private
+run_lifespan_for_mounts([], _Opts) ->
+    ok;
+run_lifespan_for_mounts([Mount | Rest], Opts) ->
+    %% Store mount info in config temporarily for lifespan
+    hornbeam_config:set_config(#{
+        app_module => maps:get(app_module, Mount),
+        app_callable => maps:get(app_callable, Mount)
+    }),
+    case hornbeam_lifespan:startup(Opts) of
+        ok -> run_lifespan_for_mounts(Rest, Opts);
+        {error, _} = Error -> Error
+    end.
+
+%% @private
+%% Start the HTTP listener in multi-app mode
+start_listener_multi(Config) ->
+    {Ip, Port} = parse_bind(maps:get(bind, Config)),
+    NumAcceptors = maps:get(num_acceptors, Config, 100),
+
+    %% Build custom routes (WebSocket handlers, etc.)
+    CustomRoutes = maps:get(routes, Config, []),
+
+    %% Multi-app handler state - lookups mount per request
+    HandlerState = #{
+        multi_app => true
+    },
+
+    %% Default catchall route for Python apps (routes to mounts)
+    DefaultRoute = {'_', hornbeam_handler, HandlerState},
+
+    %% Combine custom routes with default (custom routes take precedence)
+    AllRoutes = CustomRoutes ++ [DefaultRoute],
+
+    Dispatch = cowboy_router:compile([
+        {'_', AllRoutes}
+    ]),
+
+    %% Build protocol options including request limits
+    ProtoOpts = #{
+        env => #{dispatch => Dispatch},
+        idle_timeout => maps:get(keepalive, Config, 2) * 1000,
+        request_timeout => maps:get(timeout, Config, 30000),
+        max_request_line_length => maps:get(max_request_line_size, Config, 4094),
+        max_header_value_length => maps:get(max_header_size, Config, 8190),
+        max_headers => maps:get(max_headers, Config, 100)
+    },
+
+    %% Start with SSL/TLS or plain HTTP
+    case maps:get(ssl, Config, false) of
+        true ->
+            start_tls_listener(Ip, Port, Config, ProtoOpts);
+        false ->
+            TransportOpts = #{
+                num_acceptors => NumAcceptors,
+                socket_opts => [{port, Port}, {ip, Ip}]
+            },
+            {ok, _} = cowboy:start_clear(hornbeam_http,
+                TransportOpts, ProtoOpts),
+            ok
+    end.
+
 default_config() ->
     #{
         bind => <<"127.0.0.1:8000">>,
@@ -298,7 +604,7 @@ restart_lifespan_manager() ->
 
 setup_python_paths(Config) ->
     %% Activate virtual environment if specified
-    case maps:get(venv, Config, undefined) of
+    _ = case maps:get(venv, Config, undefined) of
         undefined ->
             ok;
         Venv ->

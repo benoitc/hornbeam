@@ -25,7 +25,34 @@
 %% WebSocket callbacks (delegate to hornbeam_websocket)
 -export([websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
+init(Req, #{multi_app := true} = State) ->
+    %% Multi-app mode: lookup mount based on request path
+    Path = cowboy_req:path(Req),
+    case hornbeam_mounts:lookup(Path) of
+        {ok, Mount, PathInfo} ->
+            %% Setup mount's pythonpath if specified
+            setup_mount_pythonpath(Mount),
+            %% Build new state from mount config
+            NewState = State#{
+                app_module => maps:get(app_module, Mount),
+                app_callable => maps:get(app_callable, Mount),
+                worker_class => maps:get(worker_class, Mount),
+                timeout => maps:get(timeout, Mount),
+                script_name => maps:get(prefix, Mount),
+                path_info => PathInfo
+            },
+            WorkerClass = maps:get(worker_class, Mount),
+            handle_request(WorkerClass, Req, NewState);
+        {error, no_match} ->
+            %% No mount matched - return 404
+            Req2 = cowboy_req:reply(404,
+                                    #{<<"content-type">> => <<"text/plain">>},
+                                    <<"Not Found">>,
+                                    Req),
+            {ok, Req2, State}
+    end;
 init(Req, State) ->
+    %% Single-app mode (backward compatible)
     WorkerClass = maps:get(worker_class, State, wsgi),
     handle_request(WorkerClass, Req, State).
 
@@ -81,10 +108,10 @@ handle_wsgi(Req, State) ->
         Result = case PyContext of
             undefined ->
                 %% Optimized py_wsgi:run/4 path (NIF-based marshalling)
-                run_wsgi_optimized(Req, AppModule, AppCallable);
+                run_wsgi_optimized(Req, AppModule, AppCallable, State);
             Ctx ->
                 %% Context affinity path - uses same worker as lifespan
-                run_wsgi_with_context(Req, AppModule, AppCallable, Ctx, TimeoutMs)
+                run_wsgi_with_context(Req, AppModule, AppCallable, Ctx, TimeoutMs, State)
         end,
 
         case Result of
@@ -106,8 +133,8 @@ handle_wsgi(Req, State) ->
 
 %% @private
 %% Optimized path using py_wsgi:run/4 with NIF marshalling
-run_wsgi_optimized(Req, AppModule, AppCallable) ->
-    Environ = build_environ_for_nif(Req),
+run_wsgi_optimized(Req, AppModule, AppCallable, State) ->
+    Environ = build_environ_for_nif(Req, State),
     case py_wsgi:run(AppModule, AppCallable, Environ,
                      #{runner => <<"hornbeam_wsgi_runner">>}) of
         {ok, {Status, Headers, Body}} ->
@@ -120,15 +147,26 @@ run_wsgi_optimized(Req, AppModule, AppCallable) ->
 
 %% @private
 %% Context-aware fallback path using py:ctx_call
-run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs) ->
-    Environ = hornbeam_wsgi:build_environ(Req),
+run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) ->
+    %% Build environ options from state (for multi-app mode)
+    EnvOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{script_name => ScriptName}
+    end,
+    Environ = hornbeam_wsgi:build_environ(Req, EnvOpts),
+    %% Override PATH_INFO if set in state (from mount lookup)
+    Environ1 = case maps:get(path_info, State, undefined) of
+        undefined -> Environ;
+        PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
+    end,
     py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
-               [AppModule, AppCallable, Environ], #{}, TimeoutMs).
+               [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
 
 %% @private
 %% Build environ dict for NIF optimization.
 %% Uses binary keys which the NIF optimizes with interned strings.
-build_environ_for_nif(Req) ->
+%% State may contain script_name and path_info from mount lookup.
+build_environ_for_nif(Req, State) ->
     Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
     Qs = cowboy_req:qs(Req),
@@ -138,6 +176,10 @@ build_environ_for_nif(Req) ->
     Scheme = cowboy_req:scheme(Req),
     Version = cowboy_req:version(Req),
     {ClientIp, _ClientPort} = cowboy_req:peer(Req),
+
+    %% Get SCRIPT_NAME and PATH_INFO from state (multi-app) or defaults
+    ScriptName = maps:get(script_name, State, <<>>),
+    PathInfo = maps:get(path_info, State, Path),
 
     %% Read body
     {ok, Body, _Req2} = cowboy_req:read_body(Req),
@@ -151,8 +193,8 @@ build_environ_for_nif(Req) ->
     %% Build base environ
     BaseEnviron = #{
         <<"REQUEST_METHOD">> => Method,
-        <<"SCRIPT_NAME">> => <<>>,
-        <<"PATH_INFO">> => Path,
+        <<"SCRIPT_NAME">> => ScriptName,
+        <<"PATH_INFO">> => PathInfo,
         <<"QUERY_STRING">> => Qs,
         <<"SERVER_NAME">> => Host,
         <<"SERVER_PORT">> => integer_to_binary(Port),
@@ -198,8 +240,7 @@ header_to_wsgi_key(Name) ->
 %% @private
 format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
 format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
-format_protocol('HTTP/2') -> <<"HTTP/2">>;
-format_protocol(_) -> <<"HTTP/1.1">>.
+format_protocol('HTTP/2') -> <<"HTTP/2">>.
 
 send_wsgi_response(Req, Response, State) ->
     Status = maps:get(<<"status">>, Response),
@@ -272,15 +313,15 @@ handle_asgi(Req, State) ->
                 %% Context affinity path - uses same worker as lifespan
                 %% Required when app stores resources in module-level variables
                 PyContext = hornbeam_lifespan:get_context(),
-                run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs);
+                run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State);
             {false, true} ->
                 %% Bound context path - binds worker for request duration
                 %% Better for apps with multiple async operations
-                run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs);
+                run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State);
             {false, false} ->
                 %% Optimized py_asgi:run/5 path (NIF-based marshalling)
                 %% Best for simple request/response apps
-                run_asgi_optimized(Req, AppModule, AppCallable, ReqBody)
+                run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State)
         end,
 
         case Result of
@@ -302,8 +343,8 @@ handle_asgi(Req, State) ->
 
 %% @private
 %% Optimized path using py_asgi:run/5 with NIF marshalling
-run_asgi_optimized(Req, AppModule, AppCallable, ReqBody) ->
-    Scope = build_scope_for_nif(Req),
+run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State) ->
+    Scope = build_scope_for_nif(Req, State),
     case py_asgi:run(AppModule, AppCallable, Scope, ReqBody,
                      #{runner => <<"hornbeam_asgi_runner">>}) of
         {ok, {Status, Headers, Body}} ->
@@ -316,27 +357,48 @@ run_asgi_optimized(Req, AppModule, AppCallable, ReqBody) ->
 
 %% @private
 %% Context-aware fallback path using py:ctx_call
-run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs) ->
-    Scope = hornbeam_asgi:build_scope(Req),
+run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State) ->
+    %% Build scope options from state (for multi-app mode)
+    ScopeOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{root_path => ScriptName}
+    end,
+    Scope = hornbeam_asgi:build_scope(Req, ScopeOpts),
+    %% Override path if set in state (from mount lookup)
+    Scope1 = case maps:get(path_info, State, undefined) of
+        undefined -> Scope;
+        PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
+    end,
     py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
-               [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs).
+               [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
 %% Bound context path - binds a worker for the request duration.
 %% This reduces overhead for apps with multiple async operations by
 %% keeping the same Python worker/GIL for the entire request.
-run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs) ->
-    Scope = hornbeam_asgi:build_scope(Req),
+run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
+    %% Build scope options from state (for multi-app mode)
+    ScopeOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{root_path => ScriptName}
+    end,
+    Scope = hornbeam_asgi:build_scope(Req, ScopeOpts),
+    %% Override path if set in state (from mount lookup)
+    Scope1 = case maps:get(path_info, State, undefined) of
+        undefined -> Scope;
+        PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
+    end,
     %% Use with_context to bind a worker for the request duration
     py:with_context(fun() ->
         py:call(hornbeam_asgi_runner, run_asgi,
-                [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs)
+                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
     end).
 
 %% @private
 %% Build scope with atom keys for NIF optimization.
 %% The NIF uses asgi_get_key_for_term which optimizes atom key lookups.
-build_scope_for_nif(Req) ->
+%% State may contain script_name (root_path) and path_info from mount lookup.
+build_scope_for_nif(Req, State) ->
     Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
     Qs = cowboy_req:qs(Req),
@@ -346,6 +408,10 @@ build_scope_for_nif(Req) ->
     Scheme = cowboy_req:scheme(Req),
     Version = cowboy_req:version(Req),
     {ClientIp, ClientPort} = cowboy_req:peer(Req),
+
+    %% Get root_path and path from state (multi-app) or defaults
+    RootPath = maps:get(script_name, State, <<>>),
+    ScopePath = maps:get(path_info, State, Path),
 
     HeaderList = maps:fold(fun(Name, Value, Acc) ->
         [[Name, Value] | Acc]
@@ -359,10 +425,10 @@ build_scope_for_nif(Req) ->
         http_version => format_http_version(Version),
         method => Method,
         scheme => Scheme,
-        path => Path,
-        raw_path => Path,
+        path => ScopePath,
+        raw_path => ScopePath,
         query_string => Qs,
-        root_path => <<>>,
+        root_path => RootPath,
         headers => HeaderList,
         server => {Host, Port},
         client => {format_ip(ClientIp), ClientPort},
@@ -490,6 +556,28 @@ to_lower_binary(V) -> string:lowercase(to_binary(V)).
 %%% ============================================================================
 %%% WebSocket callbacks (delegate to hornbeam_websocket)
 %%% ============================================================================
+
+%% @private
+%% Setup pythonpath for a mount before executing the app.
+%% This ensures mount-specific dependencies are available.
+%% Note: paths are added at startup too, but this ensures they're
+%% at the front of sys.path for this request.
+setup_mount_pythonpath(Mount) ->
+    case maps:get(pythonpath, Mount, []) of
+        [] ->
+            ok;
+        Paths when is_list(Paths) ->
+            %% Add each path to sys.path if not already present
+            lists:foreach(fun(Path) ->
+                PathBin = if
+                    is_binary(Path) -> Path;
+                    is_list(Path) -> list_to_binary(Path);
+                    true -> Path
+                end,
+                py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+                        #{p => PathBin})
+            end, Paths)
+    end.
 
 websocket_init(State) ->
     hornbeam_websocket:websocket_init(State).
