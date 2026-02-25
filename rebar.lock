@@ -3,7 +3,7 @@
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.13.0">>},1},
  {<<"erlang_python">>,
   {git,"https://github.com/benoitc/erlang-python.git",
-       {ref,"19b28fc04d831541b39029ae2b4b28a4686148b7"}},
+       {ref,"5b4a7281420edb98ea931582c4dc5afbc21d758f"}},
   0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.8.0">>},1}]}.
 [
