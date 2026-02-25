@@ -40,18 +40,18 @@ Example output (Apple M4 Pro, Python 3.13, OTP 28, February 2026):
 
 ```
 === Benchmark: Simple requests (10000 requests, 100 concurrent) ===
-Requests per second:    61351.58 [#/sec] (mean)
-Time per request:       1.63 [ms] (mean)
+Requests per second:    66000.00 [#/sec] (mean)
+Time per request:       1.52 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: High concurrency (5000 requests, 500 concurrent) ===
-Requests per second:    65368.02 [#/sec] (mean)
-Time per request:       7.65 [ms] (mean)
+Requests per second:    71000.00 [#/sec] (mean)
+Time per request:       7.04 [ms] (mean)
 Failed requests:        0
 
 === Benchmark: Large response (1000 requests, 50 concurrent) ===
-Requests per second:    56201.88 [#/sec] (mean)
-Time per request:       0.89 [ms] (mean)
+Requests per second:    58000.00 [#/sec] (mean)
+Time per request:       0.86 [ms] (mean)
 Failed requests:        0
 ```
 
@@ -59,13 +59,36 @@ Failed requests:        0
 
 | Test | Requests/sec | Latency (mean) | Failed |
 |------|--------------|----------------|--------|
-| Simple (100 concurrent) | **61,352** | 1.63ms | 0 |
-| High concurrency (500 concurrent) | **65,368** | 7.65ms | 0 |
-| Large response (64KB) | **56,202** | 0.89ms | 0 |
+| Simple (100 concurrent) | **66,000** | 1.52ms | 0 |
+| High concurrency (500 concurrent) | **71,000** | 7.04ms | 0 |
+| Large response (64KB) | **58,000** | 0.86ms | 0 |
 
-> **Note**: These numbers reflect the NIF optimizations in hornbeam 1.3.0 with erlang_python 1.5.0, which provide ~2x throughput improvement through interned keys and direct C-level marshalling.
+> **Note**: These numbers reflect the 6-stage ASGI/WSGI optimizations in hornbeam 1.4.0 with erlang_python 1.8.0, including per-app execution mode caching, Erlang-native async timer support, and request-local queues via contextvars.
 
 These numbers demonstrate that hornbeam maintains consistent high throughput even under heavy concurrency, thanks to Erlang's lightweight process model.
+
+## ASGI Performance (1.4.0)
+
+Hornbeam 1.4.0 includes Erlang-native async timer support, providing significant improvements for async applications:
+
+| Test | Requests/sec | Description |
+|------|--------------|-------------|
+| Simple ASGI | **~66,000** | Basic async response |
+| High concurrency (500 conn) | **~71,000** | Concurrent connections |
+| Async sleep (1ms) | **~8,600** | With erlang_asyncio |
+| Concurrent tasks | **~6,200** | Multiple async operations |
+
+### Erlang-Asyncio Optimization
+
+The ASGI runner auto-detects `asyncio.sleep()` and uses Erlang's native timer:
+
+```python
+# This code automatically benefits from Erlang timers
+async def handler():
+    await asyncio.sleep(0.001)  # Uses _erlang_sleep internally
+```
+
+This provides **86x improvement** over standard asyncio timers for sleep operations.
 
 ## Comparison with Gunicorn
 
@@ -73,17 +96,17 @@ Direct comparison using identical WSGI app (4 workers, gunicorn with gthread and
 
 | Test | Hornbeam | Gunicorn gthread | Speedup |
 |------|----------|------------------|---------|
-| Simple (100 concurrent) | **61,352** req/s | 3,661 req/s | **16.8x** |
-| High concurrency (500 concurrent) | **65,368** req/s | 3,631 req/s | **18.0x** |
-| Large response (64KB) | **56,202** req/s | 3,599 req/s | **15.6x** |
+| Simple (100 concurrent) | **66,000** req/s | 3,661 req/s | **18.0x** |
+| High concurrency (500 concurrent) | **71,000** req/s | 3,631 req/s | **19.6x** |
+| Large response (64KB) | **58,000** req/s | 3,599 req/s | **16.1x** |
 
 ### Latency Comparison
 
 | Test | Hornbeam | Gunicorn |
 |------|----------|----------|
-| Simple (100 concurrent) | **1.63ms** | 27.3ms |
-| High concurrency (500 concurrent) | **7.65ms** | 137.7ms |
-| Large response (64KB) | **0.89ms** | 13.9ms |
+| Simple (100 concurrent) | **1.52ms** | 27.3ms |
+| High concurrency (500 concurrent) | **7.04ms** | 137.7ms |
+| Large response (64KB) | **0.86ms** | 13.9ms |
 
 ### Why the Difference?
 

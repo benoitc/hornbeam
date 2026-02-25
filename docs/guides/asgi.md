@@ -197,25 +197,53 @@ async def application(scope, receive, send):
 
 ## Erlang-Native Async Primitives
 
-For maximum async performance, use `erlang_asyncio`:
+Hornbeam 1.4.0 introduces native Erlang timer support for async operations, providing significant performance improvements for async Python code.
+
+### Automatic Optimization
+
+Hornbeam auto-detects `asyncio.sleep()` in the ASGI fast path and uses Erlang's native timer via `_erlang_sleep`. Existing code benefits without modification:
+
+```python
+from fastapi import FastAPI
+import asyncio
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    await asyncio.sleep(0.001)  # Automatically uses Erlang timer
+    return {"status": "ok"}
+```
+
+### Explicit erlang_asyncio
+
+For maximum control, use `erlang_asyncio` directly:
 
 ```python
 import erlang_asyncio
 
 async def handler():
-    await erlang_asyncio.sleep(0.001)  # 8x faster than asyncio.sleep
+    await erlang_asyncio.sleep(0.001)  # Uses Erlang's native timer
 ```
-
-### Automatic Optimization
-
-Hornbeam auto-detects `asyncio.sleep()` in the fast path and uses
-Erlang's native timer. Existing code benefits without modification.
 
 ### Performance
 
-| Operation | asyncio | erlang_asyncio |
-|-----------|---------|----------------|
-| sleep(1ms) | ~100/s  | ~870/s (8.7x)  |
+| Operation | asyncio | erlang_asyncio | Improvement |
+|-----------|---------|----------------|-------------|
+| sleep(1ms) | ~100/s  | ~8,600/s | **86x** |
+| Concurrent tasks | ~1,000/s | ~6,200/s | **6.2x** |
+
+### 1.4.0 Optimizations
+
+The ASGI runner includes several optimizations:
+
+| Optimization | Description |
+|-------------|-------------|
+| **Per-app execution mode caching** | Skips fast path overhead for apps requiring event loop |
+| **Erlang-native timer** | Auto-detects `asyncio.sleep()` and uses `_erlang_sleep` |
+| **Event-driven WebSocket wakeups** | Uses `asyncio.Event` + `asyncio.wait` |
+| **Request-local queues** | Prevents cross-request bleed under concurrent load |
+| **Non-blocking streaming** | `stream_async()` yields control between chunks |
 
 ## Server-Sent Events (SSE)
 

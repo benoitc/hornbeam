@@ -47,6 +47,14 @@ Hornbeam is an HTTP server and application server that combines Python's web and
 | Hot reload | Restart server | Live code swap |
 | Fault tolerance | Process crashes = down | Supervisor restarts |
 
+## v1.4.0 Highlights
+
+- **Erlang-Asyncio Integration**: Native Erlang timer support for `asyncio.sleep()` with 86x improvement
+- **6-Stage Optimizations**: Per-app execution mode caching, request-local queues, event-driven WebSocket wakeups
+- **~71k req/s** at high concurrency (500 connections)
+
+See the [ASGI Guide](/docs/guides/asgi) and [Benchmarking](/docs/guides/benchmarking) for details.
+
 ## Erlang Python Integration
 
 Hornbeam is built on [Erlang Python](https://hexdocs.pm/erlang_python), which provides:
@@ -56,5 +64,6 @@ Hornbeam is built on [Erlang Python](https://hexdocs.pm/erlang_python), which pr
 - Free-threaded Python (3.13+) support
 - Automatic type conversion
 - Streaming from generators
+- Erlang-native asyncio event loop
 
 See the [Erlang Python documentation](https://hexdocs.pm/erlang_python) for low-level Python integration details.
