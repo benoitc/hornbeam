@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-02-25
+
+### Fixed
+
+- **ASGI Scope Method Bug**: Fixed issue where HTTP method was not treated as a
+  dynamic field in scope caching, causing incorrect method values when the same
+  path was accessed with different HTTP methods
+- **Documentation Links**: Fixed broken links in docs using relative paths with
+  `.md` extension - now use absolute paths without extension for website compatibility
+- **Test Module Collision**: Renamed `examples/hello_asgi/app.py` to `hello_asgi_app.py`
+  to avoid Python module cache conflicts when running full test suite
+
+### Dependencies
+
+- Updated `erlang_python` to 1.8.1 (fixes ASGI scope method caching)
+
 ## [1.4.0] - 2026-02-25
 
 ### Added
@@ -238,6 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowboy 2.12.0
 - erlang_python 1.3.2
 
+[1.4.1]: https://github.com/benoitc/hornbeam/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/benoitc/hornbeam/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/benoitc/hornbeam/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/benoitc/hornbeam/compare/v1.3.0...v1.3.1
