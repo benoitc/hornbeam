@@ -85,11 +85,16 @@ handle_websocket_upgrade(Req, State) ->
 %%% ============================================================================
 
 handle_wsgi(Req, State) ->
-    %% Build initial request map for hooks
+    %% Start profiling if enabled
+    Prof0 = hornbeam_profiler:start_request(),
+
+    %% Build initial request map for hooks (measures cowboy parsing overhead)
     ReqInfo = build_request_info(Req),
+    Prof1 = hornbeam_profiler:mark(cowboy_parse, Prof0),
 
     %% Run on_request hook
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+    Prof2 = hornbeam_profiler:mark(hooks_request, Prof1),
 
     try
         %% Get app module and callable from cached state (avoids ETS lookups)
@@ -108,24 +113,28 @@ handle_wsgi(Req, State) ->
         Result = case PyContext of
             undefined ->
                 %% Optimized py_wsgi:run/4 path (NIF-based marshalling)
-                run_wsgi_optimized(Req, AppModule, AppCallable, State);
+                run_wsgi_optimized_profiled(Req, AppModule, AppCallable, State, Prof2);
             Ctx ->
                 %% Context affinity path - uses same worker as lifespan
-                run_wsgi_with_context(Req, AppModule, AppCallable, Ctx, TimeoutMs, State)
+                run_wsgi_with_context_profiled(Req, AppModule, AppCallable, Ctx, TimeoutMs, State, Prof2)
         end,
 
         case Result of
-            {ok, Response} ->
+            {ok, Response, Prof3} ->
                 %% Run on_response hook
                 Response1 = hornbeam_http_hooks:run_on_response(Response),
-                send_wsgi_response(Req, Response1, State);
+                Prof4 = hornbeam_profiler:mark(hooks_response, Prof3),
+                send_wsgi_response_profiled(Req, Response1, State, Prof4);
             {error, {overloaded, Current, Max}} ->
+                hornbeam_profiler:end_request(Prof2),
                 overload_response(Req, Current, Max, State);
             {error, Error} ->
+                hornbeam_profiler:end_request(Prof2),
                 handle_error(Req, Error, ReqInfo1, State)
         end
     catch
         Class:Reason:Stack ->
+            hornbeam_profiler:end_request(Prof2),
             error_logger:error_msg("WSGI handler error: ~p:~p~n~p~n",
                                    [Class, Reason, Stack]),
             handle_error(Req, {Class, Reason}, ReqInfo1, State)
@@ -146,6 +155,24 @@ run_wsgi_optimized(Req, AppModule, AppCallable, State) ->
     end.
 
 %% @private
+%% Optimized path with profiling
+run_wsgi_optimized_profiled(Req, AppModule, AppCallable, State, Prof) ->
+    Environ = build_environ_for_nif(Req, State),
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    %% Note: body is read inside build_environ_for_nif
+    Prof2 = hornbeam_profiler:mark(body_read, Prof1),
+    case py_wsgi:run(AppModule, AppCallable, Environ,
+                     #{runner => <<"hornbeam_wsgi_runner">>}) of
+        {ok, {Status, Headers, Body}} ->
+            Prof3 = hornbeam_profiler:mark(python_exec, Prof2),
+            {ok, #{<<"status">> => Status,
+                   <<"headers">> => Headers,
+                   <<"body">> => Body}, Prof3};
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
 %% Context-aware fallback path using py:ctx_call
 run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) ->
     %% Build environ options from state (for multi-app mode)
@@ -161,6 +188,29 @@ run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) 
     end,
     py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
                [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
+
+%% @private
+%% Context-aware fallback path with profiling
+run_wsgi_with_context_profiled(Req, AppModule, AppCallable, PyContext, TimeoutMs, State, Prof) ->
+    EnvOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{script_name => ScriptName}
+    end,
+    Environ = hornbeam_wsgi:build_environ(Req, EnvOpts),
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    Environ1 = case maps:get(path_info, State, undefined) of
+        undefined -> Environ;
+        PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
+    end,
+    Prof2 = hornbeam_profiler:mark(body_read, Prof1),
+    case py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
+                     [AppModule, AppCallable, Environ1], #{}, TimeoutMs) of
+        {ok, Response} ->
+            Prof3 = hornbeam_profiler:mark(python_exec, Prof2),
+            {ok, Response, Prof3};
+        Error ->
+            Error
+    end.
 
 %% @private
 %% Build environ dict for NIF optimization.
@@ -262,6 +312,20 @@ send_wsgi_response(Req, Response, State) ->
     {ok, Req2, State}.
 
 %% @private
+%% Send WSGI response with profiling
+send_wsgi_response_profiled(Req, Response, State, Prof) ->
+    Status = maps:get(<<"status">>, Response),
+    Headers = maps:get(<<"headers">>, Response),
+    Body = maps:get(<<"body">>, Response),
+    EarlyHints = maps:get(<<"early_hints">>, Response, []),
+    StatusCode = parse_status_code(Status),
+    CowboyHeaders = convert_headers(Headers),
+    Req1 = send_early_hints(Req, EarlyHints),
+    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req1),
+    hornbeam_profiler:end_request(Prof),
+    {ok, Req2, State}.
+
+%% @private
 send_early_hints(Req, []) ->
     Req;
 send_early_hints(Req, [Hints | Rest]) ->
@@ -286,11 +350,16 @@ parse_status_code(Status) when is_integer(Status) ->
 %%% ============================================================================
 
 handle_asgi(Req, State) ->
-    %% Build initial request map for hooks
+    %% Start profiling if enabled
+    Prof0 = hornbeam_profiler:start_request(),
+
+    %% Build initial request map for hooks (measures cowboy parsing overhead)
     ReqInfo = build_request_info(Req),
+    Prof1 = hornbeam_profiler:mark(cowboy_parse, Prof0),
 
     %% Run on_request hook
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+    Prof2 = hornbeam_profiler:mark(hooks_request, Prof1),
 
     try
         %% Get app module and callable from cached state (avoids ETS lookups)
@@ -300,6 +369,7 @@ handle_asgi(Req, State) ->
 
         %% Read request body
         {ok, ReqBody, Req2} = cowboy_req:read_body(Req),
+        Prof3 = hornbeam_profiler:mark(body_read, Prof2),
 
         %% Determine ASGI execution mode:
         %% - context_affinity: Use lifespan context (for shared module state)
@@ -313,29 +383,33 @@ handle_asgi(Req, State) ->
                 %% Context affinity path - uses same worker as lifespan
                 %% Required when app stores resources in module-level variables
                 PyContext = hornbeam_lifespan:get_context(),
-                run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State);
+                run_asgi_with_context_profiled(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State, Prof3);
             {false, true} ->
                 %% Bound context path - binds worker for request duration
                 %% Better for apps with multiple async operations
-                run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State);
+                run_asgi_bound_profiled(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State, Prof3);
             {false, false} ->
                 %% Optimized py_asgi:run/5 path (NIF-based marshalling)
                 %% Best for simple request/response apps
-                run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State)
+                run_asgi_optimized_profiled(Req, AppModule, AppCallable, ReqBody, State, Prof3)
         end,
 
         case Result of
-            {ok, Response} ->
+            {ok, Response, Prof4} ->
                 %% Run on_response hook
                 Response1 = hornbeam_http_hooks:run_on_response(Response),
-                send_asgi_response(Req2, Response1, State);
+                Prof5 = hornbeam_profiler:mark(hooks_response, Prof4),
+                send_asgi_response_profiled(Req2, Response1, State, Prof5);
             {error, {overloaded, Current, Max}} ->
+                hornbeam_profiler:end_request(Prof3),
                 overload_response(Req2, Current, Max, State);
             {error, Error} ->
+                hornbeam_profiler:end_request(Prof3),
                 handle_error(Req2, Error, ReqInfo1, State)
         end
     catch
         Class:Reason:Stack ->
+            hornbeam_profiler:end_request(Prof2),
             error_logger:error_msg("ASGI handler error: ~p:~p~n~p~n",
                                    [Class, Reason, Stack]),
             handle_error(Req, {Class, Reason}, ReqInfo1, State)
@@ -343,14 +417,32 @@ handle_asgi(Req, State) ->
 
 %% @private
 %% Optimized path using py_asgi:run/5 with NIF marshalling
+%% Now routes through worker pool for better concurrency
 run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State) ->
     Scope = build_scope_for_nif(Req, State),
-    case py_asgi:run(AppModule, AppCallable, Scope, ReqBody,
-                     #{runner => <<"hornbeam_asgi_runner">>}) of
+    %% Use worker pool for better GIL handling under high concurrency
+    case py_worker_pool:asgi_run(AppModule, AppCallable, Scope, ReqBody,
+                                  #{runner => <<"hornbeam_asgi_runner">>}) of
         {ok, {Status, Headers, Body}} ->
             {ok, #{<<"status">> => Status,
                    <<"headers">> => Headers,
                    <<"body">> => Body}};
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
+%% Optimized path with profiling - uses worker pool
+run_asgi_optimized_profiled(Req, AppModule, AppCallable, ReqBody, State, Prof) ->
+    Scope = build_scope_for_nif(Req, State),
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    case py_worker_pool:asgi_run(AppModule, AppCallable, Scope, ReqBody,
+                                  #{runner => <<"hornbeam_asgi_runner">>}) of
+        {ok, {Status, Headers, Body}} ->
+            Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
+            {ok, #{<<"status">> => Status,
+                   <<"headers">> => Headers,
+                   <<"body">> => Body}, Prof2};
         {error, _} = Error ->
             Error
     end.
@@ -373,6 +465,28 @@ run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs
                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
+%% Context-aware fallback path with profiling
+run_asgi_with_context_profiled(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State, Prof) ->
+    ScopeOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{root_path => ScriptName}
+    end,
+    Scope = hornbeam_asgi:build_scope(Req, ScopeOpts),
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    Scope1 = case maps:get(path_info, State, undefined) of
+        undefined -> Scope;
+        PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
+    end,
+    case py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
+                     [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs) of
+        {ok, Response} ->
+            Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
+            {ok, Response, Prof2};
+        Error ->
+            Error
+    end.
+
+%% @private
 %% Bound context path - binds a worker for the request duration.
 %% This reduces overhead for apps with multiple async operations by
 %% keeping the same Python worker/GIL for the entire request.
@@ -393,6 +507,30 @@ run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
         py:call(hornbeam_asgi_runner, run_asgi,
                 [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
     end).
+
+%% @private
+%% Bound context path with profiling
+run_asgi_bound_profiled(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State, Prof) ->
+    ScopeOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{root_path => ScriptName}
+    end,
+    Scope = hornbeam_asgi:build_scope(Req, ScopeOpts),
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    Scope1 = case maps:get(path_info, State, undefined) of
+        undefined -> Scope;
+        PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
+    end,
+    case py:with_context(fun() ->
+        py:call(hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
+    end) of
+        {ok, Response} ->
+            Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
+            {ok, Response, Prof2};
+        Error ->
+            Error
+    end.
 
 %% @private
 %% Build scope with atom keys for NIF optimization.
@@ -483,6 +621,24 @@ send_asgi_response(Req, Response, State) ->
     Req1 = send_early_hints(Req, EarlyHints),
 
     Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req1),
+    {ok, Req2, State}.
+
+%% @private
+%% Send ASGI response with profiling
+send_asgi_response_profiled(Req, Response, State, Prof) ->
+    Status = maps:get(<<"status">>, Response),
+    Headers = maps:get(<<"headers">>, Response),
+    Body = maps:get(<<"body">>, Response),
+    EarlyHints = maps:get(<<"early_hints">>, Response, []),
+    StatusCode = case Status of
+        undefined -> 500;
+        S when is_integer(S) -> S;
+        S -> parse_status_code(S)
+    end,
+    CowboyHeaders = convert_headers(Headers),
+    Req1 = send_early_hints(Req, EarlyHints),
+    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req1),
+    hornbeam_profiler:end_request(Prof),
     {ok, Req2, State}.
 
 %%% ============================================================================
