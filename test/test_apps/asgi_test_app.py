@@ -30,6 +30,11 @@ async def application(scope, receive, send):
 
     path = scope.get('path', '/')
 
+    # Intentionally bypass error wrapper to test uncaught streaming failures.
+    if path == '/stream-error-uncaught-before-headers':
+        await handle_stream_error_uncaught_before_headers(scope, receive, send)
+        return
+
     try:
         # Route to appropriate handler
         if path == '/':
@@ -50,6 +55,24 @@ async def application(scope, receive, send):
             await handle_large(scope, receive, send)
         elif path == '/streaming':
             await handle_streaming(scope, receive, send)
+        elif path == '/sse':
+            await handle_sse(scope, receive, send)
+        elif path == '/stream-error':
+            await handle_stream_error(scope, receive, send)
+        elif path == '/stream-error-before-headers':
+            await handle_stream_error_before_headers(scope, receive, send)
+        elif path == '/stream-no-final':
+            await handle_stream_no_final(scope, receive, send)
+        elif path == '/stream-echo':
+            await handle_stream_echo(scope, receive, send)
+        elif path == '/stream-large':
+            await handle_stream_large(scope, receive, send)
+        elif path == '/stream-empty-chunks':
+            await handle_stream_empty_chunks(scope, receive, send)
+        elif path == '/stall-before-headers':
+            await handle_stall_before_headers(scope, receive, send)
+        elif path == '/slow-stream':
+            await handle_slow_stream(scope, receive, send)
         elif path == '/slow':
             await handle_slow(scope, receive, send)
         elif path == '/error':
@@ -402,6 +425,134 @@ async def handle_streaming(scope, receive, send):
             'body': chunk,
             'more_body': i < chunks - 1,
         })
+
+
+async def handle_sse(scope, receive, send):
+    """SSE-style streaming with delays between chunks."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'text/event-stream'],
+                     [b'cache-control', b'no-cache']],
+    })
+    for i in range(3):
+        chunk = f'data: event {i + 1}\n\n'.encode('utf-8')
+        await send({
+            'type': 'http.response.body',
+            'body': chunk,
+            'more_body': i < 2,
+        })
+        if i < 2:
+            await asyncio.sleep(0.05)
+
+
+async def handle_stream_error(scope, receive, send):
+    """Send headers and one chunk, then raise an error mid-stream."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'text/plain']],
+    })
+    await send({
+        'type': 'http.response.body',
+        'body': b'partial data\n',
+        'more_body': True,
+    })
+    raise ValueError("Intentional mid-stream error")
+
+
+async def handle_stream_error_before_headers(scope, receive, send):
+    """Raise before sending any ASGI response."""
+    raise RuntimeError("Crash before headers")
+
+
+async def handle_stream_error_uncaught_before_headers(scope, receive, send):
+    """Raise uncaught before headers (BaseException bypasses app error wrapper)."""
+    raise BaseException("Uncaught crash before headers")
+
+
+async def handle_stall_before_headers(scope, receive, send):
+    """Stall before sending any response, for timeout testing."""
+    await asyncio.sleep(300)
+
+
+async def handle_stream_no_final(scope, receive, send):
+    """Send headers and chunks but never send more_body=False."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'text/plain']],
+    })
+    await send({
+        'type': 'http.response.body',
+        'body': b'chunk without close\n',
+        'more_body': True,
+    })
+    # App completes without sending more_body=False
+
+
+async def handle_stream_echo(scope, receive, send):
+    """Stream back the request body in two chunks."""
+    message = await receive()
+    body = message.get('body', b'')
+
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'application/octet-stream']],
+    })
+    mid = len(body) // 2
+    await send({'type': 'http.response.body', 'body': body[:mid], 'more_body': True})
+    await send({'type': 'http.response.body', 'body': body[mid:], 'more_body': False})
+
+
+async def handle_stream_large(scope, receive, send):
+    """Stream large chunks to test binary payload integrity."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'application/octet-stream']],
+    })
+    for i in range(3):
+        chunk = bytes([i % 256]) * (512 * 1024)  # 512KB per chunk
+        await send({
+            'type': 'http.response.body',
+            'body': chunk,
+            'more_body': i < 2,
+        })
+
+
+async def handle_stream_empty_chunks(scope, receive, send):
+    """Stream with empty intermediate chunks."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'text/plain']],
+    })
+    await send({'type': 'http.response.body', 'body': b'', 'more_body': True})
+    await send({'type': 'http.response.body', 'body': b'actual data\n', 'more_body': True})
+    await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
+
+
+async def handle_slow_stream(scope, receive, send):
+    """Streaming endpoint that sends headers then stalls, for timeout testing."""
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [[b'content-type', b'text/plain']],
+    })
+    await send({
+        'type': 'http.response.body',
+        'body': b'before stall\n',
+        'more_body': True,
+    })
+    # Stall longer than any reasonable test timeout
+    await asyncio.sleep(300)
+    await send({
+        'type': 'http.response.body',
+        'body': b'after stall\n',
+        'more_body': False,
+    })
 
 
 async def handle_slow(scope, receive, send):

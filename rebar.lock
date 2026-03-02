@@ -2,8 +2,8 @@
 [{<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.12.0">>},0},
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.13.0">>},1},
  {<<"erlang_python">>,
-  {git,"https://github.com/benoitc/erlang-python.git",
-       {ref,"9956584c3c8ced865c59704a36ef641b9e4d72e3"}},
+  {git,"https://github.com/h0rv/erlang-python.git",
+       {ref,"36253a95654b92c073da12b2832bdf45ca8a0157"}},
   0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.8.0">>},1}]}.
 [

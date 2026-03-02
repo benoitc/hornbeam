@@ -38,6 +38,7 @@ init(Req, #{multi_app := true} = State) ->
                 app_callable => maps:get(app_callable, Mount),
                 worker_class => maps:get(worker_class, Mount),
                 timeout => maps:get(timeout, Mount),
+                streaming => maps:get(streaming, Mount, false),
                 script_name => maps:get(prefix, Mount),
                 path_info => PathInfo
             },
@@ -64,7 +65,10 @@ handle_request(asgi, Req, State) ->
         true ->
             handle_websocket_upgrade(Req, State);
         false ->
-            handle_asgi(Req, State)
+            case maps:get(streaming, State, false) of
+                true -> handle_asgi_streaming(Req, State);
+                false -> handle_asgi(Req, State)
+            end
     end.
 
 %% @private
@@ -106,7 +110,7 @@ handle_wsgi(Req, State) ->
         %% Use optimized NIF path by default, fall back to ctx_call when needed
         UseContextAffinity = maps:get(context_affinity, State, false),
         PyContext = case UseContextAffinity of
-            true -> hornbeam_lifespan:get_context();
+            true -> py:context();
             false -> undefined
         end,
 
@@ -141,39 +145,52 @@ handle_wsgi(Req, State) ->
     end.
 
 %% @private
-%% Optimized path using py_wsgi:run/4 with NIF marshalling
+%% WSGI execution path using py:call through context router
 run_wsgi_optimized(Req, AppModule, AppCallable, State) ->
-    Environ = build_environ_for_nif(Req, State),
-    case py_wsgi:run(AppModule, AppCallable, Environ,
-                     #{runner => <<"hornbeam_wsgi_runner">>}) of
-        {ok, {Status, Headers, Body}} ->
-            {ok, #{<<"status">> => Status,
-                   <<"headers">> => Headers,
-                   <<"body">> => Body}};
+    EnvOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{script_name => ScriptName}
+    end,
+    Environ = hornbeam_wsgi:build_environ(Req, EnvOpts),
+    Environ1 = case maps:get(path_info, State, undefined) of
+        undefined -> Environ;
+        PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
+    end,
+    TimeoutMs = maps:get(timeout, State, 30000),
+    case py:call(hornbeam_wsgi_runner, run_wsgi,
+                [AppModule, AppCallable, Environ1], #{}, TimeoutMs) of
+        {ok, Response} ->
+            {ok, Response};
         {error, _} = Error ->
             Error
     end.
 
 %% @private
-%% Optimized path with profiling
+%% WSGI execution path with profiling
 run_wsgi_optimized_profiled(Req, AppModule, AppCallable, State, Prof) ->
-    Environ = build_environ_for_nif(Req, State),
+    EnvOpts = case maps:get(script_name, State, undefined) of
+        undefined -> #{};
+        ScriptName -> #{script_name => ScriptName}
+    end,
+    Environ = hornbeam_wsgi:build_environ(Req, EnvOpts),
+    Environ1 = case maps:get(path_info, State, undefined) of
+        undefined -> Environ;
+        PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
+    end,
+    %% build_environ reads the body internally, so scope_build covers both
     Prof1 = hornbeam_profiler:mark(scope_build, Prof),
-    %% Note: body is read inside build_environ_for_nif
-    Prof2 = hornbeam_profiler:mark(body_read, Prof1),
-    case py_wsgi:run(AppModule, AppCallable, Environ,
-                     #{runner => <<"hornbeam_wsgi_runner">>}) of
-        {ok, {Status, Headers, Body}} ->
-            Prof3 = hornbeam_profiler:mark(python_exec, Prof2),
-            {ok, #{<<"status">> => Status,
-                   <<"headers">> => Headers,
-                   <<"body">> => Body}, Prof3};
+    TimeoutMs = maps:get(timeout, State, 30000),
+    case py:call(hornbeam_wsgi_runner, run_wsgi,
+                [AppModule, AppCallable, Environ1], #{}, TimeoutMs) of
+        {ok, Response} ->
+            Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
+            {ok, Response, Prof2};
         {error, _} = Error ->
             Error
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
+%% Context-aware fallback path
 run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) ->
     %% Build environ options from state (for multi-app mode)
     EnvOpts = case maps:get(script_name, State, undefined) of
@@ -186,8 +203,8 @@ run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) 
         undefined -> Environ;
         PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
-               [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
+    py:call(PyContext, hornbeam_wsgi_runner, run_wsgi,
+           [AppModule, AppCallable, Environ1], #{timeout => TimeoutMs}).
 
 %% @private
 %% Context-aware fallback path with profiling
@@ -197,100 +214,20 @@ run_wsgi_with_context_profiled(Req, AppModule, AppCallable, PyContext, TimeoutMs
         ScriptName -> #{script_name => ScriptName}
     end,
     Environ = hornbeam_wsgi:build_environ(Req, EnvOpts),
-    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
     Environ1 = case maps:get(path_info, State, undefined) of
         undefined -> Environ;
         PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
     end,
-    Prof2 = hornbeam_profiler:mark(body_read, Prof1),
-    case py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
-                     [AppModule, AppCallable, Environ1], #{}, TimeoutMs) of
+    Prof1 = hornbeam_profiler:mark(scope_build, Prof),
+    case py:call(PyContext, hornbeam_wsgi_runner, run_wsgi,
+                [AppModule, AppCallable, Environ1], #{timeout => TimeoutMs}) of
         {ok, Response} ->
-            Prof3 = hornbeam_profiler:mark(python_exec, Prof2),
-            {ok, Response, Prof3};
+            Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
+            {ok, Response, Prof2};
         Error ->
             Error
     end.
 
-%% @private
-%% Build environ dict for NIF optimization.
-%% Uses binary keys which the NIF optimizes with interned strings.
-%% State may contain script_name and path_info from mount lookup.
-build_environ_for_nif(Req, State) ->
-    Method = cowboy_req:method(Req),
-    Path = cowboy_req:path(Req),
-    Qs = cowboy_req:qs(Req),
-    Headers = cowboy_req:headers(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    Scheme = cowboy_req:scheme(Req),
-    Version = cowboy_req:version(Req),
-    {ClientIp, _ClientPort} = cowboy_req:peer(Req),
-
-    %% Get SCRIPT_NAME and PATH_INFO from state (multi-app) or defaults
-    ScriptName = maps:get(script_name, State, <<>>),
-    PathInfo = maps:get(path_info, State, Path),
-
-    %% Read body
-    {ok, Body, _Req2} = cowboy_req:read_body(Req),
-
-    %% Build HTTP_* headers
-    HttpHeaders = maps:fold(fun(Name, Value, Acc) ->
-        HeaderKey = header_to_wsgi_key(Name),
-        Acc#{HeaderKey => Value}
-    end, #{}, Headers),
-
-    %% Build base environ
-    BaseEnviron = #{
-        <<"REQUEST_METHOD">> => Method,
-        <<"SCRIPT_NAME">> => ScriptName,
-        <<"PATH_INFO">> => PathInfo,
-        <<"QUERY_STRING">> => Qs,
-        <<"SERVER_NAME">> => Host,
-        <<"SERVER_PORT">> => integer_to_binary(Port),
-        <<"SERVER_PROTOCOL">> => format_protocol(Version),
-        <<"REMOTE_ADDR">> => format_ip(ClientIp),
-        <<"wsgi.version">> => {1, 0},
-        <<"wsgi.url_scheme">> => Scheme,
-        <<"wsgi.input">> => Body,
-        <<"wsgi.multithread">> => true,
-        <<"wsgi.multiprocess">> => true,
-        <<"wsgi.run_once">> => false
-    },
-
-    %% Merge HTTP headers
-    Environ1 = maps:merge(BaseEnviron, HttpHeaders),
-
-    %% Add CONTENT_TYPE and CONTENT_LENGTH if present
-    ContentType = maps:get(<<"content-type">>, Headers, undefined),
-    ContentLength = maps:get(<<"content-length">>, Headers, undefined),
-    Environ2 = case ContentType of
-        undefined -> Environ1;
-        CT -> Environ1#{<<"CONTENT_TYPE">> => CT}
-    end,
-    case ContentLength of
-        undefined -> Environ2;
-        CL -> Environ2#{<<"CONTENT_LENGTH">> => CL}
-    end.
-
-%% @private
-header_to_wsgi_key(Name) ->
-    %% Convert header name to WSGI HTTP_* format
-    %% e.g., "content-type" -> "CONTENT_TYPE" (but CONTENT_TYPE is special)
-    %% "accept" -> "HTTP_ACCEPT"
-    case Name of
-        <<"content-type">> -> <<"CONTENT_TYPE">>;
-        <<"content-length">> -> <<"CONTENT_LENGTH">>;
-        _ ->
-            Upper = string:uppercase(Name),
-            Underscored = binary:replace(Upper, <<"-">>, <<"_">>, [global]),
-            <<"HTTP_", Underscored/binary>>
-    end.
-
-%% @private
-format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
-format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
-format_protocol('HTTP/2') -> <<"HTTP/2">>.
 
 send_wsgi_response(Req, Response, State) ->
     Status = maps:get(<<"status">>, Response),
@@ -382,7 +319,7 @@ handle_asgi(Req, State) ->
             {true, _} ->
                 %% Context affinity path - uses same worker as lifespan
                 %% Required when app stores resources in module-level variables
-                PyContext = hornbeam_lifespan:get_context(),
+                PyContext = py:context(),
                 run_asgi_with_context_profiled(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State, Prof3);
             {false, true} ->
                 %% Bound context path - binds worker for request duration
@@ -416,53 +353,47 @@ handle_asgi(Req, State) ->
     end.
 
 %% @private
-%% Optimized path using py_asgi:run/5 with NIF marshalling
-%% Now routes through worker pool for better concurrency
+%% Optimized path using NIF scope marshalling
 run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State) ->
     Scope = build_scope_for_nif(Req, State),
-    %% Use worker pool for better GIL handling under high concurrency
-    case py_worker_pool:asgi_run(AppModule, AppCallable, Scope, ReqBody,
-                                  #{runner => <<"hornbeam_asgi_runner">>}) of
-        {ok, {Status, Headers, Body}} ->
-            {ok, #{<<"status">> => Status,
-                   <<"headers">> => Headers,
-                   <<"body">> => Body}};
+    TimeoutMs = maps:get(timeout, State, 30000),
+    case py:call(hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs) of
+        {ok, Response} ->
+            {ok, Response};
         {error, _} = Error ->
             Error
     end.
 
 %% @private
-%% Optimized path with profiling - uses worker pool
+%% Optimized path with profiling
 run_asgi_optimized_profiled(Req, AppModule, AppCallable, ReqBody, State, Prof) ->
     Scope = build_scope_for_nif(Req, State),
     Prof1 = hornbeam_profiler:mark(scope_build, Prof),
-    case py_worker_pool:asgi_run(AppModule, AppCallable, Scope, ReqBody,
-                                  #{runner => <<"hornbeam_asgi_runner">>}) of
-        {ok, {Status, Headers, Body}} ->
+    TimeoutMs = maps:get(timeout, State, 30000),
+    case py:call(hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope, ReqBody], #{}, TimeoutMs) of
+        {ok, Response} ->
             Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
-            {ok, #{<<"status">> => Status,
-                   <<"headers">> => Headers,
-                   <<"body">> => Body}, Prof2};
+            {ok, Response, Prof2};
         {error, _} = Error ->
             Error
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
+%% Context-aware fallback path
 run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State) ->
-    %% Build scope options from state (for multi-app mode)
     ScopeOpts = case maps:get(script_name, State, undefined) of
         undefined -> #{};
         ScriptName -> #{root_path => ScriptName}
     end,
     Scope = hornbeam_asgi:build_scope(Req, ScopeOpts),
-    %% Override path if set in state (from mount lookup)
     Scope1 = case maps:get(path_info, State, undefined) of
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
-               [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
+    py:call(PyContext, hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{timeout => TimeoutMs}).
 
 %% @private
 %% Context-aware fallback path with profiling
@@ -477,8 +408,8 @@ run_asgi_with_context_profiled(Req, AppModule, AppCallable, ReqBody, PyContext, 
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    case py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
-                     [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs) of
+    case py:call(PyContext, hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope1, ReqBody], #{timeout => TimeoutMs}) of
         {ok, Response} ->
             Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
             {ok, Response, Prof2};
@@ -502,11 +433,8 @@ run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    %% Use with_context to bind a worker for the request duration
-    py:with_context(fun() ->
-        py:call(hornbeam_asgi_runner, run_asgi,
-                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
-    end).
+    py:call(hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
 %% Bound context path with profiling
@@ -521,10 +449,8 @@ run_asgi_bound_profiled(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State, 
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    case py:with_context(fun() ->
-        py:call(hornbeam_asgi_runner, run_asgi,
-                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
-    end) of
+    case py:call(hornbeam_asgi_runner, run_asgi,
+                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs) of
         {ok, Response} ->
             Prof2 = hornbeam_profiler:mark(python_exec, Prof1),
             {ok, Response, Prof2};
@@ -642,6 +568,148 @@ send_asgi_response_profiled(Req, Response, State, Prof) ->
     {ok, Req2, State}.
 
 %%% ============================================================================
+%%% ASGI Streaming Handler
+%%% ============================================================================
+
+handle_asgi_streaming(Req, State) ->
+    %% Profiling and hooks — same lifecycle as handle_asgi/handle_wsgi
+    Prof0 = hornbeam_profiler:start_request(),
+    ReqInfo = build_request_info(Req),
+    Prof1 = hornbeam_profiler:mark(cowboy_parse, Prof0),
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+    Prof2 = hornbeam_profiler:mark(hooks_request, Prof1),
+
+    AppModule = maps:get(app_module, State),
+    AppCallable = maps:get(app_callable, State),
+    TimeoutMs = maps:get(timeout, State, 30000),
+    {ok, ReqBody, Req2} = cowboy_req:read_body(Req),
+    Prof3 = hornbeam_profiler:mark(body_read, Prof2),
+    Scope = build_scope_for_nif(Req, State),
+    Prof4 = hornbeam_profiler:mark(scope_build, Prof3),
+    CallerPid = self(),
+    WorkerRef = make_ref(),
+    {Worker, MonRef} = spawn_monitor(fun() ->
+        try
+            %% Python timeout > Erlang timeout for deterministic 504s
+            py:call(hornbeam_asgi_runner, run_asgi_streaming,
+                    [AppModule, AppCallable, Scope, ReqBody, CallerPid, TimeoutMs + 2000],
+                    #{}, TimeoutMs + 5000),
+            CallerPid ! {stream_done, WorkerRef}
+        catch
+            _:Reason ->
+                CallerPid ! {stream_error, WorkerRef, Reason}
+        end
+    end),
+    try
+        receive
+            {<<"stream_headers">>, Status, RawHeaders} ->
+                Response0 = #{
+                    <<"status">> => Status,
+                    <<"headers">> => RawHeaders,
+                    <<"body">> => <<>>
+                },
+                Response1 = hornbeam_http_hooks:run_on_response(Response0),
+                StatusCode = case maps:get(<<"status">>, Response1, Status) of
+                    undefined -> 500;
+                    S when is_integer(S) -> S;
+                    S -> parse_status_code(S)
+                end,
+                CowHeaders = convert_headers(maps:get(<<"headers">>, Response1, RawHeaders)),
+                receive
+                    {<<"stream_chunk">>, Chunk, false} ->
+                        Req3 = cowboy_req:reply(StatusCode, CowHeaders, Chunk, Req2),
+                        wait_for_worker(WorkerRef, MonRef),
+                        hornbeam_profiler:end_request(Prof4),
+                        {ok, Req3, State};
+                    {<<"stream_chunk">>, Chunk, true} ->
+                        Req3 = cowboy_req:stream_reply(StatusCode, CowHeaders, Req2),
+                        cowboy_req:stream_body(Chunk, nofin, Req3),
+                        stream_loop(Req3, WorkerRef, MonRef, TimeoutMs),
+                        hornbeam_profiler:end_request(Prof4),
+                        {ok, Req3, State};
+                    {<<"stream_error">>, Reason} ->
+                        hornbeam_profiler:end_request(Prof4),
+                        error_reply(502, Reason, Req2, State);
+                    {stream_error, WorkerRef, Reason} ->
+                        hornbeam_profiler:end_request(Prof4),
+                        error_reply(502, Reason, Req2, State);
+                    {'DOWN', MonRef, process, Worker, Reason} ->
+                        hornbeam_profiler:end_request(Prof4),
+                        error_reply(502, Reason, Req2, State)
+                after TimeoutMs ->
+                    hornbeam_profiler:end_request(Prof4),
+                    error_reply(504, <<"Gateway Timeout">>, Req2, State)
+                end;
+            {<<"stream_error">>, Reason} ->
+                hornbeam_profiler:end_request(Prof4),
+                handle_error(Req2, Reason, ReqInfo1, State);
+            {stream_error, WorkerRef, Reason} ->
+                hornbeam_profiler:end_request(Prof4),
+                handle_error(Req2, Reason, ReqInfo1, State);
+            {'DOWN', MonRef, process, Worker, Reason} ->
+                hornbeam_profiler:end_request(Prof4),
+                handle_error(Req2, Reason, ReqInfo1, State)
+        after TimeoutMs ->
+            hornbeam_profiler:end_request(Prof4),
+            error_reply(504, <<"Gateway Timeout">>, Req2, State)
+        end
+    after
+        %% Always runs: safe even if worker already exited normally
+        demonitor(MonRef, [flush]),
+        exit(Worker, kill),
+        flush_stream_messages()
+    end.
+
+stream_loop(Req, WorkerRef, MonRef, TimeoutMs) ->
+    receive
+        {<<"stream_chunk">>, Chunk, true} ->
+            cowboy_req:stream_body(Chunk, nofin, Req),
+            stream_loop(Req, WorkerRef, MonRef, TimeoutMs);
+        {<<"stream_chunk">>, Chunk, false} ->
+            cowboy_req:stream_body(Chunk, fin, Req);
+        {stream_done, WorkerRef} ->
+            cowboy_req:stream_body(<<>>, fin, Req);
+        {<<"stream_error">>, _} ->
+            cowboy_req:stream_body(<<>>, fin, Req);
+        {stream_error, WorkerRef, _} ->
+            cowboy_req:stream_body(<<>>, fin, Req);
+        {'DOWN', MonRef, process, _, _} ->
+            cowboy_req:stream_body(<<>>, fin, Req)
+    after TimeoutMs ->
+        cowboy_req:stream_body(<<>>, fin, Req)
+    end.
+
+wait_for_worker(WorkerRef, MonRef) ->
+    receive
+        {stream_done, WorkerRef} -> ok;
+        {<<"stream_error">>, _} -> ok;
+        {stream_error, WorkerRef, _} -> ok;
+        {'DOWN', MonRef, process, _, _} -> ok
+    after 5000 -> ok
+    end.
+
+error_reply(Code, Reason, Req, State) ->
+    Body = case Code of
+        504 -> <<"Gateway Timeout">>;
+        _ -> <<"Bad Gateway">>
+    end,
+    case Reason of
+        R when is_binary(R) -> ok;
+        _ -> error_logger:error_msg("Streaming error (~p): ~p~n", [Code, Reason])
+    end,
+    Req2 = cowboy_req:reply(Code, #{<<"content-type">> => <<"text/plain">>}, Body, Req),
+    {ok, Req2, State}.
+
+%% @private
+flush_stream_messages() ->
+    receive
+        {<<"stream_headers">>, _, _} -> flush_stream_messages();
+        {<<"stream_chunk">>, _, _} -> flush_stream_messages();
+        {<<"stream_error">>, _} -> flush_stream_messages()
+    after 0 -> ok
+    end.
+
+%%% ============================================================================
 %%% Error handling
 %%% ============================================================================
 
@@ -715,23 +783,27 @@ to_lower_binary(V) -> string:lowercase(to_binary(V)).
 
 %% @private
 %% Setup pythonpath for a mount before executing the app.
-%% This ensures mount-specific dependencies are available.
+%% Ensures mount-specific paths are available on all contexts.
 %% Note: paths are added at startup too, but this ensures they're
-%% at the front of sys.path for this request.
+%% at the front of sys.path for late-added mounts.
 setup_mount_pythonpath(Mount) ->
     case maps:get(pythonpath, Mount, []) of
         [] ->
             ok;
         Paths when is_list(Paths) ->
-            %% Add each path to sys.path if not already present
+            Contexts = py_context_router:contexts(),
             lists:foreach(fun(Path) ->
                 PathBin = if
                     is_binary(Path) -> Path;
                     is_list(Path) -> list_to_binary(Path);
                     true -> Path
                 end,
-                py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
-                        #{p => PathBin})
+                AbsPathBin = list_to_binary(filename:absname(binary_to_list(PathBin))),
+                lists:foreach(fun(Ctx) ->
+                    py:eval(Ctx,
+                            <<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+                            #{p => AbsPathBin})
+                end, Contexts)
             end, Paths)
     end.
 

@@ -80,6 +80,7 @@
     lifespan_timeout => pos_integer(),
     websocket_timeout => pos_integer(),
     websocket_max_frame_size => pos_integer(),
+    streaming => boolean(),
     websocket_compress => boolean(),
     routes => [{Path :: binary(), Handler :: module(), Opts :: map()}],
     %% SSL/TLS
@@ -147,6 +148,7 @@ start(AppSpec) when is_list(AppSpec); is_binary(AppSpec) ->
 %%   <li>`lifespan_timeout' - Lifespan startup/shutdown timeout in ms (default: 30000)</li>
 %%   <li>`websocket_timeout' - WebSocket idle timeout in ms (default: 60000)</li>
 %%   <li>`websocket_max_frame_size' - Max WebSocket frame size (default: 16MB)</li>
+%%   <li>`streaming' - Use push-based HTTP streaming for ASGI (default: false)</li>
 %%   <li>`routes' - Custom Cowboy routes [{Path, Handler, Opts}] (default: [])</li>
 %% </ul>
 -spec start(app_spec(), options()) -> ok | {error, term()}.
@@ -302,11 +304,16 @@ setup_mounts_pythonpath(Mounts) ->
     end, Mounts).
 
 %% @private
-%% Add a path to Python's sys.path if not already present
+%% Add a path to Python's sys.path on all contexts if not already present
 add_to_sys_path(Path) ->
     PathBin = ensure_binary(Path),
-    py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
-            #{p => PathBin}).
+    AbsPath = list_to_binary(filename:absname(binary_to_list(PathBin))),
+    Contexts = py_context_router:contexts(),
+    lists:foreach(fun(Ctx) ->
+        py:eval(Ctx,
+                <<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+                #{p => AbsPath})
+    end, Contexts).
 
 %% @private
 %% Default config for multi-app mode (global settings only)
@@ -374,6 +381,7 @@ validate_mount({Prefix, AppSpec, Opts}, GlobalConfig) ->
                 worker_class => maps:get(worker_class, MountOpts),
                 workers => maps:get(workers, MountOpts),
                 timeout => maps:get(timeout, MountOpts),
+                streaming => maps:get(streaming, MountOpts, false),
                 pythonpath => MountPythonpath
             };
         {error, Reason} ->
@@ -482,11 +490,13 @@ start_listener_multi(Config) ->
         {'_', AllRoutes}
     ]),
 
-    %% Build protocol options including request limits
+    %% Timeouts must exceed handler's timeout for graceful 504 responses
+    AppTimeout = maps:get(timeout, Config, 30000),
+    KeepAliveMs = maps:get(keepalive, Config, 2) * 1000,
     ProtoOpts = #{
         env => #{dispatch => Dispatch},
-        idle_timeout => maps:get(keepalive, Config, 2) * 1000,
-        request_timeout => maps:get(timeout, Config, 30000),
+        idle_timeout => max(KeepAliveMs, AppTimeout + 5000),
+        request_timeout => AppTimeout + 5000,
         max_request_line_length => maps:get(max_request_line_size, Config, 4094),
         max_header_value_length => maps:get(max_header_size, Config, 8190),
         max_headers => maps:get(max_headers, Config, 100)
@@ -520,6 +530,7 @@ default_config() ->
         pythonpath => [<<".">>, <<"examples">>],
         venv => undefined,
         lifespan => auto,
+        streaming => false,
         websocket_timeout => 60000,
         websocket_max_frame_size => 16777216  % 16MB
     }.
@@ -538,29 +549,22 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
 
 ensure_python_runtime(Config) ->
     Workers = maps:get(workers, Config, 4),
-    ok = application:set_env(erlang_python, num_workers, Workers),
-    Result = case current_python_workers() of
+    ok = application:set_env(erlang_python, num_contexts, Workers),
+    case current_python_workers() of
         {ok, Workers} ->
+            %% Python runtime already matches requested worker count
             ok;
-        _ ->
+        {ok, _N} ->
+            %% Runtime is running with a different worker count; restart to apply.
+            restart_python_runtime();
+        {error, _} ->
             restart_python_runtime()
-    end,
-    %% Ensure worker pool is started for high-concurrency ASGI
-    case Result of
-        ok -> ensure_worker_pool();
-        Error -> Error
-    end.
-
-ensure_worker_pool() ->
-    case py_worker_pool:stats() of
-        #{initialized := true} -> ok;
-        _ -> py_worker_pool:start_link()
     end.
 
 current_python_workers() ->
-    try py_pool:get_stats() of
-        #{num_workers := NumWorkers} when is_integer(NumWorkers), NumWorkers > 0 ->
-            {ok, NumWorkers};
+    try py_context_router:num_contexts() of
+        N when is_integer(N), N > 0 ->
+            {ok, N};
         _ ->
             {error, unknown}
     catch
@@ -581,15 +585,8 @@ restart_python_runtime() ->
 start_python_runtime() ->
     case application:start(erlang_python) of
         ok ->
-            %% Start the new worker pool for high-concurrency ASGI handling
-            ok = py_worker_pool:start_link(),
             refresh_lifespan_manager();
         {error, {already_started, erlang_python}} ->
-            %% Ensure worker pool is started
-            case py_worker_pool:stats() of
-                #{initialized := true} -> ok;
-                _ -> ok = py_worker_pool:start_link()
-            end,
             refresh_lifespan_manager();
         {error, Reason} ->
             {error, {python_start_failed, Reason}}
@@ -657,14 +654,16 @@ setup_python_paths(Config) ->
         filename:absname(binary_to_list(PathBin))
     end, AllPaths),
 
-    %% Add paths to Python sys.path
-    %% Use py:exec which will be processed by a worker
-    %% The path will be set for subsequent calls
+    %% Add paths to Python sys.path on all contexts
+    %% Each context is a separate subinterpreter with its own sys.path
+    Contexts = py_context_router:contexts(),
     lists:foreach(fun(AbsPath) ->
-        Code = io_lib:format(
-            "import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
-            [AbsPath, AbsPath]),
-        py:exec(Code)
+        AbsPathBin = list_to_binary(AbsPath),
+        lists:foreach(fun(Ctx) ->
+            py:eval(Ctx,
+                    <<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+                    #{p => AbsPathBin})
+        end, Contexts)
     end, AbsPaths).
 
 maybe_run_lifespan_startup(asgi, Config) ->
@@ -691,7 +690,8 @@ start_listener(Config) ->
         worker_class => WorkerClass,
         app_module => maps:get(app_module, Config),
         app_callable => maps:get(app_callable, Config),
-        timeout => maps:get(timeout, Config, 30000)
+        timeout => maps:get(timeout, Config, 30000),
+        streaming => maps:get(streaming, Config, false)
     },
 
     %% Default catchall route for Python app
@@ -705,10 +705,12 @@ start_listener(Config) ->
     ]),
 
     %% Build protocol options including request limits
+    AppTimeout2 = maps:get(timeout, Config),
+    KeepAliveMs2 = maps:get(keepalive, Config) * 1000,
     ProtoOpts = #{
         env => #{dispatch => Dispatch},
-        idle_timeout => maps:get(keepalive, Config) * 1000,
-        request_timeout => maps:get(timeout, Config),
+        idle_timeout => max(KeepAliveMs2, AppTimeout2 + 5000),
+        request_timeout => AppTimeout2 + 5000,
         %% Cowboy HTTP options for request limits
         max_request_line_length => maps:get(max_request_line_size, Config, 4094),
         max_header_value_length => maps:get(max_header_size, Config, 8190),

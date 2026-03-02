@@ -103,8 +103,8 @@ def startup(app_module: str, app_callable: str, timeout_ms: int = 30000) -> dict
     except Exception as e:
         return {'type': 'lifespan.startup.failed', 'message': str(e)}
 
-    # Create event loop
-    _loop = asyncio.new_event_loop()
+    # Standalone loop — erlang event loop doesn't support run_until_complete()
+    _loop = asyncio.DefaultEventLoopPolicy().new_event_loop()
     asyncio.set_event_loop(_loop)
 
     # Create queues

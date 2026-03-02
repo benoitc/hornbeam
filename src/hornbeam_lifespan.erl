@@ -55,7 +55,6 @@
     startup/1,
     shutdown/0,
     get_state/0,
-    get_context/0,
     is_running/0
 ]).
 
@@ -77,7 +76,6 @@
     app_callable :: binary() | undefined,
     lifespan_mode :: auto | on | off,
     lifespan_state :: map(),
-    py_context :: term() | undefined,  %% Python context for affinity
     started = false :: boolean(),
     supported = unknown :: boolean() | unknown
 }).
@@ -129,18 +127,6 @@ is_running() ->
         [] -> false
     end.
 
-%% @doc Get the Python context for ASGI calls.
-%%
-%% This context provides affinity - all calls using this context
-%% share the same Python worker and module state.
-%% Uses ETS cache for fast concurrent reads (avoids gen_server bottleneck).
--spec get_context() -> term() | undefined.
-get_context() ->
-    case ets:lookup(?CACHE_TABLE, py_context) of
-        [{py_context, Ctx}] -> Ctx;
-        [] -> undefined
-    end.
-
 %%% ============================================================================
 %%% gen_server callbacks
 %%% ============================================================================
@@ -155,27 +141,18 @@ init(Opts) ->
         {read_concurrency, true}
     ]),
 
-    %% Create a dedicated Python context for ASGI affinity
-    %% This ensures module-level state persists across requests
-    PyContext = case py:bind(new) of
-        {ok, Ctx} -> Ctx;
-        _ -> undefined
-    end,
-
     %% Cache initial values
     ets:insert(?CACHE_TABLE, [
-        {py_context, PyContext},
         {lifespan_state, #{}},
         {started, false}
     ]),
 
     {ok, #state{
         lifespan_mode = LifespanMode,
-        lifespan_state = #{},
-        py_context = PyContext
+        lifespan_state = #{}
     }}.
 
-handle_call({startup, Opts}, _From, #state{py_context = PyContext} = State) ->
+handle_call({startup, Opts}, _From, State) ->
     AppModule = hornbeam_config:get_config(app_module),
     AppCallable = hornbeam_config:get_config(app_callable),
     LifespanMode = maps:get(lifespan, Opts, State#state.lifespan_mode),
@@ -186,8 +163,8 @@ handle_call({startup, Opts}, _From, #state{py_context = PyContext} = State) ->
             ets:insert(?CACHE_TABLE, {started, true}),
             {reply, ok, State#state{started = true, supported = false}};
         _ ->
-            %% Try to run lifespan startup with context
-            case run_startup(AppModule, AppCallable, PyContext) of
+            %% Try to run lifespan startup
+            case run_startup(AppModule, AppCallable) of
                 {ok, LifespanState} ->
                     %% Update ETS cache
                     ets:insert(?CACHE_TABLE, [
@@ -230,9 +207,8 @@ handle_call(shutdown, _From, #state{supported = false} = State) ->
     {reply, ok, State#state{started = false}};
 
 handle_call(shutdown, _From, #state{app_module = AppModule,
-                                     app_callable = AppCallable,
-                                     py_context = PyContext} = State) ->
-    Result = run_shutdown(AppModule, AppCallable, PyContext),
+                                     app_callable = AppCallable} = State) ->
+    Result = run_shutdown(AppModule, AppCallable),
     %% Update ETS cache
     ets:insert(?CACHE_TABLE, [{started, false}, {lifespan_state, #{}}]),
     {reply, Result, State#state{started = false, lifespan_state = #{}}};
@@ -242,9 +218,6 @@ handle_call(get_state, _From, #state{lifespan_state = LifespanState} = State) ->
 
 handle_call(is_running, _From, #state{started = Started} = State) ->
     {reply, Started, State};
-
-handle_call(get_context, _From, #state{py_context = PyContext} = State) ->
-    {reply, PyContext, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -257,16 +230,11 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, #state{started = true, supported = true,
                           app_module = AppModule,
-                          app_callable = AppCallable,
-                          py_context = PyContext}) ->
+                          app_callable = AppCallable}) ->
     %% Run shutdown on terminate
-    _ = run_shutdown(AppModule, AppCallable, PyContext),
-    %% Unbind the context
-    catch py:unbind(PyContext),
+    _ = run_shutdown(AppModule, AppCallable),
     ok;
-terminate(_Reason, #state{py_context = PyContext}) ->
-    %% Just unbind context if lifespan not started
-    catch py:unbind(PyContext),
+terminate(_Reason, _State) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -276,7 +244,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal Functions
 %%% ============================================================================
 
-run_startup(AppModule, AppCallable, PyContext) ->
+run_startup(AppModule, AppCallable) ->
     %% Use lifespan_timeout for startup/shutdown, falls back to general timeout
     TimeoutMs = case hornbeam_config:get_config(lifespan_timeout) of
         undefined ->
@@ -288,16 +256,8 @@ run_startup(AppModule, AppCallable, PyContext) ->
     end,
 
     try
-        %% Use context-aware call for affinity
-        %% Pass timeout to Python so it can use the same value
-        Result = case PyContext of
-            undefined ->
-                py:call(hornbeam_lifespan_runner, startup,
-                       [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, startup,
-                           [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000)
-        end,
+        Result = py:call(hornbeam_lifespan_runner, startup,
+                        [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000),
         case Result of
             {ok, Response} ->
                 handle_startup_response(Response);
@@ -325,7 +285,7 @@ handle_startup_response(Response) ->
             {error, {invalid_response, Response}}
     end.
 
-run_shutdown(AppModule, AppCallable, PyContext) ->
+run_shutdown(AppModule, AppCallable) ->
     Timeout = hornbeam_config:get_config(timeout),
     TimeoutMs = case Timeout of
         undefined -> ?DEFAULT_TIMEOUT;
@@ -333,15 +293,8 @@ run_shutdown(AppModule, AppCallable, PyContext) ->
     end,
 
     try
-        %% Use context-aware call for affinity
-        Result = case PyContext of
-            undefined ->
-                py:call(hornbeam_lifespan_runner, shutdown,
-                       [AppModule, AppCallable], #{}, TimeoutMs);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, shutdown,
-                           [AppModule, AppCallable], #{}, TimeoutMs)
-        end,
+        Result = py:call(hornbeam_lifespan_runner, shutdown,
+                        [AppModule, AppCallable], #{}, TimeoutMs),
         case Result of
             {ok, Response} ->
                 handle_shutdown_response(Response);
@@ -359,7 +312,9 @@ handle_shutdown_response(Response) ->
     case maps:get(<<"type">>, Response, undefined) of
         <<"lifespan.shutdown.complete">> ->
             ok;
+        <<"lifespan.shutdown.failed">> ->
+            Message = maps:get(<<"message">>, Response, <<"Unknown error">>),
+            {error, {shutdown_failed, Message}};
         _ ->
-            %% Accept any response during shutdown
-            ok
+            {error, {invalid_response, Response}}
     end.
