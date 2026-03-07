@@ -37,8 +37,59 @@ Example:
 import os
 import sys
 import io
+import asyncio
 import traceback
 from typing import Optional, Dict, Any, Callable, Tuple, List
+
+# Shared event loop for ASGI (avoids creating new loop per request)
+_asgi_loop: Optional[asyncio.AbstractEventLoop] = None
+
+def _get_event_loop() -> asyncio.AbstractEventLoop:
+    """Get or create shared event loop for ASGI."""
+    global _asgi_loop
+    if _asgi_loop is None or _asgi_loop.is_closed():
+        _asgi_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_asgi_loop)
+    return _asgi_loop
+
+
+class ASGIState:
+    """Mutable state container for ASGI request handling."""
+    __slots__ = ('body', 'body_consumed', 'status', 'headers', 'body_parts', 'started')
+
+    def __init__(self, body: io.BytesIO):
+        self.body = body
+        self.body_consumed = False
+        self.status = 0
+        self.headers = []
+        self.body_parts = []
+        self.started = False
+
+
+async def _asgi_receive(state: ASGIState) -> dict:
+    """ASGI receive callable."""
+    if state.body_consumed:
+        return {'type': 'http.disconnect'}
+    state.body_consumed = True
+    body = state.body.read() if state.body else b''
+    return {'type': 'http.request', 'body': body, 'more_body': False}
+
+
+async def _asgi_send(state: ASGIState, message: dict) -> None:
+    """ASGI send callable."""
+    msg_type = message['type']
+    if msg_type == 'http.response.start':
+        state.started = True
+        state.status = message['status']
+        state.headers = [
+            (name.decode('latin-1') if isinstance(name, bytes) else name,
+             value.decode('latin-1') if isinstance(value, bytes) else value)
+            for name, value in message.get('headers', [])
+        ]
+    elif msg_type == 'http.response.body':
+        body = message.get('body', b'')
+        if body:
+            state.body_parts.append(body)
 
 # Import HTTP parsers - prefer fast C parser
 sys.path.insert(0, os.path.dirname(__file__))
@@ -504,50 +555,21 @@ class HTTPProtocol:
             root_path=self.root_path
         )
 
-        # For simple ASGI, we run synchronously
-        # Full async support requires integration with erlang.reactor event loop
-        import asyncio
+        # Use optimized state container
+        state = ASGIState(self.request_body)
 
-        response_started = False
-        status_code = None
-        response_headers = []
-        body_parts = []
-
-        # Capture request body
-        request_body = self.request_body
-
-        async def receive():
-            """ASGI receive callable."""
-            body = request_body.read() if request_body else b''
-            return {'type': 'http.request', 'body': body, 'more_body': False}
-
-        async def send(message):
-            """ASGI send callable."""
-            nonlocal response_started, status_code, response_headers, body_parts
-
-            if message['type'] == 'http.response.start':
-                response_started = True
-                status_code = message['status']
-                response_headers = [
-                    (name.decode('latin-1') if isinstance(name, bytes) else name,
-                     value.decode('latin-1') if isinstance(value, bytes) else value)
-                    for name, value in message.get('headers', [])
-                ]
-            elif message['type'] == 'http.response.body':
-                body_parts.append(message.get('body', b''))
+        # Create bound callables
+        receive = lambda: _asgi_receive(state)
+        send = lambda msg: _asgi_send(state, msg)
 
         try:
-            # Run the ASGI app
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._asgi_app(scope, receive, send))
-            finally:
-                loop.close()
+            # Run using shared event loop
+            _get_event_loop().run_until_complete(self._asgi_app(scope, receive, send))
         except Exception as e:
             traceback.print_exc()
             return self._send_error_response(500, "Internal Server Error")
 
-        if not response_started:
+        if not state.started:
             return self._send_error_response(500, "App did not start response")
 
         # Build status line
@@ -557,10 +579,10 @@ class HTTPProtocol:
             400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
             404: 'Not Found', 500: 'Internal Server Error'
         }
-        phrase = status_phrases.get(status_code, 'Unknown')
-        status_line = f"{status_code} {phrase}"
+        phrase = status_phrases.get(state.status, 'Unknown')
+        status_line = f"{state.status} {phrase}"
 
-        return self._prepare_response(status_line, response_headers, b''.join(body_parts))
+        return self._prepare_response(status_line, state.headers, b''.join(state.body_parts))
 
     def _prepare_response(self, status_line: str, headers: List[Tuple[str, str]], body: bytes) -> str:
         """Build HTTP response and prepare write buffer."""
