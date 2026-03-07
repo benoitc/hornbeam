@@ -157,9 +157,16 @@ init(Opts) ->
 
     %% Create a dedicated Python context for ASGI affinity
     %% This ensures module-level state persists across requests
-    PyContext = case py:bind(new) of
-        {ok, Ctx} -> Ctx;
-        _ -> undefined
+    PyContext = case py:contexts_started() of
+        true ->
+            %% Get or create a context for lifespan
+            case py:context() of
+                {ok, Ctx} -> Ctx;
+                Ctx when is_pid(Ctx) -> Ctx;
+                _ -> undefined
+            end;
+        false ->
+            undefined
     end,
 
     %% Cache initial values
