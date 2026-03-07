@@ -96,6 +96,28 @@
     test_streaming_chunks/1
 ]).
 
+%% Streaming HTTP tests (streaming => true path)
+-export([
+    test_streaming_http_basic/1,
+    test_streaming_http_sse/1,
+    test_streaming_http_single_chunk_fallback/1,
+    test_streaming_http_error_mid_stream/1,
+    test_streaming_http_error_before_headers/1,
+    test_streaming_http_on_response_hook/1,
+    test_streaming_http_on_error_hook_before_headers/1,
+    test_streaming_http_stream_done_no_final/1,
+    test_streaming_http_post_with_body/1,
+    test_streaming_http_large_chunks/1,
+    test_streaming_http_empty_chunks/1,
+    test_streaming_http_concurrent/1
+]).
+
+%% Streaming edge case tests (short timeout)
+-export([
+    test_streaming_http_timeout/1,
+    test_streaming_http_timeout_before_headers/1
+]).
+
 %% Error handling tests
 -export([
     test_error_exception/1
@@ -109,6 +131,8 @@ all() ->
      {group, headers},
      {group, body},
      {group, streaming},
+     {group, streaming_http},
+     {group, streaming_http_edge},
      {group, errors}].
 
 groups() ->
@@ -163,6 +187,24 @@ groups() ->
         test_streaming_response,
         test_streaming_chunks
     ]},
+    {streaming_http, [sequence], [
+        test_streaming_http_basic,
+        test_streaming_http_sse,
+        test_streaming_http_single_chunk_fallback,
+        test_streaming_http_error_mid_stream,
+        test_streaming_http_error_before_headers,
+        test_streaming_http_on_response_hook,
+        test_streaming_http_on_error_hook_before_headers,
+        test_streaming_http_stream_done_no_final,
+        test_streaming_http_post_with_body,
+        test_streaming_http_large_chunks,
+        test_streaming_http_empty_chunks,
+        test_streaming_http_concurrent
+    ]},
+    {streaming_http_edge, [sequence], [
+        test_streaming_http_timeout,
+        test_streaming_http_timeout_before_headers
+    ]},
     {errors, [sequence], [
         test_error_exception
     ]}].
@@ -177,6 +219,36 @@ end_per_suite(_Config) ->
     application:stop(hornbeam),
     ok.
 
+init_per_group(streaming_http, Config) ->
+    %% Streaming HTTP group uses streaming => true
+    TestAppsDir = get_test_apps_dir(),
+    ct:pal("Using pythonpath: ~s~n", [TestAppsDir]),
+    Port = 8866 + erlang:phash2(streaming_http, 100),
+    ok = hornbeam:start("asgi_test_app:application", #{
+        bind => list_to_binary(io_lib:format("127.0.0.1:~p", [Port])),
+        worker_class => asgi,
+        streaming => true,
+        pythonpath => [list_to_binary(TestAppsDir)]
+    }),
+    timer:sleep(500),
+    [{port, Port} | Config];
+init_per_group(streaming_http_edge, Config) ->
+    %% Short timeout for testing timeout behavior.
+    TestAppsDir = get_test_apps_dir(),
+    ct:pal("Using pythonpath: ~s~n", [TestAppsDir]),
+    Port = 8866 + erlang:phash2(streaming_http_edge, 100),
+    ok = hornbeam:start("asgi_test_app:application", #{
+        bind => list_to_binary(io_lib:format("127.0.0.1:~p", [Port])),
+        worker_class => asgi,
+        streaming => true,
+        timeout => 3000,
+        pythonpath => [list_to_binary(TestAppsDir)]
+    }),
+    timer:sleep(500),
+    %% Warm up Python runtime before timing-sensitive tests
+    WarmUrl = list_to_binary(io_lib:format("http://127.0.0.1:~p/", [Port])),
+    {ok, 200, _, _} = hackney:request(get, WarmUrl, [], <<>>, [{recv_timeout, 10000}]),
+    [{port, Port} | Config];
 init_per_group(Group, Config) when Group =:= basic;
                                     Group =:= asgi_compliance;
                                     Group =:= methods;
@@ -210,6 +282,8 @@ end_per_group(Group, _Config) when Group =:= basic;
                                     Group =:= headers;
                                     Group =:= body;
                                     Group =:= streaming;
+                                    Group =:= streaming_http;
+                                    Group =:= streaming_http_edge;
                                     Group =:= errors ->
     hornbeam:stop(),
     timer:sleep(200),
@@ -550,6 +624,193 @@ test_streaming_chunks(Config) ->
     %% Should have 5 chunks
     Matches = binary:matches(Body, <<"Chunk">>),
     ?assertEqual(5, length(Matches)).
+
+%%% ============================================================================
+%%% Streaming HTTP tests (streaming => true path)
+%%% ============================================================================
+
+test_streaming_http_basic(Config) ->
+    Url = make_url(Config, <<"/streaming?chunks=3&size=50">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, Headers, BodyParts}} = collect_async_response(ClientRef, 5000),
+    ?assertEqual(200, Status),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assert(binary:match(FullBody, <<"Chunk 1">>) =/= nomatch),
+    ?assert(binary:match(FullBody, <<"Chunk 2">>) =/= nomatch),
+    ?assert(binary:match(FullBody, <<"Chunk 3">>) =/= nomatch),
+    %% Verify chunked transfer was used (streaming path taken)
+    TransferEncoding = proplists:get_value(<<"transfer-encoding">>, Headers),
+    ?assertEqual(<<"chunked">>, TransferEncoding).
+
+test_streaming_http_sse(Config) ->
+    Url = make_url(Config, <<"/sse">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, Headers, BodyParts}} = collect_async_response(ClientRef, 5000),
+    ?assertEqual(200, Status),
+    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    ?assertEqual(<<"text/event-stream">>, ContentType),
+    ?assert(length(BodyParts) > 1),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assert(binary:match(FullBody, <<"data: event 1">>) =/= nomatch),
+    ?assert(binary:match(FullBody, <<"data: event 2">>) =/= nomatch),
+    ?assert(binary:match(FullBody, <<"data: event 3">>) =/= nomatch).
+
+test_streaming_http_single_chunk_fallback(Config) ->
+    Url = make_url(Config, <<"/">>),
+    {ok, 200, Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    ?assertEqual(<<"Hello from ASGI Test App!\n">>, Body),
+    TransferEncoding = proplists:get_value(<<"transfer-encoding">>, Headers),
+    ?assertNotEqual(<<"chunked">>, TransferEncoding).
+
+test_streaming_http_error_mid_stream(Config) ->
+    Url = make_url(Config, <<"/stream-error">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, _Headers, BodyParts}} = collect_async_response(ClientRef, 5000),
+    ?assertEqual(200, Status),
+    FullBody = iolist_to_binary(BodyParts),
+    %% Should get partial data sent before the error
+    ?assert(binary:match(FullBody, <<"partial data">>) =/= nomatch),
+    ?assertEqual(nomatch, binary:match(FullBody, <<"Intentional mid-stream error">>)).
+
+test_streaming_http_error_before_headers(Config) ->
+    Url = make_url(Config, <<"/stream-error-before-headers">>),
+    {ok, Status, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    ?assertEqual(500, Status),
+    ?assert(binary:match(Body, <<"Internal Server Error">>) =/= nomatch).
+
+test_streaming_http_on_response_hook(Config) ->
+    hornbeam_http_hooks:set_hooks(#{
+        on_response => fun(Resp) ->
+            Headers = maps:get(<<"headers">>, Resp, []),
+            Resp#{<<"headers">> => [[<<"x-stream-hook">>, <<"enabled">>] | Headers]}
+        end
+    }),
+    try
+        Url = make_url(Config, <<"/streaming?chunks=2&size=20">>),
+        {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+        {ok, {Status, Headers, _BodyParts}} = collect_async_response(ClientRef, 5000),
+        ?assertEqual(200, Status),
+        ?assertEqual(<<"enabled">>, proplists:get_value(<<"x-stream-hook">>, Headers))
+    after
+        hornbeam_http_hooks:set_hooks(#{})
+    end.
+
+test_streaming_http_on_error_hook_before_headers(Config) ->
+    hornbeam_http_hooks:set_hooks(#{
+        on_error => fun(_Error, _Req) ->
+            {503, <<"Streaming Hook Error">>}
+        end
+    }),
+    try
+        Url = make_url(Config, <<"/stream-error-uncaught-before-headers">>),
+        {ok, Status, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+        ?assertEqual(503, Status),
+        ?assertEqual(<<"Streaming Hook Error">>, Body)
+    after
+        hornbeam_http_hooks:set_hooks(#{})
+    end.
+
+test_streaming_http_stream_done_no_final(Config) ->
+    Url = make_url(Config, <<"/stream-no-final">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, _Headers, BodyParts}} = collect_async_response(ClientRef, 5000),
+    ?assertEqual(200, Status),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assert(binary:match(FullBody, <<"chunk without close">>) =/= nomatch).
+
+test_streaming_http_post_with_body(Config) ->
+    Url = make_url(Config, <<"/stream-echo">>),
+    ReqBody = <<"Hello streaming echo!">>,
+    {ok, ClientRef} = hackney:request(post, Url,
+        [{<<"content-type">>, <<"application/octet-stream">>}], ReqBody, [async]),
+    {ok, {Status, _Headers, BodyParts}} = collect_async_response(ClientRef, 5000),
+    ?assertEqual(200, Status),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assertEqual(ReqBody, FullBody).
+
+test_streaming_http_large_chunks(Config) ->
+    Url = make_url(Config, <<"/stream-large">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, _Headers, BodyParts}} = collect_async_response(ClientRef, 15000),
+    ?assertEqual(200, Status),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assertEqual(512 * 1024 * 3, byte_size(FullBody)),
+    <<Seg0:524288/binary, Seg1:524288/binary, Seg2:524288/binary>> = FullBody,
+    ?assert(binary:copy(<<0>>, 524288) =:= Seg0),
+    ?assert(binary:copy(<<1>>, 524288) =:= Seg1),
+    ?assert(binary:copy(<<2>>, 524288) =:= Seg2).
+
+test_streaming_http_empty_chunks(Config) ->
+    Url = make_url(Config, <<"/stream-empty-chunks">>),
+    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    ?assertEqual(<<"actual data\n">>, Body).
+
+test_streaming_http_concurrent(Config) ->
+    Url = make_url(Config, <<"/sse">>),
+    Self = self(),
+    T0 = erlang:monotonic_time(millisecond),
+    %% Spawn 3 concurrent SSE clients
+    Pids = [spawn_link(fun() ->
+        {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+        Result = collect_async_response(ClientRef, 10000),
+        Self ! {sse_done, self(), Result}
+    end) || _ <- lists:seq(1, 3)],
+    %% Collect all results
+    Results = [receive
+        {sse_done, Pid, R} -> R
+    after 15000 ->
+        ct:fail({concurrent_streaming_timeout, Pid})
+    end || Pid <- Pids],
+    T1 = erlang:monotonic_time(millisecond),
+    lists:foreach(fun({ok, {Status, _Headers, BodyParts}}) ->
+        ?assertEqual(200, Status),
+        FullBody = iolist_to_binary(BodyParts),
+        ?assert(binary:match(FullBody, <<"data: event 1">>) =/= nomatch),
+        ?assert(binary:match(FullBody, <<"data: event 3">>) =/= nomatch)
+    end, Results),
+    Elapsed = T1 - T0,
+    ct:pal("Concurrent SSE elapsed: ~pms~n", [Elapsed]),
+    ?assert(Elapsed < 2000).
+
+test_streaming_http_timeout(Config) ->
+    Url = make_url(Config, <<"/slow-stream">>),
+    {ok, ClientRef} = hackney:request(get, Url, [], <<>>, [async]),
+    {ok, {Status, _Headers, BodyParts}} = collect_async_response(ClientRef, 10000),
+    FullBody = iolist_to_binary(BodyParts),
+    ?assertEqual(200, Status),
+    ?assert(binary:match(FullBody, <<"before stall">>) =/= nomatch),
+    ?assertEqual(nomatch, binary:match(FullBody, <<"after stall">>)),
+    Url2 = make_url(Config, <<"/">>),
+    {ok, 200, _, _} = hackney:request(get, Url2, [], <<>>, []).
+
+test_streaming_http_timeout_before_headers(Config) ->
+    Url = make_url(Config, <<"/stall-before-headers">>),
+    {ok, Status, _Headers, Body} = hackney:request(get, Url, [], <<>>, [{pool, false}, {recv_timeout, 10000}]),
+    ?assertEqual(504, Status),
+    ?assertEqual(<<"Gateway Timeout">>, Body),
+    Url2 = make_url(Config, <<"/">>),
+    {ok, 200, _, _} = hackney:request(get, Url2, [], <<>>, [{pool, false}]).
+
+%% Helper: collect an async hackney response.
+%% Returns {ok, {Status, Headers, BodyParts}} on success,
+%% or fails the test on timeout.
+collect_async_response(ClientRef, Timeout) ->
+    collect_async_response(ClientRef, Timeout, undefined, [], []).
+
+collect_async_response(ClientRef, Timeout, Status, Headers, BodyParts) ->
+    receive
+        {hackney_response, ClientRef, {status, S, _Reason}} ->
+            collect_async_response(ClientRef, Timeout, S, Headers, BodyParts);
+        {hackney_response, ClientRef, {headers, H}} ->
+            collect_async_response(ClientRef, Timeout, Status, H, BodyParts);
+        {hackney_response, ClientRef, done} ->
+            {ok, {Status, Headers, BodyParts}};
+        {hackney_response, ClientRef, Chunk} when is_binary(Chunk) ->
+            collect_async_response(ClientRef, Timeout, Status, Headers, BodyParts ++ [Chunk])
+    after Timeout ->
+        ct:fail({streaming_timeout, {status, Status},
+                 {parts_received, length(BodyParts)}})
+    end.
 
 %%% ============================================================================
 %%% Error handling tests

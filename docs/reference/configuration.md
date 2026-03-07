@@ -52,6 +52,7 @@ Each mount is a tuple: `{Prefix, AppSpec, Options}`
 | `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
 | `workers` | integer | `4` | Number of Python workers for this mount |
 | `timeout` | integer | `30000` | Request timeout in ms |
+| `streaming` | boolean | `false` | Enable HTTP streaming for this mount (ASGI only) |
 
 ### Multi-App Example
 
@@ -61,7 +62,8 @@ hornbeam:start(#{
         {"/api/v2", "api_v2:app", #{
             worker_class => asgi,
             workers => 8,
-            timeout => 60000
+            timeout => 60000,
+            streaming => true  %% Enable SSE/streaming for this mount
         }},
         {"/api/v1", "api_v1:app", #{
             worker_class => wsgi,
@@ -136,7 +138,22 @@ hornbeam:start("app:app", #{
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `lifespan` | atom | `auto` | Lifespan handling: `auto`, `on`, `off` |
+| `streaming` | boolean | `false` | Enable HTTP streaming (SSE, chunked responses) |
 | `root_path` | binary | `""` | ASGI root_path for mounted apps |
+
+### Streaming
+
+When `streaming` is `true`, Hornbeam uses a streaming-capable handler path for ASGI HTTP requests. Each request is auto-detected: single-chunk responses still produce a correct buffered reply, while multi-chunk responses (`more_body: True`) are streamed to the client in real time via chunked transfer encoding.
+
+This is required for Server-Sent Events, LLM token streaming, and any endpoint that produces output incrementally. Enabling streaming is a non-breaking change — all endpoints continue to work correctly. The streaming path bypasses the worker pool's optimized NIF path, so only enable it on apps or mounts that need it. In multi-app mode, use per-mount `streaming` to scope this to specific mounts.
+
+```erlang
+hornbeam:start("app:app", #{
+    worker_class => asgi,
+    streaming => true,
+    timeout => 60000
+}).
+```
 
 ### Lifespan Values
 

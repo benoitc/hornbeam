@@ -32,6 +32,7 @@
 -export([
     test_start_stop/1,
     test_config/1,
+    test_worker_reconfigure_restarts_runtime/1,
     test_config_venv/1,
     test_register_function/1,
     test_ssl_config/1,
@@ -51,6 +52,7 @@ groups() ->
     [{basic, [sequence], [
         test_start_stop,
         test_config,
+        test_worker_reconfigure_restarts_runtime,
         test_config_venv,
         test_register_function,
         test_ssl_config,
@@ -114,6 +116,23 @@ test_config(_Config) ->
     Config = hornbeam_config:get_config(),
     ?assertEqual(bar, maps:get(foo, Config)),
     ?assertEqual(qux, maps:get(baz, Config)).
+
+test_worker_reconfigure_restarts_runtime(_Config) ->
+    Port = 8750 + erlang:phash2(worker_reconfigure, 100),
+    Bind = list_to_binary(io_lib:format("127.0.0.1:~p", [Port])),
+
+    ok = hornbeam:start("hello_wsgi.app:application", #{
+        bind => Bind,
+        workers => 2
+    }),
+    ?assertEqual(2, py_context_router:num_contexts()),
+    ok = hornbeam:stop(),
+
+    ok = hornbeam:start("hello_wsgi.app:application", #{
+        bind => Bind,
+        workers => 5
+    }),
+    ?assertEqual(5, py_context_router:num_contexts()).
 
 test_config_venv(_Config) ->
     %% Test that venv option is recognized in defaults

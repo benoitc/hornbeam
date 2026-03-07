@@ -124,6 +124,7 @@ hornbeam:start(#{
 | `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
 | `workers` | integer | `4` | Number of Python workers |
 | `timeout` | integer | `30000` | Request timeout in ms |
+| `streaming` | boolean | `false` | Enable HTTP streaming (ASGI only) |
 
 ## Global Options
 
@@ -182,10 +183,11 @@ A common pattern is mixing sync (WSGI) and async (ASGI) apps:
 ```erlang
 hornbeam:start(#{
     mounts => [
-        %% FastAPI for real-time API
+        %% FastAPI for real-time API (with SSE streaming)
         {"/api/v2", "api_v2:app", #{
             worker_class => asgi,
-            workers => 8
+            workers => 8,
+            streaming => true  %% Enable SSE/streaming for this mount
         }},
 
         %% Legacy Flask API

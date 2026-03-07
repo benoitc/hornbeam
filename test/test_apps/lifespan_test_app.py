@@ -183,19 +183,23 @@ async def handle_lifespan_info(scope, receive, send):
     """Return lifespan-specific information."""
     await drain_body(receive)
 
+    # Use scope state (shared via Erlang ETS across subinterpreters)
+    scope_state = scope.get("state", {})
+
     info = {
         "lifespan_supported": True,
-        "startup_complete": _lifespan_state["startup_complete"],
+        "startup_complete": scope_state.get("lifespan_started", False),
         "scope_state_present": "state" in scope,
         "uptime_seconds": None,
     }
 
-    if _lifespan_state["startup_time"]:
-        info["uptime_seconds"] = time.time() - _lifespan_state["startup_time"]
+    startup_time = scope_state.get("startup_time")
+    if startup_time:
+        info["uptime_seconds"] = time.time() - startup_time
 
-    if "state" in scope:
-        info["state_keys"] = list(scope["state"].keys())
-        if "db_connection" in scope["state"]:
+    if scope_state:
+        info["state_keys"] = list(scope_state.keys())
+        if "db_connection" in scope_state:
             info["db_connection_status"] = "active"
 
     body = json.dumps(info, indent=2).encode("utf-8")
@@ -252,7 +256,11 @@ async def handle_health(scope, receive, send):
     """Health check that verifies lifespan startup completed."""
     await drain_body(receive)
 
-    if not _lifespan_state["startup_complete"]:
+    # Check scope state (shared via Erlang ETS across subinterpreters)
+    scope_state = scope.get("state", {})
+    lifespan_started = scope_state.get("lifespan_started", False)
+
+    if not lifespan_started:
         body = b"Lifespan not started"
         status = 503
     else:

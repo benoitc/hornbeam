@@ -314,6 +314,7 @@ rebar3 shell
 hornbeam:start("app:app", #{
     worker_class => asgi,
     lifespan => on,
+    streaming => true,  %% Required for the /stream SSE endpoint
     pythonpath => ["fastapi_demo"],
     workers => 4
 }).

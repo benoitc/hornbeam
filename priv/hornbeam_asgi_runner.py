@@ -22,7 +22,7 @@ import asyncio
 import importlib
 import sys
 import threading
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 
 
 # Install erlang event loop as the default event loop policy (once per interpreter)
@@ -39,20 +39,18 @@ def _install_erlang_loop() -> bool:
 _install_erlang_loop()
 
 
-# Cache lifespan state getter at module level (avoid import on every request)
-_get_lifespan_state = None
+def _normalize_state_keys(state: dict) -> dict:
+    """Convert bytes keys to strings in scope state dict.
 
-
-def _init_lifespan_getter():
-    global _get_lifespan_state
-    try:
-        from hornbeam_lifespan_runner import get_state
-        _get_lifespan_state = get_state
-    except ImportError:
-        _get_lifespan_state = None
-
-
-_init_lifespan_getter()
+    Erlang binaries arrive as Python bytes through term_to_py conversion.
+    ASGI apps expect string keys in scope['state'].
+    """
+    if not state or not isinstance(state, dict):
+        return state
+    return {
+        (k.decode('utf-8') if isinstance(k, bytes) else k): v
+        for k, v in state.items()
+    }
 
 
 # Check if _erlang_sleep is available
@@ -416,9 +414,9 @@ async def _run_asgi_async(module_name: str, callable_name: str,
     # Load the application
     app = load_app(module_name, callable_name)
 
-    # Use cached lifespan state getter
-    if _get_lifespan_state is not None:
-        scope['state'] = _get_lifespan_state()
+    # Normalize scope state keys (Erlang binaries arrive as bytes)
+    if 'state' in scope:
+        scope['state'] = _normalize_state_keys(scope['state'])
 
     # Ensure body is bytes
     if body.__class__ is str:
@@ -474,9 +472,9 @@ def run_asgi(module_name: str, callable_name: str,
     # Load the application
     app = load_app(module_name, callable_name)
 
-    # Use cached lifespan state getter (avoid import on every request)
-    if _get_lifespan_state is not None:
-        scope['state'] = _get_lifespan_state()
+    # Normalize scope state keys (Erlang binaries arrive as bytes)
+    if 'state' in scope:
+        scope['state'] = _normalize_state_keys(scope['state'])
 
     # Ensure body is bytes
     if body.__class__ is str:
@@ -563,218 +561,81 @@ def _run_asgi_sync(module_name: str, callable_name: str,
     )
 
 
-# Streaming support for real-time responses
-
-# Thread-safe streaming session storage
-_streaming_sessions: Dict[str, 'StreamingASGIRunner'] = {}
-_streaming_sessions_lock = threading.Lock()
+# Push-based streaming via erlang.send()
 
 
-class StreamingASGIRunner:
-    """Runner for streaming ASGI responses.
+def run_asgi_streaming(module_name: str, callable_name: str,
+                       scope: dict, body: bytes,
+                       caller_pid: Any, timeout_ms: int) -> dict:
+    """Run an ASGI app with push-based streaming via erlang.send().
 
-    This class supports:
-    - Server-Sent Events (SSE)
-    - Chunked transfer encoding
-    - Real-time response streaming
+    The app's send() callback pushes headers and chunks directly to the
+    Erlang handler process. Timeout is enforced both here (graceful) and
+    on the Erlang side (hard kill).
     """
+    import erlang
 
-    def __init__(self, module_name: str, callable_name: str, scope: dict):
-        self.module_name = module_name
-        self.callable_name = callable_name
-        self.scope = scope
-        self.app = None
-        self.status = None
-        self.headers = []
-        self.body_queue: asyncio.Queue = None
-        self.finished = False
-        self.loop = None
-        self._response_started_event: asyncio.Event = None
-        self._error: Optional[Exception] = None
+    # Re-raise SuspensionRequired so the C executor can handle reentrant callbacks
+    try:
+        from erlang import SuspensionRequired
+    except ImportError:
+        SuspensionRequired = None
 
-    def start(self, body: bytes, timeout_ms: int = 5000) -> dict:
-        """Start the streaming response.
+    app = load_app(module_name, callable_name)
 
-        Args:
-            body: Request body bytes
-            timeout_ms: Max time to wait for response headers (default 5s)
-
-        Returns the initial response headers.
-        """
-        self.app = load_app(self.module_name, self.callable_name)
-
-        # Inject lifespan state if available
-        if _get_lifespan_state is not None:
-            self.scope['state'] = _get_lifespan_state()
-
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        self.body_queue = asyncio.Queue()
-        self._response_started_event = asyncio.Event()
-
-        # Create receive/send callables
-        body_sent = False
-
-        async def receive():
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {
-                    'type': 'http.request',
-                    'body': body,
-                    'more_body': False
-                }
-            return _DISCONNECT_MSG
-
-        async def send(message):
-            msg_type = message.get('type', '')
-            if msg_type == 'http.response.start':
-                self.status = message.get('status', 200)
-                self.headers = message.get('headers', [])
-                self._response_started_event.set()
-            elif msg_type == 'http.response.body':
-                body_part = message.get('body', b'')
-                more_body = message.get('more_body', False)
-                await self.body_queue.put((body_part, more_body))
-                if not more_body:
-                    self.finished = True
-
-        # Start app in background
-        async def run_app():
-            try:
-                await self.app(self.scope, receive, send)
-            except Exception as e:
-                self._error = e
-                self._response_started_event.set()  # Unblock waiter on error
-                await self.body_queue.put((b'', False))
-                self.finished = True
-
-        self.loop.create_task(run_app())
-
-        # Wait for response to start using event (not polling)
-        async def wait_for_start():
-            await asyncio.wait_for(
-                self._response_started_event.wait(),
-                timeout=timeout_ms / 1000.0
-            )
-
-        try:
-            self.loop.run_until_complete(wait_for_start())
-        except asyncio.TimeoutError:
-            # Timeout waiting for response headers
-            self.finished = True
-            return {'status': 504, 'headers': [], 'error': 'timeout'}
-
-        if self._error is not None:
-            return {
-                'status': 500,
-                'headers': [],
-                'error': str(self._error)
-            }
-
-        return {
-            'status': self.status or 500,
-            'headers': self.headers
-        }
-
-    def next_chunk(self, timeout_ms: int = 30000) -> tuple:
-        """Get the next body chunk.
-
-        Returns (chunk_bytes, more_body_bool)
-        """
-        if self.finished or self.loop is None:
-            return (b'', False)
-
-        try:
-            timeout_sec = timeout_ms / 1000.0
-            future = asyncio.wait_for(
-                self.body_queue.get(),
-                timeout=timeout_sec
-            )
-            chunk, more_body = self.loop.run_until_complete(future)
-            return (chunk, more_body)
-        except asyncio.TimeoutError:
-            return (b'', True)  # Timeout, but may have more
-        except Exception:
-            return (b'', False)
-
-    def close(self):
-        """Clean up resources."""
-        if self.loop:
-            try:
-                self.loop.close()
-            except Exception:
-                pass
-            self.loop = None
-
-
-def start_streaming(session_id: str, module_name: str, callable_name: str,
-                    scope: dict, body: bytes, timeout_ms: int = 5000) -> dict:
-    """Start a streaming ASGI response session.
-
-    Args:
-        session_id: Unique identifier for this streaming session
-        module_name: Python module containing the ASGI app
-        callable_name: Name of the ASGI callable
-        scope: ASGI scope dict
-        body: Request body bytes
-        timeout_ms: Max time to wait for response headers
-
-    Returns initial response headers.
-    """
-    runner = StreamingASGIRunner(module_name, callable_name, scope)
-
-    with _streaming_sessions_lock:
-        _streaming_sessions[session_id] = runner
+    # Normalize scope state keys (Erlang binaries arrive as bytes)
+    if 'state' in scope:
+        scope['state'] = _normalize_state_keys(scope['state'])
 
     if body.__class__ is str:
         body = body.encode('utf-8')
     elif body.__class__ is not bytes:
         body = b''
 
-    return runner.start(body, timeout_ms)
+    body_sent_flag = False
+    response_started = False
+    send_blocked = False
 
+    async def receive():
+        nonlocal body_sent_flag
+        if not body_sent_flag:
+            body_sent_flag = True
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        return _DISCONNECT_MSG
 
-def get_streaming_chunk(session_id: str, timeout_ms: int = 30000) -> dict:
-    """Get the next chunk from a streaming session.
+    async def send(message):
+        nonlocal response_started, send_blocked
+        if send_blocked:
+            return
+        msg_type = message.get('type', '')
+        if msg_type == 'http.response.start':
+            if response_started:
+                # Duplicate response.start — block all further sends
+                send_blocked = True
+                return
+            response_started = True
+            erlang.send(caller_pid, ('stream_headers',
+                        message.get('status', 200),
+                        message.get('headers', [])))
+        elif msg_type == 'http.response.body':
+            erlang.send(caller_pid, ('stream_chunk',
+                        message.get('body', b''),
+                        message.get('more_body', False)))
 
-    Returns {'chunk': bytes, 'more_body': bool}
-    """
-    with _streaming_sessions_lock:
-        runner = _streaming_sessions.get(session_id)
-
-    if runner is None:
-        return {'chunk': b'', 'more_body': False, 'error': 'session_not_found'}
-
-    chunk, more_body = runner.next_chunk(timeout_ms)
-    return {'chunk': chunk, 'more_body': more_body}
-
-
-def end_streaming(session_id: str) -> None:
-    """End a streaming session and clean up resources."""
-    with _streaming_sessions_lock:
-        runner = _streaming_sessions.pop(session_id, None)
-
-    if runner:
-        runner.close()
-
-
-def cleanup_streaming_sessions() -> int:
-    """Clean up finished streaming sessions.
-
-    Call this periodically to prevent memory leaks from abandoned sessions.
-
-    Returns the number of sessions cleaned up.
-    """
-    cleaned = 0
-    with _streaming_sessions_lock:
-        finished_ids = [
-            sid for sid, runner in _streaming_sessions.items()
-            if runner.finished or runner.loop is None
-        ]
-        for sid in finished_ids:
-            runner = _streaming_sessions.pop(sid, None)
-            if runner:
-                runner.close()
-                cleaned += 1
-    return cleaned
+    # Standalone loop — erlang event loop doesn't support run_until_complete()
+    loop = asyncio.DefaultEventLoopPolicy().new_event_loop()
+    try:
+        timeout_s = timeout_ms / 1000.0
+        coro = asyncio.wait_for(app(scope, receive, send), timeout=timeout_s)
+        loop.run_until_complete(coro)
+        return {'ok': True}
+    except asyncio.TimeoutError:
+        erlang.send(caller_pid, ('stream_error', 'timeout'))
+        return {'error': 'timeout'}
+    except Exception as e:
+        if SuspensionRequired and isinstance(e, SuspensionRequired):
+            raise
+        erlang.send(caller_pid, ('stream_error', str(e)))
+        return {'error': str(e)}
+    finally:
+        loop.close()

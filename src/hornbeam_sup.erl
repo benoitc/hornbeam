@@ -15,6 +15,7 @@
 %%% @doc Hornbeam top-level supervisor.
 %%%
 %%% Supervises all hornbeam services:
+%%% - hornbeam_profiler: Request profiling for performance analysis
 %%% - hornbeam_mounts: Multi-app mount registry
 %%% - hornbeam_config: Configuration management
 %%% - hornbeam_state: Shared state ETS
@@ -45,6 +46,14 @@ init([]) ->
     },
 
     Children = [
+        #{
+            id => hornbeam_profiler,
+            start => {hornbeam_profiler, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_profiler]
+        },
         #{
             id => hornbeam_mounts,
             start => {hornbeam_mounts, start_link, []},

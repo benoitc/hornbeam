@@ -169,7 +169,29 @@ hornbeam:start("app:app", #{
 
 ## Streaming Responses
 
+By default, Hornbeam buffers every ASGI HTTP response fully before sending it to the client. This works well for typical request/response endpoints, but blocks real-time use cases like Server-Sent Events (SSE) and LLM token streaming.
+
+To enable true HTTP streaming, set `streaming => true` in your configuration:
+
+```erlang
+hornbeam:start("app:application", #{
+    worker_class => asgi,
+    streaming => true
+}).
+```
+
+With `streaming => true`, Hornbeam automatically detects per-request whether to stream or buffer. After the ASGI app sends its first body chunk, Hornbeam checks the `more_body` flag:
+
+- **`more_body: False`** — single-chunk response, uses efficient buffered reply (same as non-streaming mode)
+- **`more_body: True`** — multi-chunk response, switches to chunked transfer encoding and sends each chunk to the client as it arrives
+
+Non-streaming endpoints still work correctly through this path — they produce the same buffered response. The streaming path uses a single `py:call` that pushes chunks directly to the Erlang handler via `erlang.send()`, so overhead per chunk is minimal. However, it bypasses the worker pool's optimized NIF path, so you should only enable it on apps or mounts that actually need streaming. In multi-app mode, you can enable `streaming` on just the mounts that serve SSE or chunked responses.
+
+### Basic Streaming Example
+
 ```python
+import asyncio
+
 async def application(scope, receive, send):
     if scope['type'] == 'http':
         await send({
@@ -194,6 +216,8 @@ async def application(scope, receive, send):
             'more_body': False,
         })
 ```
+
+> **Note:** Without `streaming => true`, the above app still works — but the client won't see any output until all chunks have been buffered and sent as one response. With streaming enabled, each chunk is flushed to the client as soon as it's produced.
 
 ## Erlang-Native Async Primitives
 
@@ -247,6 +271,59 @@ The ASGI runner includes several optimizations:
 
 ## Server-Sent Events (SSE)
 
+SSE requires `streaming => true` so that events are flushed to the client in real time.
+
+### Raw ASGI SSE
+
+```python
+import asyncio
+
+async def application(scope, receive, send):
+    if scope['type'] != 'http':
+        return
+
+    path = scope.get('path', '/')
+
+    if path == '/events':
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [
+                [b'content-type', b'text/event-stream'],
+                [b'cache-control', b'no-cache'],
+            ],
+        })
+        for i in range(10):
+            chunk = f'data: Event {i}\n\n'.encode()
+            await send({
+                'type': 'http.response.body',
+                'body': chunk,
+                'more_body': i < 9,
+            })
+            if i < 9:
+                await asyncio.sleep(1)
+    else:
+        body = b'Hello!\n'
+        await send({
+            'type': 'http.response.start',
+            'status': 200,
+            'headers': [[b'content-type', b'text/plain']],
+        })
+        await send({
+            'type': 'http.response.body',
+            'body': body,
+        })
+```
+
+```erlang
+hornbeam:start("app:application", #{
+    worker_class => asgi,
+    streaming => true  %% Required for SSE
+}).
+```
+
+### FastAPI SSE
+
 ```python
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -265,6 +342,21 @@ async def sse():
         event_generator(),
         media_type="text/event-stream"
     )
+```
+
+```erlang
+hornbeam:start("app:app", #{
+    worker_class => asgi,
+    streaming => true,  %% Required for SSE
+    lifespan => on
+}).
+```
+
+Test with curl:
+
+```bash
+curl -N http://localhost:8000/events
+# Events appear one per second as they're produced
 ```
 
 ## Request Body
@@ -361,6 +453,7 @@ hornbeam:start("app:app", #{
     %% Protocol
     worker_class => asgi,
     lifespan => auto,
+    streaming => true,   %% Enable HTTP streaming (SSE, chunked responses)
     root_path => "",
 
     %% Workers
