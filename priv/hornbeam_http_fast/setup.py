@@ -31,12 +31,21 @@ elif sys.platform.startswith('linux'):
 if sys.platform == 'win32':
     extra_compile_args = ['/O2']
 
-# Extension module
+# Extension modules
 ext_modules = [
     Extension(
         'pico_parser',
         sources=[
             'pico_parser_module.c',
+            'picohttpparser/picohttpparser.c'
+        ],
+        include_dirs=['.'],
+        extra_compile_args=extra_compile_args,
+    ),
+    Extension(
+        'pico_parser_fast',
+        sources=[
+            'pico_parser_fast.c',
             'picohttpparser/picohttpparser.c'
         ],
         include_dirs=['.'],
