@@ -41,15 +41,37 @@ import asyncio
 import traceback
 from typing import Optional, Dict, Any, Callable, Tuple, List
 
-# Shared event loop for ASGI (avoids creating new loop per request)
+# Shared event loop for ASGI (uses Erlang event loop when available)
 _asgi_loop: Optional[asyncio.AbstractEventLoop] = None
+_use_erlang_loop: Optional[bool] = None
 
 def _get_event_loop() -> asyncio.AbstractEventLoop:
-    """Get or create shared event loop for ASGI."""
-    global _asgi_loop
-    if _asgi_loop is None or _asgi_loop.is_closed():
+    """Get or create shared event loop for ASGI.
+
+    Uses Erlang-backed event loop when available for better performance
+    (sub-millisecond latency, zero polling, GIL release during I/O).
+    """
+    global _asgi_loop, _use_erlang_loop
+
+    if _asgi_loop is not None and not _asgi_loop.is_closed():
+        return _asgi_loop
+
+    # Check if running inside Erlang VM (erlang module available)
+    if _use_erlang_loop is None:
+        try:
+            import erlang
+            # Verify event loop support is available
+            _use_erlang_loop = hasattr(erlang, 'new_event_loop')
+        except ImportError:
+            _use_erlang_loop = False
+
+    if _use_erlang_loop:
+        import erlang
+        _asgi_loop = erlang.new_event_loop()
+    else:
         _asgi_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_asgi_loop)
+
+    asyncio.set_event_loop(_asgi_loop)
     return _asgi_loop
 
 
