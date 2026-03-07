@@ -57,14 +57,51 @@ init(Req, State) ->
     handle_request(WorkerClass, Req, State).
 
 handle_request(wsgi, Req, State) ->
-    handle_wsgi(Req, State);
+    %% Check backend mode: nif (default) or fd_reactor
+    case maps:get(backend_mode, State, nif) of
+        fd_reactor ->
+            handle_fd_reactor(Req, State);
+        _ ->
+            handle_wsgi(Req, State)
+    end;
 handle_request(asgi, Req, State) ->
     %% Check for WebSocket upgrade
     case is_websocket_upgrade(Req) of
         true ->
             handle_websocket_upgrade(Req, State);
         false ->
-            handle_asgi(Req, State)
+            %% Check backend mode: nif (default) or fd_reactor
+            case maps:get(backend_mode, State, nif) of
+                fd_reactor ->
+                    handle_fd_reactor(Req, State);
+                _ ->
+                    handle_asgi(Req, State)
+            end
+    end.
+
+%%% ============================================================================
+%%% FD Reactor Handler
+%%% ============================================================================
+
+%% @private
+%% Handle request via FD reactor proxy bridge.
+%% This path uses socketpair-based communication with Python reactor contexts,
+%% providing streaming body handling and better GIL management.
+handle_fd_reactor(Req, State) ->
+    %% Build initial request map for hooks
+    ReqInfo = build_request_info(Req),
+
+    %% Run on_request hook
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        %% Delegate to proxy bridge
+        hornbeam_proxy_bridge:handle(Req, State)
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("FD reactor handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
     end.
 
 %% @private
