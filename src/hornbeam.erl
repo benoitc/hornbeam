@@ -539,11 +539,22 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
 ensure_python_runtime(Config) ->
     Workers = maps:get(workers, Config, 4),
     ok = application:set_env(erlang_python, num_workers, Workers),
-    case current_python_workers() of
+    Result = case current_python_workers() of
         {ok, Workers} ->
             ok;
         _ ->
             restart_python_runtime()
+    end,
+    %% Ensure worker pool is started for high-concurrency ASGI
+    case Result of
+        ok -> ensure_worker_pool();
+        Error -> Error
+    end.
+
+ensure_worker_pool() ->
+    case py_worker_pool:stats() of
+        #{initialized := true} -> ok;
+        _ -> py_worker_pool:start_link()
     end.
 
 current_python_workers() ->
@@ -570,8 +581,15 @@ restart_python_runtime() ->
 start_python_runtime() ->
     case application:start(erlang_python) of
         ok ->
+            %% Start the new worker pool for high-concurrency ASGI handling
+            ok = py_worker_pool:start_link(),
             refresh_lifespan_manager();
         {error, {already_started, erlang_python}} ->
+            %% Ensure worker pool is started
+            case py_worker_pool:stats() of
+                #{initialized := true} -> ok;
+                _ -> ok = py_worker_pool:start_link()
+            end,
             refresh_lifespan_manager();
         {error, Reason} ->
             {error, {python_start_failed, Reason}}
