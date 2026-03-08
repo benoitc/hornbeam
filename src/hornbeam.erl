@@ -547,11 +547,16 @@ ensure_python_runtime(Config) ->
     end.
 
 current_python_workers() ->
-    try py_pool:get_stats() of
-        #{num_workers := NumWorkers} when is_integer(NumWorkers), NumWorkers > 0 ->
+    %% In the new erlang_python architecture (subinterpreters), worker count
+    %% is determined by num_contexts in the context supervisor. Check if
+    %% contexts are available.
+    try py:contexts_started() of
+        true ->
+            %% Contexts are running, get count from application env
+            NumWorkers = application:get_env(erlang_python, num_workers, 4),
             {ok, NumWorkers};
-        _ ->
-            {error, unknown}
+        false ->
+            {error, not_started}
     catch
         _:_ ->
             {error, unavailable}

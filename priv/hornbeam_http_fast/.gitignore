@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+*.so
+*.pyd
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Cython generated
+pico_parser.c
