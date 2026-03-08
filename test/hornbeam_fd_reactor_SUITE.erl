@@ -52,10 +52,13 @@ groups() ->
 
 init_per_suite(Config) ->
     %% Start required applications
-    application:ensure_all_started(hackney),
+    {ok, _} = application:ensure_all_started(hornbeam),
+    {ok, _} = application:ensure_all_started(hackney),
     Config.
 
 end_per_suite(_Config) ->
+    application:stop(hackney),
+    application:stop(hornbeam),
     ok.
 
 init_per_testcase(_TestCase, Config) ->
@@ -79,12 +82,11 @@ end_per_testcase(_TestCase, Config) ->
 
 simple_get_test(Config) ->
     %% Start hornbeam with fd_reactor mode
-    {ok, _} = start_hornbeam_fd_reactor(Config),
+    ok = start_hornbeam_fd_reactor(Config),
 
     %% Make request
     Url = "http://" ++ ?HOST ++ ":" ++ integer_to_list(?PORT) ++ "/",
-    {ok, StatusCode, _Headers, ClientRef} = hackney:get(Url, [], <<>>, []),
-    {ok, Body} = hackney:body(ClientRef),
+    {ok, StatusCode, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
 
     ?assertEqual(200, StatusCode),
     ?assertEqual(<<"Hello World">>, Body),
@@ -93,14 +95,13 @@ simple_get_test(Config) ->
     ok.
 
 post_with_body_test(Config) ->
-    {ok, _} = start_hornbeam_fd_reactor(Config),
+    ok = start_hornbeam_fd_reactor(Config),
 
     Url = "http://" ++ ?HOST ++ ":" ++ integer_to_list(?PORT) ++ "/echo",
     ReqBody = <<"test body data">>,
     Headers = [{<<"content-type">>, <<"text/plain">>}],
 
-    {ok, StatusCode, _RespHeaders, ClientRef} = hackney:post(Url, Headers, ReqBody, []),
-    {ok, RespBody} = hackney:body(ClientRef),
+    {ok, StatusCode, _RespHeaders, RespBody} = hackney:request(post, Url, Headers, ReqBody, []),
 
     ?assertEqual(200, StatusCode),
     ?assertEqual(ReqBody, RespBody),
@@ -109,7 +110,7 @@ post_with_body_test(Config) ->
     ok.
 
 multiple_headers_test(Config) ->
-    {ok, _} = start_hornbeam_fd_reactor(Config),
+    ok = start_hornbeam_fd_reactor(Config),
 
     Url = "http://" ++ ?HOST ++ ":" ++ integer_to_list(?PORT) ++ "/headers",
     Headers = [
@@ -118,41 +119,38 @@ multiple_headers_test(Config) ->
         {<<"accept">>, <<"application/json">>}
     ],
 
-    {ok, StatusCode, _RespHeaders, ClientRef} = hackney:get(Url, Headers, <<>>, []),
-    {ok, Body} = hackney:body(ClientRef),
+    {ok, StatusCode, _RespHeaders, Body} = hackney:request(get, Url, Headers, <<>>, []),
 
     ?assertEqual(200, StatusCode),
-    %% Body should contain the headers
-    ?assert(binary:match(Body, <<"x-custom-1">>) =/= nomatch),
+    %% Body should contain the headers (WSGI format: HTTP_X_CUSTOM_1)
+    ?assert(binary:match(Body, <<"HTTP_X_CUSTOM_1">>) =/= nomatch),
 
     hornbeam:stop(),
     ok.
 
 keep_alive_test(Config) ->
-    {ok, _} = start_hornbeam_fd_reactor(Config),
+    ok = start_hornbeam_fd_reactor(Config),
 
     %% Make multiple requests on same connection
     Url = "http://" ++ ?HOST ++ ":" ++ integer_to_list(?PORT) ++ "/",
 
     %% First request
-    {ok, Status1, _, Ref1} = hackney:get(Url, [], <<>>, []),
-    {ok, _Body1} = hackney:body(Ref1),
+    {ok, Status1, _, _Body1} = hackney:request(get, Url, [], <<>>, []),
     ?assertEqual(200, Status1),
 
     %% Second request (should reuse connection with keep-alive)
-    {ok, Status2, _, Ref2} = hackney:get(Url, [], <<>>, []),
-    {ok, _Body2} = hackney:body(Ref2),
+    {ok, Status2, _, _Body2} = hackney:request(get, Url, [], <<>>, []),
     ?assertEqual(200, Status2),
 
     hornbeam:stop(),
     ok.
 
 error_handling_test(Config) ->
-    {ok, _} = start_hornbeam_fd_reactor(Config),
+    ok = start_hornbeam_fd_reactor(Config),
 
     %% Request non-existent path
     Url = "http://" ++ ?HOST ++ ":" ++ integer_to_list(?PORT) ++ "/not-found",
-    {ok, StatusCode, _Headers, _ClientRef} = hackney:get(Url, [], <<>>, []),
+    {ok, StatusCode, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []),
 
     ?assertEqual(404, StatusCode),
 

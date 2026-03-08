@@ -427,3 +427,148 @@ def _run_wsgi_sync(module_name: str, callable_name: str,
         result.get('headers', []),
         result.get('body', b'')
     )
+
+
+# =============================================================================
+# Streaming Support (for Erlang handler integration)
+# =============================================================================
+
+# Import erlang module for message passing
+try:
+    import erlang
+    _has_erlang = True
+except ImportError:
+    _has_erlang = False
+
+
+class StreamingResponse(Response):
+    """WSGI response handler with streaming support.
+
+    Extends Response to send chunks to Erlang handler via message passing.
+    """
+
+    def __init__(self, request_environ, handler_pid, max_pending=3):
+        super().__init__(request_environ)
+        self.handler_pid = handler_pid
+        self.max_pending = max_pending
+        self.pending_acks = 0
+        self._started = False
+        self._ack_condition = threading.Condition()
+
+    def _send_start(self):
+        """Send stream_start message to Erlang handler."""
+        if self._started or not _has_erlang:
+            return
+        self._started = True
+        erlang.send(self.handler_pid, (
+            'stream_start',
+            self.status,
+            self.headers
+        ))
+
+    def _wait_for_ack(self):
+        """Wait for ack if too many pending chunks."""
+        with self._ack_condition:
+            while self.pending_acks >= self.max_pending:
+                self._ack_condition.wait(timeout=30.0)
+
+    def _send_chunk(self, chunk, more_body=True):
+        """Send a chunk to Erlang handler with flow control."""
+        if not _has_erlang:
+            return
+
+        self._wait_for_ack()
+
+        erlang.send(self.handler_pid, (
+            'stream_chunk',
+            chunk,
+            more_body
+        ))
+        with self._ack_condition:
+            self.pending_acks += 1
+
+    def ack_received(self):
+        """Called when ack received from Erlang."""
+        with self._ack_condition:
+            self.pending_acks = max(0, self.pending_acks - 1)
+            self._ack_condition.notify()
+
+
+def run_wsgi_streaming(module_name, callable_name, raw_environ, handler_pid,
+                       max_pending=3):
+    """Run a WSGI application with true response streaming.
+
+    Streams response chunks to the Erlang handler via message passing.
+    Supports FileWrapper for sendfile optimization.
+
+    Args:
+        module_name: Python module containing the WSGI app
+        callable_name: Name of the WSGI callable in the module
+        raw_environ: Raw WSGI environ dict from Erlang
+        handler_pid: Erlang PID to send chunks to
+        max_pending: Max pending chunks before backpressure (default 3)
+
+    Returns:
+        Dict with 'ok' or 'error' status
+    """
+    if not _has_erlang:
+        return {'error': 'erlang module not available'}
+
+    try:
+        # Load the application
+        app = load_app(module_name, callable_name)
+
+        # Create complete environ
+        environ = create_environ(raw_environ)
+
+        # Create streaming response handler
+        response = StreamingResponse(environ, handler_pid, max_pending)
+
+        # Call the WSGI app
+        result = app(environ, response.start_response)
+
+        # Send response start
+        response._send_start()
+
+        # Add any write() buffer content first
+        for chunk in response._write_buffer:
+            if isinstance(chunk, str):
+                chunk = chunk.encode('utf-8')
+            response._send_chunk(chunk, more_body=True)
+
+        # Check if result is a FileWrapper for optimized file serving
+        if isinstance(result, FileWrapper):
+            # Try to get file descriptor for sendfile
+            filelike = result.filelike
+            if hasattr(filelike, 'fileno'):
+                try:
+                    fd = filelike.fileno()
+                    # Send stream_file message for sendfile optimization
+                    erlang.send(handler_pid, ('stream_file', fd))
+                    return {'ok': True, 'sendfile': True}
+                except (io.UnsupportedOperation, OSError):
+                    pass
+            # Fall through to iterate chunks
+
+        # Iterate result and send chunks
+        try:
+            if isinstance(result, (bytes, bytearray)):
+                response._send_chunk(bytes(result), more_body=False)
+            else:
+                for chunk in result:
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode('utf-8')
+                    elif isinstance(chunk, bytearray):
+                        chunk = bytes(chunk)
+                    response._send_chunk(chunk, more_body=True)
+                # Send final empty chunk to signal end
+                response._send_chunk(b'', more_body=False)
+        finally:
+            if hasattr(result, 'close'):
+                result.close()
+
+        return {'ok': True}
+
+    except Exception as e:
+        import traceback
+        return {'error': str(e), 'traceback': traceback.format_exc()}

@@ -778,3 +778,185 @@ def cleanup_streaming_sessions() -> int:
                 runner.close()
                 cleaned += 1
     return cleaned
+
+
+# =============================================================================
+# Message-based Streaming Support (for Erlang handler integration)
+# =============================================================================
+
+# Import erlang module for message passing
+try:
+    import erlang
+    _has_erlang = True
+except ImportError:
+    _has_erlang = False
+
+
+class StreamingASGISender:
+    """ASGI sender that streams chunks to Erlang handler via message passing.
+
+    Implements flow control with acknowledge-based backpressure:
+    - Sends chunks to handler_pid as messages
+    - Waits for ack when pending chunks exceed max_pending
+    - Supports http.response.start, http.response.body messages
+    """
+    __slots__ = ('handler_pid', 'pending_acks', 'max_pending',
+                 '_ack_event', '_started', '_finished')
+
+    def __init__(self, handler_pid, max_pending: int = 3):
+        self.handler_pid = handler_pid
+        self.pending_acks = 0
+        self.max_pending = max_pending
+        self._ack_event = asyncio.Event()
+        self._started = False
+        self._finished = False
+
+    async def send(self, message: dict) -> None:
+        """ASGI send callable with streaming support."""
+        if not _has_erlang:
+            raise RuntimeError("erlang module not available for streaming")
+
+        msg_type = message.get('type', '')
+
+        if msg_type == 'http.response.start':
+            status = message.get('status', 200)
+            headers = message.get('headers', [])
+            # Send stream_start message to Erlang handler
+            erlang.send(self.handler_pid,
+                ('stream_start', status, headers))
+            self._started = True
+
+        elif msg_type == 'http.response.body':
+            body = message.get('body', b'')
+            more_body = message.get('more_body', False)
+
+            # Ensure body is bytes
+            if isinstance(body, str):
+                body = body.encode('utf-8')
+
+            # Flow control: wait if too many pending acks
+            while self.pending_acks >= self.max_pending:
+                await self._ack_event.wait()
+                self._ack_event.clear()
+
+            # Send chunk to Erlang handler
+            erlang.send(self.handler_pid,
+                ('stream_chunk', body, more_body))
+            self.pending_acks += 1
+
+            if not more_body:
+                self._finished = True
+
+        elif msg_type == 'http.response.informational':
+            # Forward 1xx responses
+            status = message.get('status', 100)
+            headers = message.get('headers', [])
+            erlang.send(self.handler_pid,
+                ('stream_info', status, headers))
+
+        elif msg_type == 'http.response.trailers':
+            # Forward trailers
+            headers = message.get('headers', [])
+            erlang.send(self.handler_pid,
+                ('stream_trailers', headers))
+
+    def ack_received(self):
+        """Called when an ack message is received from Erlang."""
+        self.pending_acks = max(0, self.pending_acks - 1)
+        self._ack_event.set()
+
+    @property
+    def is_finished(self) -> bool:
+        return self._finished
+
+
+class StreamingASGIReceive:
+    """Receive callable that supports streaming request body from Erlang."""
+    __slots__ = ('_body_queue', '_initial_body', '_body_sent', '_disconnected')
+
+    def __init__(self, initial_body: bytes = b''):
+        self._body_queue: asyncio.Queue = asyncio.Queue()
+        self._initial_body = initial_body
+        self._body_sent = False
+        self._disconnected = False
+
+    async def __call__(self) -> dict:
+        if self._disconnected:
+            return _DISCONNECT_MSG
+
+        if not self._body_sent:
+            self._body_sent = True
+            # Return initial body (may be empty if streaming)
+            return {
+                'type': 'http.request',
+                'body': self._initial_body,
+                'more_body': not self._body_queue.empty()
+            }
+
+        # Wait for more body chunks from Erlang
+        try:
+            chunk, more_body = await self._body_queue.get()
+            if not more_body:
+                self._disconnected = True
+            return {
+                'type': 'http.request',
+                'body': chunk,
+                'more_body': more_body
+            }
+        except Exception:
+            return _DISCONNECT_MSG
+
+    def add_body_chunk(self, chunk: bytes, more_body: bool):
+        """Add a body chunk from Erlang."""
+        self._body_queue.put_nowait((chunk, more_body))
+
+
+def run_asgi_streaming(module_name: str, callable_name: str,
+                       scope: dict, body: bytes, handler_pid,
+                       max_pending: int = 3) -> dict:
+    """Run an ASGI application with true response streaming.
+
+    Streams response chunks to the Erlang handler via message passing.
+    The handler sends 'stream_ack' messages for flow control.
+
+    Args:
+        module_name: Python module containing the ASGI app
+        callable_name: Name of the ASGI callable in the module
+        scope: ASGI scope dict
+        body: Initial request body bytes
+        handler_pid: Erlang PID to send chunks to
+        max_pending: Max pending chunks before backpressure (default 3)
+
+    Returns:
+        Dict with 'ok' or 'error' status
+    """
+    if not _has_erlang:
+        return {'error': 'erlang module not available'}
+
+    # Load the application
+    app = load_app(module_name, callable_name)
+
+    # Use cached lifespan state getter
+    if _get_lifespan_state is not None:
+        scope['state'] = _get_lifespan_state()
+
+    # Ensure body is bytes
+    if isinstance(body, str):
+        body = body.encode('utf-8')
+    elif not isinstance(body, bytes):
+        body = b''
+
+    # Create streaming sender and receiver
+    sender = StreamingASGISender(handler_pid, max_pending)
+    receive = _ReceiveCallable(body)
+
+    # Run in event loop
+    async def run_app():
+        try:
+            await app(scope, receive, sender.send)
+            return {'ok': True}
+        except Exception as e:
+            return {'error': str(e)}
+
+    loop = _get_event_loop()
+    return loop.run_until_complete(run_app())

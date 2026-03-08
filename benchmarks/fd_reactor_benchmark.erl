@@ -52,6 +52,9 @@
 
 %% @doc Run all benchmark scenarios.
 run_all() ->
+    %% Ensure hornbeam application is started
+    {ok, _} = application:ensure_all_started(hornbeam),
+
     io:format("~n=== Hornbeam FD Reactor Benchmark ===~n~n"),
     io:format("Comparing NIF vs FD Reactor backend modes~n"),
     io:format("Duration: ~p seconds per test~n", [?DURATION]),
@@ -69,6 +72,9 @@ run_all() ->
 
 %% @doc Run a single scenario.
 run(Scenario) ->
+    %% Ensure hornbeam application is started
+    {ok, _} = application:ensure_all_started(hornbeam),
+
     io:format("Running scenario: ~p~n", [Scenario]),
     NifResult = run_scenario(Scenario, nif),
     FdResult = run_scenario(Scenario, fd_reactor),
@@ -81,12 +87,13 @@ run_scenario(Scenario, Mode) ->
     %% Get scenario app
     App = get_scenario_app(Scenario),
 
-    %% Start hornbeam
-    {ok, _} = hornbeam:start(App, #{
+    %% Start hornbeam (returns ok on success)
+    ok = hornbeam:start(App, #{
         bind => ?HOST ++ ":" ++ integer_to_list(?PORT),
         backend_mode => Mode,
         workers => 4,
-        timeout => 30000
+        timeout => 30000,
+        pythonpath => [<<"benchmarks">>]
     }),
 
     %% Wait for server to be ready
@@ -180,18 +187,19 @@ parse_wrk_output(Output) ->
     }.
 
 compare_results(Desc, NifResults, FdResults) ->
-    io:format("~n  | Concurrency | NIF req/s | FD req/s | Diff |~n"),
-    io:format("  |-------------|-----------|----------|------|~n"),
+    io:format("~n  | Concurrency | NIF req/s | FD req/s | Diff    |~n"),
+    io:format("  |-------------|-----------|----------|---------|~n"),
 
     Comparisons = lists:zipwith(fun({C, NifR}, {C, FdR}) ->
-        NifReqs = maps:get(requests_per_second, NifR, 0),
-        FdReqs = maps:get(requests_per_second, FdR, 0),
+        NifReqs = maps:get(requests_per_second, NifR, 0.0),
+        FdReqs = maps:get(requests_per_second, FdR, 0.0),
         Diff = case NifReqs of
-            0 -> 0;
+            N when N < 0.001 -> 0.0;
             _ -> ((FdReqs - NifReqs) / NifReqs) * 100
         end,
-        io:format("  | ~11p | ~9.0f | ~8.0f | ~+.0f% |~n",
-                  [C, NifReqs, FdReqs, Diff]),
+        DiffStr = lists:flatten(io_lib:format("~.1f%", [Diff])),
+        io:format("  | ~11w | ~9w | ~8w | ~s |~n",
+                  [C, trunc(NifReqs), trunc(FdReqs), DiffStr]),
         {C, NifReqs, FdReqs, Diff}
     end, NifResults, FdResults),
 
@@ -199,16 +207,17 @@ compare_results(Desc, NifResults, FdResults) ->
 
 print_summary(Results) ->
     io:format("~n~n=== Summary ===~n~n"),
-    io:format("| Scenario | Avg Improvement |~n"),
-    io:format("|----------|-----------------|~n"),
+    io:format("| Scenario                       | Avg Improvement |~n"),
+    io:format("|--------------------------------|-----------------|~n"),
 
     lists:foreach(fun({Desc, Comparisons}) ->
         Diffs = [D || {_, _, _, D} <- Comparisons],
         AvgDiff = case length(Diffs) of
-            0 -> 0;
+            0 -> 0.0;
             N -> lists:sum(Diffs) / N
         end,
-        io:format("| ~-30s | ~+.1f% |~n", [Desc, AvgDiff])
+        DiffStr = lists:flatten(io_lib:format("~.1f%", [AvgDiff])),
+        io:format("| ~-30s | ~15s |~n", [Desc, DiffStr])
     end, Results),
 
     io:format("~n").

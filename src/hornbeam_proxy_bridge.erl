@@ -35,7 +35,9 @@
 
 -export([
     handle/2,
-    handle/3
+    handle/3,
+    handle_streaming/2,
+    handle_streaming/3
 ]).
 
 -record(relay_state, {
@@ -85,8 +87,7 @@ handle(Req, State, Opts) ->
                 ClientInfo = build_client_info(Req, State),
                 ContextPid ! {fd_handoff, PythonFd, ClientInfo},
 
-                %% Build request data
-                ProxyHeader = build_proxy_header(Req),
+                %% Build HTTP/1.1 request directly (no PROXY v2 overhead)
                 HttpRequest = build_http_request(Req, State),
 
                 %% Read body if present
@@ -97,7 +98,7 @@ handle(Req, State, Opts) ->
                     erlang_fd = ErlangFd,
                     python_fd = PythonFd,
                     req = Req2,
-                    write_buffer = [ProxyHeader, HttpRequest, BodyData],
+                    write_buffer = [HttpRequest, BodyData],
                     read_buffer = <<>>,
                     state = writing_request,
                     body_remaining = done,
@@ -127,6 +128,217 @@ handle(Req, State, Opts) ->
     end.
 
 %%% ============================================================================
+%%% Streaming API
+%%% ============================================================================
+
+%% @doc Handle HTTP request with true response streaming via FD reactor proxy.
+%%
+%% This streams response chunks to the client as they arrive from Python,
+%% rather than buffering the entire response.
+-spec handle_streaming(cowboy_req:req(), map()) -> {ok, cowboy_req:req(), map()}.
+handle_streaming(Req, State) ->
+    handle_streaming(Req, State, #{}).
+
+%% @doc Handle HTTP request with streaming and options.
+-spec handle_streaming(cowboy_req:req(), map(), map()) -> {ok, cowboy_req:req(), map()}.
+handle_streaming(Req, State, Opts) ->
+    Timeout = maps:get(timeout, Opts, maps:get(timeout, State, ?DEFAULT_TIMEOUT)),
+
+    %% Create socketpair
+    case hornbeam_socketpair:create() of
+        {ok, {ErlangFd, PythonFd}} ->
+            try
+                %% Get reactor context and hand off Python FD
+                {ok, ContextPid} = hornbeam_reactor_pool:get_context(),
+                ClientInfo = build_client_info(Req, State),
+                ContextPid ! {fd_handoff, PythonFd, ClientInfo},
+
+                %% Build HTTP/1.1 request directly (no PROXY v2 overhead)
+                HttpRequest = build_http_request(Req, State),
+
+                %% Stream request body to fd instead of buffering
+                Req2 = stream_request_body_to_fd(Req, ErlangFd, HttpRequest, Timeout),
+
+                %% Stream response from socketpair to client
+                case stream_response(ErlangFd, Req2, Timeout) of
+                    {ok, Req3} ->
+                        {ok, Req3, State};
+                    {error, Reason} ->
+                        Req3 = send_error(500, Reason, Req2),
+                        {ok, Req3, State}
+                end
+            after
+                catch hornbeam_socketpair:close(ErlangFd)
+            end;
+        {error, Reason} ->
+            error_logger:error_msg("Failed to create socketpair: ~p~n", [Reason]),
+            Req2 = send_error(500, <<"Socketpair creation failed">>, Req),
+            {ok, Req2, State}
+    end.
+
+%% @private
+%% Stream request body to file descriptor with chunked writing.
+%% Avoids buffering entire request body in memory.
+stream_request_body_to_fd(Req, Fd, HttpRequest, Timeout) ->
+    %% Write HTTP request as iolist (no intermediate binary)
+    case write_iolist(Fd, HttpRequest, Timeout) of
+        ok ->
+            %% Now stream the body
+            stream_body_to_fd(Req, Fd, Timeout);
+        {error, _Reason} ->
+            Req
+    end.
+
+%% @private
+stream_body_to_fd(Req, Fd, Timeout) ->
+    case cowboy_req:has_body(Req) of
+        false ->
+            Req;
+        true ->
+            stream_body_chunks_to_fd(Req, Fd, Timeout)
+    end.
+
+%% @private
+stream_body_chunks_to_fd(Req, Fd, Timeout) ->
+    case cowboy_req:read_body(Req, #{length => ?READ_CHUNK_SIZE}) of
+        {ok, Data, Req2} ->
+            %% Final chunk
+            _ = write_all(Fd, Data, Timeout),
+            Req2;
+        {more, Data, Req2} ->
+            %% More data coming
+            case write_all(Fd, Data, Timeout) of
+                ok ->
+                    stream_body_chunks_to_fd(Req2, Fd, Timeout);
+                {error, _} ->
+                    Req2
+            end
+    end.
+
+%% @private
+%% Stream response from file descriptor to client.
+%% Sends response headers first, then streams body chunks.
+stream_response(Fd, Req, Timeout) ->
+    case read_response_headers(Fd, <<>>, Timeout) of
+        {ok, Status, Headers, InitialBody, Remaining} ->
+            %% Start streaming response - use maps:from_list for efficiency
+            CowboyHeaders = maps:from_list(Headers),
+            Req2 = cowboy_req:stream_reply(Status, CowboyHeaders, Req),
+
+            %% Check for Content-Length to know when to stop
+            ContentLength = get_content_length(Headers),
+
+            %% Stream initial body if any
+            case InitialBody of
+                <<>> -> ok;
+                _ -> cowboy_req:stream_body(InitialBody, nofin, Req2)
+            end,
+
+            %% Calculate remaining body to read
+            InitialBodySize = byte_size(InitialBody),
+            case ContentLength of
+                undefined ->
+                    %% No Content-Length, read until EOF
+                    stream_remaining_body_eof(Fd, Req2, Timeout);
+                Len when InitialBodySize >= Len ->
+                    %% Already have all body
+                    cowboy_req:stream_body(<<>>, fin, Req2),
+                    {ok, Req2};
+                Len ->
+                    %% Read remaining body
+                    RemainingLen = Len - InitialBodySize,
+                    stream_remaining_body_len(Fd, Req2, RemainingLen, Remaining, Timeout)
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
+%% Read response headers from fd.
+read_response_headers(Fd, Buffer, Timeout) ->
+    case binary:match(Buffer, <<"\r\n\r\n">>) of
+        nomatch ->
+            %% Need more data
+            case read_chunk(Fd, Timeout) of
+                {ok, Data} ->
+                    read_response_headers(Fd, <<Buffer/binary, Data/binary>>, Timeout);
+                eof ->
+                    {error, incomplete_headers};
+                {error, _} = Error ->
+                    Error
+            end;
+        {Pos, 4} ->
+            HeaderData = binary:part(Buffer, 0, Pos),
+            BodyStart = Pos + 4,
+            InitialBody = binary:part(Buffer, BodyStart, byte_size(Buffer) - BodyStart),
+
+            case parse_status_and_headers(HeaderData) of
+                {ok, Status, Headers} ->
+                    {ok, Status, Headers, InitialBody, <<>>};
+                error ->
+                    {error, invalid_headers}
+            end
+    end.
+
+%% @private
+%% Stream remaining body until Content-Length is satisfied
+stream_remaining_body_len(_Fd, Req, 0, _Buffer, _Timeout) ->
+    cowboy_req:stream_body(<<>>, fin, Req),
+    {ok, Req};
+stream_remaining_body_len(Fd, Req, RemainingLen, Buffer, Timeout) ->
+    %% First consume any buffered data
+    BufferLen = byte_size(Buffer),
+    case BufferLen > 0 of
+        true when BufferLen >= RemainingLen ->
+            %% Buffer has enough data
+            Data = binary:part(Buffer, 0, RemainingLen),
+            cowboy_req:stream_body(Data, fin, Req),
+            {ok, Req};
+        true ->
+            %% Send buffered data and continue
+            cowboy_req:stream_body(Buffer, nofin, Req),
+            stream_remaining_body_len(Fd, Req, RemainingLen - BufferLen, <<>>, Timeout);
+        false ->
+            %% Read more from fd
+            case read_chunk(Fd, Timeout) of
+                {ok, Data} ->
+                    DataLen = byte_size(Data),
+                    case DataLen >= RemainingLen of
+                        true ->
+                            %% Got enough, send and finish
+                            ToSend = binary:part(Data, 0, RemainingLen),
+                            cowboy_req:stream_body(ToSend, fin, Req),
+                            {ok, Req};
+                        false ->
+                            %% Send and continue
+                            cowboy_req:stream_body(Data, nofin, Req),
+                            stream_remaining_body_len(Fd, Req, RemainingLen - DataLen, <<>>, Timeout)
+                    end;
+                eof ->
+                    cowboy_req:stream_body(<<>>, fin, Req),
+                    {ok, Req};
+                {error, _} = Error ->
+                    cowboy_req:stream_body(<<>>, fin, Req),
+                    Error
+            end
+    end.
+
+%% @private
+%% Stream remaining body until EOF (no Content-Length)
+stream_remaining_body_eof(Fd, Req, Timeout) ->
+    case read_chunk(Fd, Timeout) of
+        {ok, Data} ->
+            cowboy_req:stream_body(Data, nofin, Req),
+            stream_remaining_body_eof(Fd, Req, Timeout);
+        eof ->
+            cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req};
+        {error, _} = Error ->
+            cowboy_req:stream_body(<<>>, fin, Req),
+            Error
+    end.
+
+%%% ============================================================================
 %%% Relay Loop
 %%% ============================================================================
 
@@ -134,9 +346,8 @@ handle(Req, State, Opts) ->
 relay_loop(#relay_state{state = writing_request} = State) ->
     #relay_state{erlang_fd = Fd, write_buffer = Buffer, timeout = Timeout} = State,
 
-    %% Write request to socketpair
-    Data = iolist_to_binary(Buffer),
-    case write_all(Fd, Data, Timeout) of
+    %% Write request to socketpair using iolist directly (no binary conversion)
+    case write_iolist(Fd, Buffer, Timeout) of
         ok ->
             %% Switch to reading response
             NewState = State#relay_state{
@@ -183,17 +394,6 @@ build_client_info(Req, State) ->
             proxy_protocol => <<"off">>  %% We're sending PROXY v2 header
         }
     }.
-
-%% @private
-build_proxy_header(Req) ->
-    {ClientIp, ClientPort} = cowboy_req:peer(Req),
-    ServerIp = {0, 0, 0, 0},  %% Not critical for our use
-    ServerPort = cowboy_req:port(Req),
-
-    hornbeam_proxy_protocol:encode_v2(#{
-        peer => {ClientIp, ClientPort},
-        server => {ServerIp, ServerPort}
-    }).
 
 %% @private
 build_http_request(Req, State) ->
@@ -246,23 +446,35 @@ read_request_body(Req) ->
 %%% ============================================================================
 
 %% @private
+%% Write iolist to fd - converts to binary once at the start.
+write_iolist(Fd, IoList, Timeout) ->
+    Data = iolist_to_binary(IoList),
+    write_all(Fd, Data, Timeout).
+
+%% @private
 write_all(_Fd, <<>>, _Timeout) ->
     ok;
 write_all(Fd, Data, Timeout) ->
+    %% Try to write without blocking first (tight loop for partial writes)
+    write_all_loop(Fd, Data, Timeout, 0).
+
+write_all_loop(_Fd, <<>>, _Timeout, _Retries) ->
+    ok;
+write_all_loop(Fd, Data, Timeout, Retries) ->
     case py_nif:fd_write(Fd, Data) of
         {ok, Written} when Written =:= byte_size(Data) ->
             ok;
         {ok, Written} ->
-            %% Partial write, continue
+            %% Partial write - continue immediately without blocking
             Rest = binary:part(Data, Written, byte_size(Data) - Written),
-            %% Wait for writable
-            case wait_writable(Fd, Timeout) of
-                ok -> write_all(Fd, Rest, Timeout);
-                Error -> Error
-            end;
+            write_all_loop(Fd, Rest, Timeout, 0);
+        {error, eagain} when Retries < 3 ->
+            %% Try again a few times before blocking (socketpair buffers may drain)
+            write_all_loop(Fd, Data, Timeout, Retries + 1);
         {error, eagain} ->
+            %% Must wait for writable
             case wait_writable(Fd, Timeout) of
-                ok -> write_all(Fd, Data, Timeout);
+                ok -> write_all_loop(Fd, Data, Timeout, 0);
                 Error -> Error
             end;
         {error, _} = Error ->
@@ -271,7 +483,6 @@ write_all(Fd, Data, Timeout) ->
 
 %% @private
 wait_writable(Fd, Timeout) ->
-    %% Use enif_select for waiting
     case py_nif:fd_select_write(Fd) of
         ok ->
             receive
@@ -449,11 +660,8 @@ get_content_length(Headers) ->
 
 %% @private
 send_response(Status, Headers, Body, Req) ->
-    %% Convert headers to cowboy format
-    CowboyHeaders = lists:foldl(fun({Name, Value}, Acc) ->
-        Acc#{Name => Value}
-    end, #{}, Headers),
-
+    %% Convert headers to cowboy format - use maps:from_list for efficiency
+    CowboyHeaders = maps:from_list(Headers),
     cowboy_req:reply(Status, CowboyHeaders, Body, Req).
 
 %% @private
