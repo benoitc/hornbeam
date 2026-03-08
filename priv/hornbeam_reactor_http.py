@@ -41,38 +41,53 @@ import asyncio
 import traceback
 from typing import Optional, Dict, Any, Callable, Tuple, List
 
-# Shared event loop for ASGI (uses Erlang event loop when available)
-_asgi_loop: Optional[asyncio.AbstractEventLoop] = None
+# Import erlang module for messaging (available when running inside Erlang VM)
+try:
+    import erlang
+    _HAS_ERLANG = True
+except ImportError:
+    _HAS_ERLANG = False
+
+# Persistent event loop for ASGI tasks (uses Erlang event loop when available)
+_persistent_loop: Optional[asyncio.AbstractEventLoop] = None
 _use_erlang_loop: Optional[bool] = None
 
-def _get_event_loop() -> asyncio.AbstractEventLoop:
-    """Get or create shared event loop for ASGI.
+def _get_persistent_loop() -> asyncio.AbstractEventLoop:
+    """Get or create persistent event loop for ASGI tasks.
 
-    Uses Erlang-backed event loop when available for better performance
-    (sub-millisecond latency, zero polling, GIL release during I/O).
+    This loop persists across requests and runs tasks concurrently.
+    Priority:
+    1. Erlang event loop (when running inside Erlang VM)
+    2. uvloop (if installed, for standalone Python)
+    3. Standard asyncio event loop (fallback)
     """
-    global _asgi_loop, _use_erlang_loop
+    global _persistent_loop, _use_erlang_loop
 
-    if _asgi_loop is not None and not _asgi_loop.is_closed():
-        return _asgi_loop
+    if _persistent_loop is not None and not _persistent_loop.is_closed():
+        return _persistent_loop
 
     # Check if running inside Erlang VM (erlang module available)
     if _use_erlang_loop is None:
-        try:
-            import erlang
-            # Verify event loop support is available
-            _use_erlang_loop = hasattr(erlang, 'new_event_loop')
-        except ImportError:
-            _use_erlang_loop = False
+        _use_erlang_loop = _HAS_ERLANG and hasattr(erlang, 'new_event_loop')
 
     if _use_erlang_loop:
-        import erlang
-        _asgi_loop = erlang.new_event_loop()
+        _persistent_loop = erlang.new_event_loop()
     else:
-        _asgi_loop = asyncio.new_event_loop()
+        # Try uvloop for better performance outside Erlang VM
+        try:
+            import uvloop
+            _persistent_loop = uvloop.new_event_loop()
+        except ImportError:
+            _persistent_loop = asyncio.new_event_loop()
 
-    asyncio.set_event_loop(_asgi_loop)
-    return _asgi_loop
+    asyncio.set_event_loop(_persistent_loop)
+    return _persistent_loop
+
+
+# Alias for backward compatibility
+def _get_event_loop() -> asyncio.AbstractEventLoop:
+    """Alias for _get_persistent_loop for backward compatibility."""
+    return _get_persistent_loop()
 
 
 class ASGIState:
@@ -164,6 +179,33 @@ else:
 PP_V2_SIGNATURE = b"\x0D\x0A\x0D\x0A\x00\x0D\x0A\x51\x55\x49\x54\x0A"
 
 
+# Pre-computed response constants
+_HTTP11_PREFIX = b"HTTP/1.1 "
+_CRLF = b"\r\n"
+_HEADER_SEP = b": "
+_CONN_KEEPALIVE = b"Connection: keep-alive\r\n"
+_CONN_CLOSE = b"Connection: close\r\n"
+_CONTENT_LENGTH_PREFIX = b"Content-Length: "
+
+# Common status lines (pre-encoded)
+_STATUS_LINES = {
+    200: b"200 OK",
+    201: b"201 Created",
+    204: b"204 No Content",
+    301: b"301 Moved Permanently",
+    302: b"302 Found",
+    304: b"304 Not Modified",
+    400: b"400 Bad Request",
+    401: b"401 Unauthorized",
+    403: b"403 Forbidden",
+    404: b"404 Not Found",
+    405: b"405 Method Not Allowed",
+    500: b"500 Internal Server Error",
+    502: b"502 Bad Gateway",
+    503: b"503 Service Unavailable",
+}
+
+
 class HTTPProtocol:
     """HTTP/1.1 protocol for FD reactor.
 
@@ -181,6 +223,15 @@ class HTTPProtocol:
         keep_alive: Whether to keep connection alive
         req_count: Number of requests on this connection
     """
+
+    __slots__ = (
+        'fd', 'client_info', 'config', 'buffer', 'write_buffer',
+        'parsed_request', 'request_body', 'keep_alive', 'req_count',
+        'closed', 'content_length', 'chunked', 'body_received',
+        'state', '_wsgi_app', '_asgi_app', 'server_addr', 'script_name',
+        'root_path', 'peer_addr', 'worker_class', '_fallback_request',
+        'reactor_pid',  # PID of reactor context for async completion signaling
+    )
 
     def __init__(self):
         """Initialize protocol with empty state."""
@@ -212,6 +263,13 @@ class HTTPProtocol:
         self.script_name = ''
         self.root_path = ''
         self.peer_addr: Optional[Tuple[str, int]] = None
+
+        # Worker class and fallback parser state
+        self.worker_class = 'wsgi'
+        self._fallback_request = None
+
+        # Reactor PID for async completion signaling
+        self.reactor_pid = None
 
     def connection_made(self, fd: int, client_info: dict):
         """Called when FD is handed off from Erlang.
@@ -248,6 +306,9 @@ class HTTPProtocol:
 
         # Determine worker class
         self.worker_class = client_info.get('worker_class', 'wsgi')
+
+        # Extract reactor PID for async completion signaling
+        self.reactor_pid = client_info.get('reactor_pid')
 
         # Reset state for new connection
         self.buffer.clear()
@@ -565,7 +626,11 @@ class HTTPProtocol:
         return self._prepare_response(status_line, response_headers, response_body)
 
     def _run_asgi_app(self) -> str:
-        """Run ASGI app synchronously (for simple cases)."""
+        """Run ASGI app as non-blocking task.
+
+        If reactor_pid is available, submits task and returns "async_pending".
+        Otherwise, falls back to synchronous run_until_complete.
+        """
         if not self._asgi_app:
             return self._send_error_response(500, "No ASGI app configured")
 
@@ -577,15 +642,108 @@ class HTTPProtocol:
             root_path=self.root_path
         )
 
-        # Use optimized state container
-        state = ASGIState(self.request_body)
+        # Get body bytes for task (avoid sharing BytesIO across tasks)
+        body_bytes = self.request_body.read() if self.request_body else b''
 
-        # Create bound callables
+        # If we have reactor_pid, use async task submission
+        if self.reactor_pid is not None and _HAS_ERLANG:
+            return self._submit_asgi_task(scope, body_bytes)
+
+        # Fallback: synchronous execution (for standalone Python or testing)
+        return self._run_asgi_sync(scope, body_bytes)
+
+    def _submit_asgi_task(self, scope: dict, body_bytes: bytes) -> str:
+        """Submit ASGI app as non-blocking task to persistent event loop.
+
+        The task runs concurrently with other requests. When complete,
+        it signals the reactor via erlang.send() to trigger write.
+
+        Returns:
+            "async_pending" - reactor should wait for write_ready signal
+        """
+        loop = _get_persistent_loop()
+
+        # Create task that will run the ASGI app
+        task = loop.create_task(
+            self._run_asgi_task(scope, body_bytes)
+        )
+
+        # Add done callback to handle errors
+        task.add_done_callback(self._on_asgi_task_done)
+
+        self.state = 'async_pending'
+        return "async_pending"
+
+    async def _run_asgi_task(self, scope: dict, body_bytes: bytes) -> None:
+        """Run ASGI app as async task and signal reactor on completion.
+
+        This coroutine:
+        1. Runs the ASGI app with receive/send callables
+        2. Prepares the response buffer
+        3. Signals the reactor that response is ready
+        """
+        state = ASGIState(io.BytesIO(body_bytes))
+
+        async def receive():
+            return await _asgi_receive(state)
+
+        async def send(message):
+            await _asgi_send(state, message)
+
+        try:
+            await self._asgi_app(scope, receive, send)
+
+            if not state.started:
+                status_bytes = _STATUS_LINES.get(500)
+                self._prepare_response_fast(
+                    status_bytes,
+                    [(b'Content-Type', b'text/plain')],
+                    b"App did not start response"
+                )
+            else:
+                status_bytes = _STATUS_LINES.get(state.status)
+                if status_bytes is None:
+                    status_bytes = f"{state.status} Unknown".encode('latin-1')
+                self._prepare_response_fast(
+                    status_bytes,
+                    state.headers,
+                    b''.join(state.body_parts)
+                )
+
+        except Exception as e:
+            traceback.print_exc()
+            status_bytes = _STATUS_LINES.get(500)
+            self._prepare_response_fast(
+                status_bytes,
+                [(b'Content-Type', b'text/plain')],
+                f"Internal Server Error: {e}".encode('utf-8')
+            )
+
+        # Signal reactor that response is ready
+        try:
+            erlang.send(self.reactor_pid, ('write_ready', self.fd))
+        except Exception:
+            # Reactor may have died, connection will be cleaned up
+            pass
+
+    def _on_asgi_task_done(self, task: asyncio.Task) -> None:
+        """Handle ASGI task completion/exception (for logging purposes)."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # Exception should have been handled in _run_asgi_task
+            # but log it just in case
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    def _run_asgi_sync(self, scope: dict, body_bytes: bytes) -> str:
+        """Run ASGI app synchronously (fallback for non-reactor mode)."""
+        state = ASGIState(io.BytesIO(body_bytes))
+
         receive = lambda: _asgi_receive(state)
         send = lambda msg: _asgi_send(state, msg)
 
         try:
-            # Run using shared event loop
             _get_event_loop().run_until_complete(self._asgi_app(scope, receive, send))
         except Exception as e:
             traceback.print_exc()
@@ -594,78 +752,94 @@ class HTTPProtocol:
         if not state.started:
             return self._send_error_response(500, "App did not start response")
 
-        # Build status line
-        status_phrases = {
-            200: 'OK', 201: 'Created', 204: 'No Content',
-            301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
-            400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-            404: 'Not Found', 500: 'Internal Server Error'
-        }
-        phrase = status_phrases.get(state.status, 'Unknown')
-        status_line = f"{state.status} {phrase}"
+        status_bytes = _STATUS_LINES.get(state.status)
+        if status_bytes is None:
+            status_bytes = f"{state.status} Unknown".encode('latin-1')
 
-        return self._prepare_response(status_line, state.headers, b''.join(state.body_parts))
+        return self._prepare_response_fast(status_bytes, state.headers, b''.join(state.body_parts))
 
-    def _prepare_response(self, status_line: str, headers: List[Tuple[str, str]], body: bytes) -> str:
-        """Build HTTP response and prepare write buffer."""
-        # keep_alive is already set during request parsing
+    def _prepare_response_fast(self, status_bytes: bytes, headers: List[Tuple], body: bytes) -> str:
+        """Build HTTP response using pre-computed constants."""
+        # Pre-allocate response buffer with estimated size
+        # HTTP/1.1 + status + headers + body
+        response = bytearray(len(body) + 256)
+        response.clear()
 
-        # Build response
-        response = bytearray()
-        response.extend(f"HTTP/1.1 {status_line}\r\n".encode('latin-1'))
+        # Status line
+        response.extend(_HTTP11_PREFIX)
+        response.extend(status_bytes)
+        response.extend(_CRLF)
 
         # Add headers
         has_content_length = False
         has_connection = False
+
         for name, value in headers:
-            response.extend(f"{name}: {value}\r\n".encode('latin-1'))
-            if name.lower() == 'content-length':
+            # Handle both bytes and str headers
+            if isinstance(name, bytes):
+                name_lower = name.lower()
+                response.extend(name)
+            else:
+                name_lower = name.lower().encode('latin-1')
+                response.extend(name.encode('latin-1'))
+
+            response.extend(_HEADER_SEP)
+
+            if isinstance(value, bytes):
+                response.extend(value)
+            else:
+                response.extend(value.encode('latin-1'))
+
+            response.extend(_CRLF)
+
+            if name_lower == b'content-length':
                 has_content_length = True
-            elif name.lower() == 'connection':
+            elif name_lower == b'connection':
                 has_connection = True
-                self.keep_alive = value.lower() == 'keep-alive'
+                if isinstance(value, bytes):
+                    self.keep_alive = value.lower() == b'keep-alive'
+                else:
+                    self.keep_alive = value.lower() == 'keep-alive'
 
         # Add Content-Length if not present
         if not has_content_length and body:
-            response.extend(f"Content-Length: {len(body)}\r\n".encode('latin-1'))
+            response.extend(_CONTENT_LENGTH_PREFIX)
+            response.extend(str(len(body)).encode('ascii'))
+            response.extend(_CRLF)
 
         # Add Connection header if not present
         if not has_connection:
-            if self.keep_alive:
-                response.extend(b"Connection: keep-alive\r\n")
-            else:
-                response.extend(b"Connection: close\r\n")
+            response.extend(_CONN_KEEPALIVE if self.keep_alive else _CONN_CLOSE)
 
-        response.extend(b"\r\n")
+        response.extend(_CRLF)
         response.extend(body)
 
         self.write_buffer = response
         self.state = 'writing_response'
         return "write_pending"
 
+    def _prepare_response(self, status_line: str, headers: List[Tuple[str, str]], body: bytes) -> str:
+        """Build HTTP response (compatibility wrapper)."""
+        status_bytes = status_line.encode('latin-1')
+        return self._prepare_response_fast(status_bytes, headers, body)
+
     def _send_error_response(self, code: int, message: str) -> str:
         """Send error response."""
-        status_phrases = {
-            400: 'Bad Request',
-            403: 'Forbidden',
-            404: 'Not Found',
-            414: 'URI Too Long',
-            417: 'Expectation Failed',
-            431: 'Request Header Fields Too Large',
-            500: 'Internal Server Error',
-            501: 'Not Implemented',
-        }
-        phrase = status_phrases.get(code, 'Error')
-        body = f"{code} {phrase}: {message}".encode('utf-8')
+        status_bytes = _STATUS_LINES.get(code)
+        if status_bytes is None:
+            status_bytes = f"{code} Error".encode('latin-1')
+
+        body = code.to_bytes(2, 'big')  # Avoid string formatting for common path
+        body = f"{code} {message}".encode('utf-8')
 
         headers = [
-            ('Content-Type', 'text/plain'),
-            ('Content-Length', str(len(body))),
-            ('Connection', 'close'),
+            (b'Content-Type', b'text/plain'),
+            (b'Content-Length', str(len(body)).encode('ascii')),
+            (b'Connection', b'close'),
         ]
 
         self.keep_alive = False
-        return self._prepare_response(f"{code} {phrase}", headers, body)
+        return self._prepare_response_fast(status_bytes, headers, body)
 
     def write_ready(self) -> str:
         """Handle write readiness.
