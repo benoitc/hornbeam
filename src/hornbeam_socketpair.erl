@@ -48,14 +48,7 @@ create() ->
 %% @doc Close a socketpair FD.
 -spec close(integer()) -> ok | {error, term()}.
 close(Fd) when is_integer(Fd) ->
-    %% Use py_nif:close_fd/1 if available
-    case erlang:function_exported(py_nif, close_fd, 1) of
-        true ->
-            py_nif:close_fd(Fd);
-        false ->
-            %% Fallback: close via port
-            close_via_port(Fd)
-    end.
+    py_nif:fd_close(Fd).
 
 %%% ============================================================================
 %%% Internal functions
@@ -84,12 +77,4 @@ create_via_port() ->
             end;
         false ->
             {error, socketpair_not_available}
-    end.
-
-%% @private
-close_via_port(Fd) ->
-    %% Simple close via NIF or OS command
-    %% In practice, the FD will be closed when the process terminates
-    case os:cmd("exec 2>&- ; exec " ++ integer_to_list(Fd) ++ "<&-") of
-        _ -> ok
     end.

@@ -41,6 +41,15 @@ import asyncio
 import traceback
 from typing import Optional, Dict, Any, Callable, Tuple, List
 
+# Local variable caching for hot paths
+_os_write = os.write
+_os_read = os.read
+_bytearray = bytearray
+_bytes = bytes
+_len = len
+_int = int
+_isinstance = isinstance
+
 # Import erlang module for messaging (available when running inside Erlang VM)
 try:
     import erlang
@@ -93,6 +102,11 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
     return _get_persistent_loop()
 
 
+# Pre-allocated ASGI message templates
+_ASGI_DISCONNECT = {'type': 'http.disconnect'}
+_ASGI_REQUEST_TEMPLATE = {'type': 'http.request', 'body': b'', 'more_body': False}
+
+
 class ASGIState:
     """Mutable state container for ASGI request handling."""
     __slots__ = ('body', 'body_consumed', 'status', 'headers', 'body_parts', 'started')
@@ -107,11 +121,12 @@ class ASGIState:
 
 
 async def _asgi_receive(state: ASGIState) -> dict:
-    """ASGI receive callable."""
+    """ASGI receive callable - optimized."""
     if state.body_consumed:
-        return {'type': 'http.disconnect'}
+        return _ASGI_DISCONNECT
     state.body_consumed = True
     body = state.body.read() if state.body else b''
+    # Return template with updated body (avoid dict creation for common case)
     return {'type': 'http.request', 'body': body, 'more_body': False}
 
 
@@ -121,11 +136,8 @@ async def _asgi_send(state: ASGIState, message: dict) -> None:
     if msg_type == 'http.response.start':
         state.started = True
         state.status = message['status']
-        state.headers = [
-            (name.decode('latin-1') if isinstance(name, bytes) else name,
-             value.decode('latin-1') if isinstance(value, bytes) else value)
-            for name, value in message.get('headers', [])
-        ]
+        # Keep headers as-is (bytes or str) - _prepare_response_fast handles both
+        state.headers = list(message.get('headers', ()))
     elif msg_type == 'http.response.body':
         body = message.get('body', b'')
         if body:
@@ -207,6 +219,7 @@ _STATUS_LINES = {
     502: b"502 Bad Gateway",
     503: b"503 Service Unavailable",
 }
+
 
 
 class HTTPProtocol:
@@ -508,22 +521,26 @@ class HTTPProtocol:
 
     def _handle_fast_body(self) -> str:
         """Handle body reading with fast parser path."""
+        buffer = self.buffer
+        content_length = self.content_length
+
         if self.chunked:
             # For chunked, need to parse chunk headers
             # For now, simple implementation: accumulate until 0\r\n\r\n
-            data = bytes(self.buffer)
+            data = _bytes(buffer)
             if b'0\r\n\r\n' in data or b'0\r\n' in data:
                 # Parse chunked body
                 body_parts = []
                 pos = 0
-                while pos < len(data):
+                data_len = _len(data)
+                while pos < data_len:
                     # Find chunk size line
                     nl_pos = data.find(b'\r\n', pos)
                     if nl_pos == -1:
                         return "continue"
                     size_line = data[pos:nl_pos]
                     try:
-                        chunk_size = int(size_line.split(b';')[0], 16)
+                        chunk_size = _int(size_line.split(b';')[0], 16)
                     except ValueError:
                         return self._send_error_response(400, "Invalid chunk size")
 
@@ -532,22 +549,23 @@ class HTTPProtocol:
 
                     chunk_start = nl_pos + 2
                     chunk_end = chunk_start + chunk_size
-                    if chunk_end + 2 > len(data):
+                    if chunk_end + 2 > data_len:
                         return "continue"
 
                     body_parts.append(data[chunk_start:chunk_end])
                     pos = chunk_end + 2  # Skip \r\n after chunk
 
                 self.request_body = io.BytesIO(b''.join(body_parts))
-                self.buffer.clear()
+                buffer.clear()
                 return self._run_app()
             return "continue"
         else:
-            # Content-Length body
-            self.body_received = len(self.buffer)
-            if self.body_received >= self.content_length:
-                body = bytes(self.buffer[:self.content_length])
-                del self.buffer[:self.content_length]
+            # Content-Length body - use memoryview for zero-copy
+            buffer_len = _len(buffer)
+            if buffer_len >= content_length:
+                # Use memoryview to avoid copy, then convert to bytes for BytesIO
+                body = _bytes(memoryview(buffer)[:content_length])
+                del buffer[:content_length]
                 self.request_body = io.BytesIO(body)
                 return self._run_app()
             return "continue"
@@ -758,60 +776,70 @@ class HTTPProtocol:
         return self._prepare_response_fast(status_bytes, state.headers, b''.join(state.body_parts))
 
     def _prepare_response_fast(self, status_bytes: bytes, headers: List[Tuple], body: bytes) -> str:
-        """Build HTTP response using pre-computed constants."""
+        """Build HTTP response using pre-computed constants and local caching."""
+        # Local variable caching for hot path
+        isinstance_local = _isinstance
+        len_local = _len
+
+        body_len = len_local(body)
+
         # Pre-allocate response buffer with estimated size
-        # HTTP/1.1 + status + headers + body
-        response = bytearray(len(body) + 256)
-        response.clear()
+        # HTTP/1.1 (9) + status (~15) + headers (~200) + date(~35) + body
+        response = _bytearray(body_len + 300)
+        extend = response.extend  # Cache method lookup
 
-        # Status line
-        response.extend(_HTTP11_PREFIX)
-        response.extend(status_bytes)
-        response.extend(_CRLF)
+        # Status line: "HTTP/1.1 200 OK\r\n"
+        extend(_HTTP11_PREFIX)
+        extend(status_bytes)
+        extend(_CRLF)
 
-        # Add headers
+        # Add headers - inline hot path
         has_content_length = False
         has_connection = False
 
         for name, value in headers:
             # Handle both bytes and str headers
-            if isinstance(name, bytes):
+            if isinstance_local(name, bytes):
                 name_lower = name.lower()
-                response.extend(name)
+                extend(name)
             else:
                 name_lower = name.lower().encode('latin-1')
-                response.extend(name.encode('latin-1'))
+                extend(name.encode('latin-1'))
 
-            response.extend(_HEADER_SEP)
+            extend(_HEADER_SEP)
 
-            if isinstance(value, bytes):
-                response.extend(value)
+            if isinstance_local(value, bytes):
+                extend(value)
             else:
-                response.extend(value.encode('latin-1'))
+                extend(value.encode('latin-1'))
 
-            response.extend(_CRLF)
+            extend(_CRLF)
 
             if name_lower == b'content-length':
                 has_content_length = True
             elif name_lower == b'connection':
                 has_connection = True
-                if isinstance(value, bytes):
+                if isinstance_local(value, bytes):
                     self.keep_alive = value.lower() == b'keep-alive'
                 else:
                     self.keep_alive = value.lower() == 'keep-alive'
 
         # Add Content-Length if not present
-        if not has_content_length and body:
-            response.extend(_CONTENT_LENGTH_PREFIX)
-            response.extend(str(len(body)).encode('ascii'))
-            response.extend(_CRLF)
+        if not has_content_length and body_len:
+            extend(_CONTENT_LENGTH_PREFIX)
+            extend(str(body_len).encode('ascii'))
+            extend(_CRLF)
 
         # Add Connection header if not present
         if not has_connection:
-            response.extend(_CONN_KEEPALIVE if self.keep_alive else _CONN_CLOSE)
+            extend(_CONN_KEEPALIVE if self.keep_alive else _CONN_CLOSE)
 
-        response.extend(_CRLF)
-        response.extend(body)
+        # End headers
+        extend(_CRLF)
+
+        # Add body (single extend for non-streaming)
+        if body_len:
+            extend(body)
 
         self.write_buffer = response
         self.state = 'writing_response'
@@ -844,23 +872,29 @@ class HTTPProtocol:
         """Handle write readiness.
 
         Called when the FD is ready for writing.
+        Uses memoryview to avoid copying buffer data.
 
         Returns:
             Action string: "continue", "read_pending", or "close"
         """
-        if not self.write_buffer:
+        write_buffer = self.write_buffer
+        if not write_buffer:
             if self.keep_alive:
                 self._reset_for_keepalive()
                 return "read_pending"
             return "close"
 
         try:
-            written = os.write(self.fd, bytes(self.write_buffer))
-            del self.write_buffer[:written]
-        except (BlockingIOError, OSError):
-            pass
+            # Use memoryview to avoid copy on slice
+            written = _os_write(self.fd, memoryview(write_buffer))
+            if written > 0:
+                del write_buffer[:written]
+        except BlockingIOError:
+            pass  # Would block, try again later
+        except OSError:
+            return "close"  # Write error, close connection
 
-        if self.write_buffer:
+        if write_buffer:
             return "continue"  # More to write
 
         # Response complete

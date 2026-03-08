@@ -268,12 +268,10 @@ terminate(_Reason, #state{started = true, supported = true,
                           py_context = PyContext}) ->
     %% Run shutdown on terminate
     _ = run_shutdown(AppModule, AppCallable, PyContext),
-    %% Unbind the context
-    catch py:unbind(PyContext),
+    %% Context cleanup is handled by context supervisor
     ok;
-terminate(_Reason, #state{py_context = PyContext}) ->
-    %% Just unbind context if lifespan not started
-    catch py:unbind(PyContext),
+terminate(_Reason, #state{}) ->
+    %% Context cleanup is handled by context supervisor
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -301,9 +299,10 @@ run_startup(AppModule, AppCallable, PyContext) ->
             undefined ->
                 py:call(hornbeam_lifespan_runner, startup,
                        [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, startup,
-                           [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000)
+            Ctx when is_pid(Ctx) ->
+                py:call(Ctx, hornbeam_lifespan_runner, startup,
+                       [AppModule, AppCallable, TimeoutMs],
+                       #{timeout => TimeoutMs + 5000})
         end,
         case Result of
             {ok, Response} ->
@@ -345,9 +344,9 @@ run_shutdown(AppModule, AppCallable, PyContext) ->
             undefined ->
                 py:call(hornbeam_lifespan_runner, shutdown,
                        [AppModule, AppCallable], #{}, TimeoutMs);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, shutdown,
-                           [AppModule, AppCallable], #{}, TimeoutMs)
+            Ctx when is_pid(Ctx) ->
+                py:call(Ctx, hornbeam_lifespan_runner, shutdown,
+                       [AppModule, AppCallable], #{timeout => TimeoutMs})
         end,
         case Result of
             {ok, Response} ->

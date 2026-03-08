@@ -183,8 +183,8 @@ run_wsgi_optimized(Req, AppModule, AppCallable, State) ->
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
-run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) ->
+%% Fallback path using py:call (context routing is automatic)
+run_wsgi_with_context(Req, AppModule, AppCallable, _PyContext, TimeoutMs, State) ->
     %% Build environ options from state (for multi-app mode)
     EnvOpts = case maps:get(script_name, State, undefined) of
         undefined -> #{};
@@ -196,8 +196,8 @@ run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) 
         undefined -> Environ;
         PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
-               [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
+    py:call(hornbeam_wsgi_runner, run_wsgi,
+           [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
 
 %% @private
 %% Build environ dict for NIF optimization.
@@ -393,8 +393,8 @@ run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State) ->
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
-run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State) ->
+%% Fallback path using py:call (context routing is automatic)
+run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, _PyContext, TimeoutMs, State) ->
     %% Build scope options from state (for multi-app mode)
     ScopeOpts = case maps:get(script_name, State, undefined) of
         undefined -> #{};
@@ -406,13 +406,12 @@ run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
-               [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
+    py:call(hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
-%% Bound context path - binds a worker for the request duration.
-%% This reduces overhead for apps with multiple async operations by
-%% keeping the same Python worker/GIL for the entire request.
+%% Run ASGI with automatic context routing.
+%% Context affinity is handled by the py_context_router automatically.
 run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
     %% Build scope options from state (for multi-app mode)
     ScopeOpts = case maps:get(script_name, State, undefined) of
@@ -425,11 +424,8 @@ run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    %% Use with_context to bind a worker for the request duration
-    py:with_context(fun() ->
-        py:call(hornbeam_asgi_runner, run_asgi,
-                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
-    end).
+    py:call(hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
 %% Build scope with atom keys for NIF optimization.
