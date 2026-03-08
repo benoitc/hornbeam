@@ -19,12 +19,11 @@ It integrates with hornbeam_http for parsing and supports both WSGI and ASGI app
 
 The protocol lifecycle:
 1. Connection made - receive FD and client info
-2. Read PROXY v2 header (if present)
-3. Parse HTTP/1.1 request
-4. Build environ/scope
-5. Run WSGI/ASGI app
-6. Write response
-7. Handle keep-alive or close
+2. Parse HTTP/1.1 request
+3. Build environ/scope
+4. Run WSGI/ASGI app
+5. Write response
+6. Handle keep-alive or close
 
 Example:
     import erlang.reactor as reactor
@@ -68,10 +67,8 @@ def _get_persistent_loop() -> asyncio.AbstractEventLoop:
     """Get or create persistent event loop for ASGI tasks.
 
     This loop persists across requests and runs tasks concurrently.
-    Priority:
-    1. Erlang event loop (when running inside Erlang VM)
-    2. uvloop (if installed, for standalone Python)
-    3. Standard asyncio event loop (fallback)
+    Uses Erlang event loop when running inside Erlang VM,
+    otherwise falls back to standard asyncio event loop.
     """
     global _persistent_loop, _use_erlang_loop
 
@@ -85,12 +82,7 @@ def _get_persistent_loop() -> asyncio.AbstractEventLoop:
     if _use_erlang_loop:
         _persistent_loop = erlang.new_event_loop()
     else:
-        # Try uvloop for better performance outside Erlang VM
-        try:
-            import uvloop
-            _persistent_loop = uvloop.new_event_loop()
-        except ImportError:
-            _persistent_loop = asyncio.new_event_loop()
+        _persistent_loop = asyncio.new_event_loop()
 
     asyncio.set_event_loop(_persistent_loop)
     return _persistent_loop
@@ -143,55 +135,13 @@ async def _asgi_send(state: ASGIState, message: dict) -> None:
         if body:
             state.body_parts.append(body)
 
-# Import HTTP parsers - prefer fast C parser
+# Import C parser (built as part of hornbeam)
 sys.path.insert(0, os.path.dirname(__file__))
 _fast_parser_path = os.path.join(os.path.dirname(__file__), 'hornbeam_http_fast')
 sys.path.insert(0, _fast_parser_path)
 
-# Always import dict-based environ/scope builders
 from hornbeam_http_fast import build_environ as fast_build_environ, build_asgi_scope as fast_build_asgi_scope
-
-try:
-    from pico_parser_fast import parse_request as _fast_parse_request, IncompleteError, ParseError
-    FAST_PARSER = True
-except ImportError:
-    try:
-        # Try standard dict-based parser
-        from pico_parser import parse_request as _fast_parse_request, IncompleteError, ParseError
-        FAST_PARSER = True
-    except ImportError:
-        FAST_PARSER = False
-
-# Fallback to pure Python parser
-if not FAST_PARSER:
-    from hornbeam_http import HTTPConfig, Request, BufferUnreader
-    from hornbeam_http.errors import ParseException, NoMoreData
-    class IncompleteError(Exception):
-        pass
-    class ParseError(Exception):
-        pass
-else:
-    # Create wrapper for fast parser to handle HttpRequest object
-    def fast_parse_request(data):
-        """Parse HTTP request using fast C parser.
-
-        Returns dict with method, path, minor_version, headers, consumed.
-        """
-        result = _fast_parse_request(data)
-        # pico_parser_fast returns HttpRequest object, pico_parser returns dict
-        if hasattr(result, 'method'):
-            return {
-                'method': result.method,
-                'path': result.path,
-                'minor_version': result.minor_version,
-                'headers': result.headers,
-                'consumed': result.consumed,
-            }
-        return result
-
-
-# PROXY protocol v2 signature
-PP_V2_SIGNATURE = b"\x0D\x0A\x0D\x0A\x00\x0D\x0A\x51\x55\x49\x54\x0A"
+from pico_parser_fast import parse_request as fast_parse_request, IncompleteError, ParseError
 
 
 # Pre-computed response constants
@@ -226,66 +176,52 @@ class HTTPProtocol:
     """HTTP/1.1 protocol for FD reactor.
 
     Handles HTTP request parsing, WSGI/ASGI app execution, and response writing.
-    Supports PROXY protocol v2 and HTTP keep-alive.
+    Supports HTTP keep-alive.
 
     Attributes:
         fd: File descriptor for the connection
         client_info: Dict with connection metadata from Erlang
-        config: HTTPConfig for parsing options (fallback parser only)
         buffer: Receive buffer
         write_buffer: Response buffer for writing
-        parsed_request: Dict with method, path, headers, etc.
+        parsed_request: HttpRequest from C parser
         request_body: BytesIO for request body
         keep_alive: Whether to keep connection alive
         req_count: Number of requests on this connection
     """
 
     __slots__ = (
-        'fd', 'client_info', 'config', 'buffer', 'write_buffer',
+        'fd', 'client_info', 'buffer', 'write_buffer',
         'parsed_request', 'request_body', 'keep_alive', 'req_count',
         'closed', 'content_length', 'chunked', 'body_received',
         'state', '_wsgi_app', '_asgi_app', 'server_addr', 'script_name',
-        'root_path', 'peer_addr', 'worker_class', '_fallback_request',
-        'reactor_pid',  # PID of reactor context for async completion signaling
+        'root_path', 'peer_addr', 'worker_class',
+        'reactor_pid', 'buffer_offset',
     )
 
     def __init__(self):
         """Initialize protocol with empty state."""
         self.fd = -1
         self.client_info: Dict[str, Any] = {}
-        self.config = None  # HTTPConfig for fallback parser
         self.buffer = bytearray()
         self.write_buffer = bytearray()
-        self.parsed_request: Optional[Dict[str, Any]] = None
+        self.parsed_request = None
         self.request_body: Optional[io.BytesIO] = None
         self.keep_alive = True
         self.req_count = 0
         self.closed = False
-
-        # Body handling
         self.content_length = 0
         self.chunked = False
         self.body_received = 0
-
-        # State machine
         self.state = 'reading_request'
-
-        # App reference
         self._wsgi_app = None
         self._asgi_app = None
-
-        # Server info
         self.server_addr: Optional[Tuple[str, int]] = None
         self.script_name = ''
         self.root_path = ''
         self.peer_addr: Optional[Tuple[str, int]] = None
-
-        # Worker class and fallback parser state
         self.worker_class = 'wsgi'
-        self._fallback_request = None
-
-        # Reactor PID for async completion signaling
         self.reactor_pid = None
+        self.buffer_offset = 0
 
     def connection_made(self, fd: int, client_info: dict):
         """Called when FD is handed off from Erlang.
@@ -296,11 +232,6 @@ class HTTPProtocol:
         """
         self.fd = fd
         self.client_info = client_info
-
-        # Extract config for fallback parser
-        if not FAST_PARSER:
-            config_dict = client_info.get('config', {})
-            self.config = HTTPConfig.from_dict(config_dict)
 
         # Extract server info
         self.server_addr = client_info.get('server_addr')
@@ -328,6 +259,7 @@ class HTTPProtocol:
 
         # Reset state for new connection
         self.buffer.clear()
+        self.buffer_offset = 0
         self.write_buffer.clear()
         self.parsed_request = None
         self.request_body = None
@@ -339,7 +271,7 @@ class HTTPProtocol:
         self.state = 'reading_request'
 
     def data_received(self, data: bytes) -> str:
-        """Handle received data.
+        """Handle received data with zero-copy fast path.
 
         Called when data has been read from the FD.
 
@@ -349,12 +281,17 @@ class HTTPProtocol:
         Returns:
             Action string: "continue", "write_pending", or "close"
         """
-        self.buffer.extend(data)
-
         try:
             if self.state == 'reading_request':
+                # Fast path: if headers complete in first chunk, parse directly
+                if not self.buffer and b"\r\n\r\n" in data:
+                    return self._handle_fast_parse_direct(data)
+
+                # Fallback: buffer incomplete data
+                self.buffer.extend(data)
                 return self._handle_reading_request()
             elif self.state == 'reading_body':
+                self.buffer.extend(data)
                 return self._handle_reading_body()
         except IncompleteError:
             return "continue"  # Need more data
@@ -367,145 +304,129 @@ class HTTPProtocol:
         return "continue"
 
     def _handle_reading_request(self) -> str:
-        """Handle reading request line and headers."""
-        data = bytes(self.buffer)
+        """Handle reading request line and headers.
 
-        # Check for PROXY v2 header if this is first request
-        proxy_offset = 0
-        if self.req_count == 0 and len(data) >= 12:
-            if data[:12] == PP_V2_SIGNATURE:
-                if len(data) < 16:
-                    return "continue"
-                import struct
-                proxy_len = struct.unpack(">H", data[14:16])[0]
-                if len(data) < 16 + proxy_len:
-                    return "continue"
-                # Parse PROXY v2 header for peer info
-                self._parse_proxy_v2(data[:16 + proxy_len])
-                proxy_offset = 16 + proxy_len
-                data = data[proxy_offset:]
+        Uses offset tracking to avoid O(n) buffer slice deletion.
+        Compacts buffer only when offset exceeds threshold.
+        """
+        buffer = self.buffer
+        offset = self.buffer_offset
 
-        # Check if we have complete headers
-        if b"\r\n\r\n" not in data:
+        # Check if we have complete headers using find() - avoids copy until needed
+        if buffer.find(b"\r\n\r\n", offset) == -1:
             return "continue"
 
-        # Parse using fast or fallback parser
-        if FAST_PARSER:
-            return self._handle_fast_parse(data, proxy_offset)
-        else:
-            return self._handle_fallback_parse(data, proxy_offset)
+        # Convert active portion to bytes for parser
+        data = _bytes(buffer[offset:])
 
-    def _parse_proxy_v2(self, header: bytes):
-        """Parse PROXY v2 header and extract peer address."""
-        if len(header) < 16:
-            return
-        ver_cmd = header[12]
-        fam_proto = header[13]
+        # Parse request
+        return self._handle_fast_parse(data)
 
-        # Only handle PROXY command (not LOCAL)
-        if (ver_cmd & 0x0F) != 0x01:
-            return
+    def _handle_fast_parse_direct(self, data: bytes) -> str:
+        """Fast path: parse directly from incoming data without buffer copy.
 
-        family = (fam_proto >> 4) & 0x0F
-        if family == 0x01:  # IPv4
-            if len(header) >= 28:
-                import socket
-                src_ip = socket.inet_ntoa(header[16:20])
-                src_port = int.from_bytes(header[24:26], 'big')
-                self.peer_addr = (src_ip, src_port)
-        elif family == 0x02:  # IPv6
-            if len(header) >= 52:
-                import socket
-                src_ip = socket.inet_ntop(socket.AF_INET6, header[16:32])
-                src_port = int.from_bytes(header[48:50], 'big')
-                self.peer_addr = (src_ip, src_port)
-
-    def _handle_fast_parse(self, data: bytes, proxy_offset: int) -> str:
-        """Handle request parsing with fast C parser."""
-        self.parsed_request = fast_parse_request(data)
-        consumed = self.parsed_request['consumed']
-
-        # Clear buffer up to consumed bytes
-        del self.buffer[:proxy_offset + consumed]
+        Uses get_header() for hot-path header checks to avoid materializing
+        the full headers list.
+        """
+        # Parse using fast C parser - returns HttpRequest object
+        req = fast_parse_request(data)
+        self.parsed_request = req
+        consumed = req.consumed
 
         self.req_count += 1
 
-        # Check headers for body handling and keep-alive
+        # Use get_header() for hot path header checks - avoids headers materialization
         self.content_length = 0
         self.chunked = False
         connection_close = False
 
-        for name, value in self.parsed_request['headers']:
-            name_lower = name.lower() if isinstance(name, str) else name.lower()
-            value_str = value.decode('latin-1') if isinstance(value, bytes) else value
+        # get_header() returns memoryview or None
+        cl = req.get_header("content-length")
+        if cl:
+            # Convert memoryview to int
+            self.content_length = _int(_bytes(cl))
 
-            if name_lower == b'content-length':
-                self.content_length = int(value_str)
-            elif name_lower == b'transfer-encoding' and b'chunked' in value.lower():
-                self.chunked = True
-            elif name_lower == b'connection':
-                if b'close' in value.lower():
-                    connection_close = True
-                elif b'keep-alive' in value.lower():
-                    self.keep_alive = True
+        te = req.get_header("transfer-encoding")
+        if te and b"chunked" in _bytes(te).lower():
+            self.chunked = True
+
+        conn = req.get_header("connection")
+        if conn:
+            conn_bytes = _bytes(conn).lower()
+            if b"close" in conn_bytes:
+                connection_close = True
+            elif b"keep-alive" in conn_bytes:
+                self.keep_alive = True
 
         # Determine keep-alive from HTTP version if not explicit
         if not connection_close:
-            # HTTP/1.1 defaults to keep-alive
-            self.keep_alive = self.parsed_request.get('minor_version', 1) >= 1
+            self.keep_alive = req.minor_version >= 1
         else:
             self.keep_alive = False
 
         # Handle body
         if self.content_length > 0 or self.chunked:
-            self.body_received = len(self.buffer)  # Any remaining data is body
+            # Store remaining data after headers for body reading
+            remaining = data[consumed:]
+            if remaining:
+                self.buffer.extend(remaining)
+            self.body_received = _len(self.buffer)
             self.state = 'reading_body'
             return self._handle_reading_body()
         else:
             self.request_body = io.BytesIO(b'')
             return self._run_app()
 
-    def _handle_fallback_parse(self, data: bytes, proxy_offset: int) -> str:
-        """Handle request parsing with fallback Python parser."""
-        # Create unreader from buffer
-        unreader = BufferUnreader(data)
+    def _handle_fast_parse(self, data: bytes) -> str:
+        """Handle request parsing with fast C parser (buffered path).
 
-        # Parse request
+        Uses offset tracking to avoid O(n) buffer slice deletion.
+        """
+        req = fast_parse_request(data)
+        self.parsed_request = req
+        consumed = req.consumed
+
+        # Track consumed bytes via offset instead of slice deletion
+        self.buffer_offset += consumed
+
+        # Compact buffer when offset exceeds threshold (8KB)
+        if self.buffer_offset > 8192:
+            del self.buffer[:self.buffer_offset]
+            self.buffer_offset = 0
+
         self.req_count += 1
-        request = Request(
-            self.config,
-            unreader,
-            self.peer_addr,
-            req_number=self.req_count
-        )
 
-        # Convert to dict format
-        self.parsed_request = {
-            'method': request.method.encode() if isinstance(request.method, str) else request.method,
-            'path': request.path.encode() if isinstance(request.path, str) else request.path,
-            'minor_version': request.version[1] if request.version else 1,
-            'headers': [(n.encode() if isinstance(n, str) else n,
-                        v.encode() if isinstance(v, str) else v)
-                       for n, v in request.headers],
-        }
-
-        # Clear buffer
-        self.buffer.clear()
-
-        # Check if body needs to be read
+        # Use get_header() for hot path header checks - avoids headers materialization
         self.content_length = 0
         self.chunked = False
-        for name, value in request.headers:
-            if name.upper() == 'CONTENT-LENGTH':
-                self.content_length = int(value)
-            elif name.upper() == 'TRANSFER-ENCODING' and 'chunked' in value.lower():
-                self.chunked = True
+        connection_close = False
 
-        self.keep_alive = not request.should_close()
+        # get_header() returns memoryview or None
+        cl = req.get_header("content-length")
+        if cl:
+            self.content_length = _int(_bytes(cl))
 
+        te = req.get_header("transfer-encoding")
+        if te and b"chunked" in _bytes(te).lower():
+            self.chunked = True
+
+        conn = req.get_header("connection")
+        if conn:
+            conn_bytes = _bytes(conn).lower()
+            if b"close" in conn_bytes:
+                connection_close = True
+            elif b"keep-alive" in conn_bytes:
+                self.keep_alive = True
+
+        # Determine keep-alive from HTTP version if not explicit
+        if not connection_close:
+            self.keep_alive = req.minor_version >= 1
+        else:
+            self.keep_alive = False
+
+        # Handle body - remaining data after offset is body data
         if self.content_length > 0 or self.chunked:
-            # Store the request for body reading
-            self._fallback_request = request
+            self.body_received = _len(self.buffer) - self.buffer_offset
             self.state = 'reading_body'
             return self._handle_reading_body()
         else:
@@ -513,26 +434,25 @@ class HTTPProtocol:
             return self._run_app()
 
     def _handle_reading_body(self) -> str:
-        """Handle reading request body."""
-        if FAST_PARSER:
-            return self._handle_fast_body()
-        else:
-            return self._handle_fallback_body()
+        """Handle reading request body.
 
-    def _handle_fast_body(self) -> str:
-        """Handle body reading with fast parser path."""
+        Uses offset tracking to access body data without buffer reallocation.
+        """
         buffer = self.buffer
+        offset = self.buffer_offset
         content_length = self.content_length
 
+        # Available body data = total buffer - consumed offset
+        available = _len(buffer) - offset
+
         if self.chunked:
-            # For chunked, need to parse chunk headers
-            # For now, simple implementation: accumulate until 0\r\n\r\n
-            data = _bytes(buffer)
-            if b'0\r\n\r\n' in data or b'0\r\n' in data:
-                # Parse chunked body
+            # For chunked, check for end marker using find() - avoids copy until needed
+            if buffer.find(b'0\r\n\r\n', offset) != -1 or buffer.find(b'0\r\n', offset) != -1:
+                # Convert to bytes only when complete
+                data = _bytes(buffer[offset:])
+                data_len = _len(data)
                 body_parts = []
                 pos = 0
-                data_len = _len(data)
                 while pos < data_len:
                     # Find chunk size line
                     nl_pos = data.find(b'\r\n', pos)
@@ -556,34 +476,24 @@ class HTTPProtocol:
                     pos = chunk_end + 2  # Skip \r\n after chunk
 
                 self.request_body = io.BytesIO(b''.join(body_parts))
+                # Clear buffer and reset offset for next request
                 buffer.clear()
+                self.buffer_offset = 0
                 return self._run_app()
             return "continue"
         else:
-            # Content-Length body - use memoryview for zero-copy
-            buffer_len = _len(buffer)
-            if buffer_len >= content_length:
-                # Use memoryview to avoid copy, then convert to bytes for BytesIO
-                body = _bytes(memoryview(buffer)[:content_length])
-                del buffer[:content_length]
-                self.request_body = io.BytesIO(body)
+            # Content-Length body - use memoryview for zero-copy access
+            if available >= content_length:
+                # Extract body via memoryview slice (single copy to bytes)
+                body_view = memoryview(buffer)[offset:offset + content_length]
+                self.request_body = io.BytesIO(_bytes(body_view))
+                # Update offset to consume body data
+                self.buffer_offset = offset + content_length
+                # Clear buffer since body is complete (reset for next request)
+                buffer.clear()
+                self.buffer_offset = 0
                 return self._run_app()
             return "continue"
-
-    def _handle_fallback_body(self) -> str:
-        """Handle body reading with fallback parser path."""
-        try:
-            if self.buffer:
-                self._fallback_request.unreader.feed(bytes(self.buffer))
-                self.buffer.clear()
-
-            body_data = self._fallback_request.body.read()
-            if body_data is not None:
-                self.request_body = io.BytesIO(body_data)
-                return self._run_app()
-        except NoMoreData:
-            return "continue"
-        return "continue"
 
     def _run_app(self) -> str:
         """Run WSGI or ASGI app and prepare response."""
@@ -597,7 +507,7 @@ class HTTPProtocol:
         if not self._wsgi_app:
             return self._send_error_response(500, "No WSGI app configured")
 
-        # Build environ (both fast and fallback paths use dict format)
+        # Build environ
         environ = fast_build_environ(
             self.parsed_request,
             peer_addr=self.peer_addr,
@@ -655,7 +565,7 @@ class HTTPProtocol:
         if not self._asgi_app:
             return self._send_error_response(500, "No ASGI app configured")
 
-        # Build scope (both fast and fallback paths use dict format)
+        # Build scope
         scope = fast_build_asgi_scope(
             self.parsed_request,
             peer_addr=self.peer_addr,
@@ -906,6 +816,7 @@ class HTTPProtocol:
     def _reset_for_keepalive(self):
         """Reset state for next request on keep-alive connection."""
         self.buffer.clear()
+        self.buffer_offset = 0
         self.write_buffer.clear()
         self.parsed_request = None
         self.request_body = None

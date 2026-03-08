@@ -169,9 +169,9 @@ handle_asgi_streaming(Req, State) ->
             {stream_info, InfoStatus, InfoHeaders} ->
                 %% Handle 1xx informational response first
                 CowboyInfoHeaders = convert_headers(InfoHeaders),
-                Req3 = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req2),
-                %% Continue waiting for stream_start
-                handle_asgi_streaming_continue(Req3, State, AckTimeout);
+                ok = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req2),
+                %% Continue waiting for stream_start (Req2 unchanged after inform)
+                handle_asgi_streaming_continue(Req2, State, AckTimeout);
             {python_done, {error, Error}} ->
                 handle_error(Req2, Error, ReqInfo1, State)
         after TimeoutMs ->
@@ -195,8 +195,8 @@ handle_asgi_streaming_continue(Req, State, AckTimeout) ->
             stream_body_loop(Req2, State, AckTimeout);
         {stream_info, InfoStatus, InfoHeaders} ->
             CowboyInfoHeaders = convert_headers(InfoHeaders),
-            Req2 = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req),
-            handle_asgi_streaming_continue(Req2, State, AckTimeout);
+            ok = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req),
+            handle_asgi_streaming_continue(Req, State, AckTimeout);
         {python_done, {error, Error}} ->
             ReqInfo = build_request_info(Req),
             handle_error(Req, Error, ReqInfo, State)

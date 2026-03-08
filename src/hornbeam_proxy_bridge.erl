@@ -366,9 +366,6 @@ relay_loop(#relay_state{state = reading_response} = State) ->
     case read_response(Fd, Buffer, Timeout) of
         {ok, Status, Headers, Body} ->
             {ok, Status, Headers, Body};
-        {need_more, NewBuffer} ->
-            %% Continue reading
-            relay_loop(State#relay_state{read_buffer = NewBuffer});
         {error, Reason} ->
             {error, Reason}
     end.
@@ -484,13 +481,13 @@ write_all_loop(Fd, Data, Timeout, Retries) ->
 %% @private
 wait_writable(Fd, Timeout) ->
     case py_nif:fd_select_write(Fd) of
-        ok ->
+        {ok, _Ref} ->
             receive
                 {select, _, _, ready_output} -> ok
             after Timeout ->
                 {error, timeout}
             end;
-        Error ->
+        {error, _} = Error ->
             Error
     end.
 
@@ -538,13 +535,13 @@ read_chunk(Fd, Timeout) ->
 %% @private
 wait_readable(Fd, Timeout) ->
     case py_nif:fd_select_read(Fd) of
-        ok ->
+        {ok, _Ref} ->
             receive
                 {select, _, _, ready_input} -> ok
             after Timeout ->
                 {error, timeout}
             end;
-        Error ->
+        {error, _} = Error ->
             Error
     end.
 

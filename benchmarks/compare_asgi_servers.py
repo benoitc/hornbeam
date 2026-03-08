@@ -80,11 +80,14 @@ def start_hornbeam(bind):
     """Start hornbeam server in ASGI mode."""
     erl_cmd = f'''
         code:add_pathsz(filelib:wildcard("_build/default/lib/*/ebin")),
+        application:set_env(erlang_python, num_executors, {WORKERS}),
         application:ensure_all_started(hornbeam),
         hornbeam:start("simple_asgi_app:application", #{{
             bind => <<"{bind}">>,
             worker_class => asgi,
             workers => {WORKERS},
+            num_acceptors => 200,
+            backend_mode => fd_reactor,
             pythonpath => [<<"benchmarks">>]
         }}).
     '''
@@ -125,6 +128,7 @@ def start_uvicorn(bind, python):
         '--port', port,
         '--workers', str(WORKERS),
         '--loop', 'uvloop',
+        '--http', 'httptools',
         '--no-access-log',
         'simple_asgi_app:application',
     ]
@@ -140,7 +144,7 @@ def start_uvicorn(bind, python):
 
 
 def start_granian(bind, python):
-    """Start granian server."""
+    """Start granian server with optimized settings."""
     host, port = bind.split(':')
     cmd = [
         str(VENV_DIR / 'bin' / 'granian'),
@@ -149,6 +153,8 @@ def start_granian(bind, python):
         '--workers', str(WORKERS),
         '--interface', 'asgi',
         '--loop', 'uvloop',
+        '--http', '1',
+        '--http1-pipeline-flush',
         'simple_asgi_app:application',
     ]
 

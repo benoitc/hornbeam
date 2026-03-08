@@ -7,84 +7,49 @@ hornbeam_http_fast - High-performance HTTP parser using picohttpparser.
 This module provides fast HTTP request/response parsing using the
 picohttpparser C library with SIMD optimizations (SSE4.2/AVX2 on x86,
 NEON on ARM).
-
-Performance: ~1.7M requests/sec (12x faster than pure Python)
-
-Example:
-    from hornbeam_http_fast import parse_request, parse_response
-
-    # Parse request
-    result = parse_request(b"GET /path HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n")
-    print(result['method'], result['path'], result['headers'])
-
-    # Parse response
-    result = parse_response(b"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\n\\r\\n")
-    print(result['status'], result['headers'])
 """
 
-try:
-    from pico_parser import (
-        parse_request,
-        parse_response,
-        parse_headers,
-        ParseError,
-        IncompleteError,
-    )
-    FAST_PARSER_AVAILABLE = True
+from pico_parser import (
+    parse_request,
+    parse_response,
+    parse_headers,
+    ParseError,
+    IncompleteError,
+)
 
-except ImportError:
-    # C extension not built
-    import warnings
-    warnings.warn(
-        "hornbeam_http_fast C extension not available. "
-        "Build with: cd priv/hornbeam_http_fast && python setup.py build_ext --inplace",
-        ImportWarning
-    )
-    FAST_PARSER_AVAILABLE = False
+# Local var caching
+_bytes = bytes
+_isinstance = isinstance
+_memoryview = memoryview
 
-    # Provide fallback using pure Python parser
-    from hornbeam_http.errors import NoMoreData
 
-    class ParseError(ValueError):
-        pass
+def _to_bytes(val):
+    """Convert value to bytes (handles memoryview, bytes, str)."""
+    if _isinstance(val, _memoryview):
+        return _bytes(val)
+    if _isinstance(val, _bytes):
+        return val
+    if _isinstance(val, str):
+        return val.encode('latin-1')
+    return _bytes(val)
 
-    class IncompleteError(Exception):
-        pass
 
-    def parse_request(data, last_len=0):
-        """Fallback parser using pure Python implementation."""
-        import sys
-        sys.path.insert(0, __file__.rsplit('/', 2)[0])
-        from hornbeam_http import HTTPConfig, Request, BufferUnreader
-
-        try:
-            cfg = HTTPConfig()
-            unreader = BufferUnreader(data)
-            req = Request(cfg, unreader, None)
-            return {
-                'method': req.method.encode() if isinstance(req.method, str) else req.method,
-                'path': req.path.encode() if isinstance(req.path, str) else req.path,
-                'minor_version': req.version[1] if req.version else 1,
-                'headers': [(n.encode(), v.encode()) for n, v in req.headers],
-                'consumed': len(data),  # Approximate
-            }
-        except NoMoreData:
-            raise IncompleteError("Incomplete request")
-        except Exception as e:
-            raise ParseError(str(e))
-
-    def parse_response(data, last_len=0):
-        raise NotImplementedError("Response parsing requires C extension")
-
-    def parse_headers(data, last_len=0):
-        raise NotImplementedError("Header parsing requires C extension")
+def _to_str(val):
+    """Convert value to str (handles memoryview, bytes, str)."""
+    if _isinstance(val, _memoryview):
+        return _bytes(val).decode('latin-1')
+    if _isinstance(val, _bytes):
+        return val.decode('latin-1')
+    if _isinstance(val, str):
+        return val
+    return str(val)
 
 
 def build_environ(parsed_request, peer_addr=None, server_addr=None, script_name=b''):
     """Build WSGI environ from parsed request.
 
     Args:
-        parsed_request: Result from parse_request()
+        parsed_request: Result from parse_request() - HttpRequest object or dict
         peer_addr: (ip, port) tuple for client
         server_addr: (host, port) tuple for server
         script_name: SCRIPT_NAME for mounted apps
@@ -92,17 +57,22 @@ def build_environ(parsed_request, peer_addr=None, server_addr=None, script_name=
     Returns:
         WSGI environ dict
     """
-    method = parsed_request['method']
-    path = parsed_request['path']
-    headers = parsed_request['headers']
+    # Handle both HttpRequest object and dict
+    if hasattr(parsed_request, 'method'):
+        method = parsed_request.method
+        path = parsed_request.path
+        headers = parsed_request.headers
+        minor_version = parsed_request.minor_version
+    else:
+        method = parsed_request['method']
+        path = parsed_request['path']
+        headers = parsed_request['headers']
+        minor_version = parsed_request['minor_version']
 
-    # Decode bytes to str
-    if isinstance(method, bytes):
-        method = method.decode('latin-1')
-    if isinstance(path, bytes):
-        path = path.decode('latin-1')
-    if isinstance(script_name, bytes):
-        script_name = script_name.decode('latin-1')
+    # Convert to str (handles memoryview, bytes, str)
+    method = _to_str(method)
+    path = _to_str(path)
+    script_name = _to_str(script_name) if script_name else ''
 
     # Split path and query string
     if '?' in path:
@@ -115,7 +85,7 @@ def build_environ(parsed_request, peer_addr=None, server_addr=None, script_name=
         'SCRIPT_NAME': script_name,
         'PATH_INFO': path_info,
         'QUERY_STRING': query_string,
-        'SERVER_PROTOCOL': f"HTTP/1.{parsed_request['minor_version']}",
+        'SERVER_PROTOCOL': f"HTTP/1.{minor_version}",
         'wsgi.version': (1, 0),
         'wsgi.url_scheme': 'http',
         'wsgi.multithread': True,
@@ -131,12 +101,10 @@ def build_environ(parsed_request, peer_addr=None, server_addr=None, script_name=
         environ['REMOTE_ADDR'] = peer_addr[0]
         environ['REMOTE_PORT'] = str(peer_addr[1])
 
-    # Process headers
+    # Process headers (handles memoryview from zero-copy parser)
     for name, value in headers:
-        if isinstance(name, bytes):
-            name = name.decode('latin-1')
-        if isinstance(value, bytes):
-            value = value.decode('latin-1')
+        name = _to_str(name)
+        value = _to_str(value)
 
         name_upper = name.upper().replace('-', '_')
 
@@ -154,7 +122,7 @@ def build_asgi_scope(parsed_request, peer_addr=None, server_addr=None, root_path
     """Build ASGI scope from parsed request.
 
     Args:
-        parsed_request: Result from parse_request()
+        parsed_request: Result from parse_request() - HttpRequest object or dict
         peer_addr: (ip, port) tuple for client
         server_addr: (host, port) tuple for server
         root_path: Root path for mounted apps
@@ -162,17 +130,22 @@ def build_asgi_scope(parsed_request, peer_addr=None, server_addr=None, root_path
     Returns:
         ASGI HTTP scope dict
     """
-    method = parsed_request['method']
-    path = parsed_request['path']
-    headers = parsed_request['headers']
+    # Handle both HttpRequest object and dict
+    if hasattr(parsed_request, 'method'):
+        method = parsed_request.method
+        path = parsed_request.path
+        headers = parsed_request.headers
+        minor_version = parsed_request.minor_version
+    else:
+        method = parsed_request['method']
+        path = parsed_request['path']
+        headers = parsed_request['headers']
+        minor_version = parsed_request['minor_version']
 
-    # Ensure bytes
-    if isinstance(method, str):
-        method = method.encode('latin-1')
-    if isinstance(path, str):
-        path = path.encode('latin-1')
-    if isinstance(root_path, str):
-        root_path = root_path.encode('latin-1')
+    # Convert to bytes (handles memoryview from zero-copy parser)
+    method = _to_bytes(method)
+    path = _to_bytes(path)
+    root_path = _to_bytes(root_path) if root_path else b''
 
     # Split path and query string
     if b'?' in path:
@@ -180,25 +153,23 @@ def build_asgi_scope(parsed_request, peer_addr=None, server_addr=None, root_path
     else:
         path_info, query_string = path, b''
 
-    # Headers as list of (name, value) byte tuples
+    # Headers as list of (name, value) byte tuples (handles memoryview)
     scope_headers = []
     for name, value in headers:
-        if isinstance(name, str):
-            name = name.encode('latin-1')
-        if isinstance(value, str):
-            value = value.encode('latin-1')
+        name = _to_bytes(name)
+        value = _to_bytes(value)
         scope_headers.append((name.lower(), value))
 
     return {
         'type': 'http',
         'asgi': {'version': '3.0', 'spec_version': '2.3'},
-        'http_version': f"1.{parsed_request['minor_version']}",
-        'method': method.decode('latin-1') if isinstance(method, bytes) else method,
+        'http_version': f"1.{minor_version}",
+        'method': method.decode('latin-1'),
         'scheme': 'http',
-        'path': path_info.decode('latin-1') if isinstance(path_info, bytes) else path_info,
+        'path': path_info.decode('latin-1'),
         'raw_path': path_info,
         'query_string': query_string,
-        'root_path': root_path.decode('latin-1') if isinstance(root_path, bytes) else root_path,
+        'root_path': root_path.decode('latin-1') if root_path else '',
         'headers': scope_headers,
         'server': server_addr,
         'client': peer_addr,

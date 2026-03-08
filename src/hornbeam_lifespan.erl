@@ -160,11 +160,8 @@ init(Opts) ->
     PyContext = case py:contexts_started() of
         true ->
             %% Get or create a context for lifespan
-            case py:context() of
-                {ok, Ctx} -> Ctx;
-                Ctx when is_pid(Ctx) -> Ctx;
-                _ -> undefined
-            end;
+            %% py:context() returns a pid directly
+            py:context();
         false ->
             undefined
     end,

@@ -67,7 +67,9 @@ static PyObject *
 HttpRequest_get_method(HttpRequest *self, void *closure)
 {
     if (!self->py_method) {
-        self->py_method = PyBytes_FromStringAndSize(self->method, self->method_len);
+        /* Return memoryview instead of PyBytes - zero copy */
+        self->py_method = PyMemoryView_FromMemory(
+            (char*)self->method, self->method_len, PyBUF_READ);
     }
     Py_INCREF(self->py_method);
     return self->py_method;
@@ -77,7 +79,9 @@ static PyObject *
 HttpRequest_get_path(HttpRequest *self, void *closure)
 {
     if (!self->py_path) {
-        self->py_path = PyBytes_FromStringAndSize(self->path, self->path_len);
+        /* Return memoryview instead of PyBytes - zero copy */
+        self->py_path = PyMemoryView_FromMemory(
+            (char*)self->path, self->path_len, PyBUF_READ);
     }
     Py_INCREF(self->py_path);
     return self->py_path;
@@ -97,13 +101,26 @@ HttpRequest_get_headers(HttpRequest *self, void *closure)
         if (!self->py_headers) return NULL;
 
         for (size_t i = 0; i < self->num_headers; i++) {
-            PyObject *name = PyBytes_FromStringAndSize(
-                self->headers[i].name, self->headers[i].name_len);
-            PyObject *value = PyBytes_FromStringAndSize(
-                self->headers[i].value, self->headers[i].value_len);
+            /* Use memoryview instead of PyBytes - zero copy */
+            PyObject *name = PyMemoryView_FromMemory(
+                (char*)self->headers[i].name, self->headers[i].name_len, PyBUF_READ);
+            PyObject *value = PyMemoryView_FromMemory(
+                (char*)self->headers[i].value, self->headers[i].value_len, PyBUF_READ);
+            if (!name || !value) {
+                Py_XDECREF(name);
+                Py_XDECREF(value);
+                Py_DECREF(self->py_headers);
+                self->py_headers = NULL;
+                return NULL;
+            }
             PyObject *pair = PyTuple_Pack(2, name, value);
             Py_DECREF(name);
             Py_DECREF(value);
+            if (!pair) {
+                Py_DECREF(self->py_headers);
+                self->py_headers = NULL;
+                return NULL;
+            }
             PyTuple_SET_ITEM(self->py_headers, i, pair);
         }
     }
@@ -117,7 +134,7 @@ HttpRequest_get_consumed(HttpRequest *self, void *closure)
     return PyLong_FromLong(self->consumed);
 }
 
-/* Fast header lookup by name */
+/* Fast header lookup by name - returns memoryview for zero-copy */
 static PyObject *
 HttpRequest_get_header(HttpRequest *self, PyObject *args)
 {
@@ -143,8 +160,9 @@ HttpRequest_get_header(HttpRequest *self, PyObject *args)
                 }
             }
             if (match) {
-                return PyBytes_FromStringAndSize(
-                    self->headers[i].value, self->headers[i].value_len);
+                /* Return memoryview instead of PyBytes - zero copy */
+                return PyMemoryView_FromMemory(
+                    (char*)self->headers[i].value, self->headers[i].value_len, PyBUF_READ);
             }
         }
     }
