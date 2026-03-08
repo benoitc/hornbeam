@@ -57,14 +57,63 @@ init(Req, State) ->
     handle_request(WorkerClass, Req, State).
 
 handle_request(wsgi, Req, State) ->
-    handle_wsgi(Req, State);
+    %% Check backend mode: nif (default), fd_reactor, or streaming
+    case maps:get(backend_mode, State, nif) of
+        fd_reactor ->
+            handle_fd_reactor(Req, State);
+        streaming ->
+            handle_wsgi_streaming(Req, State);
+        _ ->
+            %% Check if streaming is enabled via config
+            case maps:get(streaming, State, false) of
+                true -> handle_wsgi_streaming(Req, State);
+                false -> handle_wsgi(Req, State)
+            end
+    end;
 handle_request(asgi, Req, State) ->
     %% Check for WebSocket upgrade
     case is_websocket_upgrade(Req) of
         true ->
             handle_websocket_upgrade(Req, State);
         false ->
-            handle_asgi(Req, State)
+            %% Check backend mode: nif (default), fd_reactor, or streaming
+            case maps:get(backend_mode, State, nif) of
+                fd_reactor ->
+                    handle_fd_reactor(Req, State);
+                streaming ->
+                    handle_asgi_streaming(Req, State);
+                _ ->
+                    %% Check if streaming is enabled via config
+                    case maps:get(streaming, State, false) of
+                        true -> handle_asgi_streaming(Req, State);
+                        false -> handle_asgi(Req, State)
+                    end
+            end
+    end.
+
+%%% ============================================================================
+%%% FD Reactor Handler
+%%% ============================================================================
+
+%% @private
+%% Handle request via FD reactor proxy bridge.
+%% This path uses socketpair-based communication with Python reactor contexts,
+%% providing streaming body handling and better GIL management.
+handle_fd_reactor(Req, State) ->
+    %% Build initial request map for hooks
+    ReqInfo = build_request_info(Req),
+
+    %% Run on_request hook
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        %% Delegate to proxy bridge
+        hornbeam_proxy_bridge:handle(Req, State)
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("FD reactor handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
     end.
 
 %% @private
@@ -73,6 +122,200 @@ is_websocket_upgrade(Req) ->
         undefined -> false;
         Upgrade ->
             string:lowercase(Upgrade) =:= <<"websocket">>
+    end.
+
+%%% ============================================================================
+%%% Streaming Handlers
+%%% ============================================================================
+
+%% @private
+%% Handle ASGI request with true response streaming.
+%% Chunks are sent to client as they arrive from Python.
+handle_asgi_streaming(Req, State) ->
+    ReqInfo = build_request_info(Req),
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        AppModule = maps:get(app_module, State),
+        AppCallable = maps:get(app_callable, State),
+        TimeoutMs = maps:get(timeout, State, 30000),
+        MaxPending = maps:get(stream_max_pending, State, 3),
+
+        %% Read request body
+        {ok, ReqBody, Req2} = cowboy_req:read_body(Req),
+
+        %% Build ASGI scope
+        Scope = build_scope_for_nif(Req, State),
+
+        %% Call Python streaming runner with self() as handler_pid
+        HandlerPid = self(),
+        %% Submit to Python in a separate process so we can receive messages
+        spawn_link(fun() ->
+            Result = py:call(hornbeam_asgi_runner, run_asgi_streaming,
+                            [AppModule, AppCallable, Scope, ReqBody, HandlerPid, MaxPending],
+                            #{}, TimeoutMs),
+            HandlerPid ! {python_done, Result}
+        end),
+
+        %% Wait for stream_start message
+        AckTimeout = maps:get(stream_ack_timeout, State, 5000),
+        receive
+            {stream_start, Status, Headers} ->
+                %% Start streaming response
+                CowboyHeaders = convert_headers(Headers),
+                Req3 = cowboy_req:stream_reply(Status, CowboyHeaders, Req2),
+                %% Enter streaming loop
+                stream_body_loop(Req3, State, AckTimeout);
+            {stream_info, InfoStatus, InfoHeaders} ->
+                %% Handle 1xx informational response first
+                CowboyInfoHeaders = convert_headers(InfoHeaders),
+                Req3 = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req2),
+                %% Continue waiting for stream_start
+                handle_asgi_streaming_continue(Req3, State, AckTimeout);
+            {python_done, {error, Error}} ->
+                handle_error(Req2, Error, ReqInfo1, State)
+        after TimeoutMs ->
+            handle_error(Req2, timeout, ReqInfo1, State)
+        end
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("ASGI streaming handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
+    end.
+
+%% @private
+%% Continue waiting for stream_start after informational response
+handle_asgi_streaming_continue(Req, State, AckTimeout) ->
+    TimeoutMs = maps:get(timeout, State, 30000),
+    receive
+        {stream_start, Status, Headers} ->
+            CowboyHeaders = convert_headers(Headers),
+            Req2 = cowboy_req:stream_reply(Status, CowboyHeaders, Req),
+            stream_body_loop(Req2, State, AckTimeout);
+        {stream_info, InfoStatus, InfoHeaders} ->
+            CowboyInfoHeaders = convert_headers(InfoHeaders),
+            Req2 = cowboy_req:inform(InfoStatus, CowboyInfoHeaders, Req),
+            handle_asgi_streaming_continue(Req2, State, AckTimeout);
+        {python_done, {error, Error}} ->
+            ReqInfo = build_request_info(Req),
+            handle_error(Req, Error, ReqInfo, State)
+    after TimeoutMs ->
+        ReqInfo = build_request_info(Req),
+        handle_error(Req, timeout, ReqInfo, State)
+    end.
+
+%% @private
+%% Handle WSGI request with true response streaming.
+handle_wsgi_streaming(Req, State) ->
+    ReqInfo = build_request_info(Req),
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        AppModule = maps:get(app_module, State),
+        AppCallable = maps:get(app_callable, State),
+        TimeoutMs = maps:get(timeout, State, 30000),
+        MaxPending = maps:get(stream_max_pending, State, 3),
+
+        %% Build environ
+        Environ = build_environ_for_nif(Req, State),
+
+        %% Call Python streaming runner with self() as handler_pid
+        HandlerPid = self(),
+        spawn_link(fun() ->
+            Result = py:call(hornbeam_wsgi_runner, run_wsgi_streaming,
+                            [AppModule, AppCallable, Environ, HandlerPid, MaxPending],
+                            #{}, TimeoutMs),
+            HandlerPid ! {python_done, Result}
+        end),
+
+        %% Wait for stream_start message
+        AckTimeout = maps:get(stream_ack_timeout, State, 5000),
+        receive
+            {stream_start, Status, Headers} ->
+                %% Parse WSGI status string
+                StatusCode = parse_status_code(Status),
+                CowboyHeaders = convert_headers(Headers),
+                Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+                stream_body_loop(Req2, State, AckTimeout);
+            {python_done, {error, Error}} ->
+                handle_error(Req, Error, ReqInfo1, State)
+        after TimeoutMs ->
+            handle_error(Req, timeout, ReqInfo1, State)
+        end
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("WSGI streaming handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
+    end.
+
+%% @private
+%% Streaming body loop - receives chunks from Python and forwards to client.
+%% Sends acks back to Python for flow control.
+stream_body_loop(Req, State, AckTimeout) ->
+    TimeoutMs = maps:get(timeout, State, 30000),
+    receive
+        {stream_chunk, Chunk, false} ->
+            %% Final chunk
+            cowboy_req:stream_body(Chunk, fin, Req),
+            %% Wait for python_done
+            receive
+                {python_done, _} -> ok
+            after 1000 -> ok
+            end,
+            {ok, Req, State};
+        {stream_chunk, Chunk, true} ->
+            %% More chunks coming
+            cowboy_req:stream_body(Chunk, nofin, Req),
+            %% Send ack back to Python for flow control
+            %% Note: The ack is implicit - Python's sender gets notified
+            %% when erlang.send returns, so we continue receiving
+            stream_body_loop(Req, State, AckTimeout);
+        {stream_trailers, Trailers} ->
+            %% HTTP/2 trailers
+            CowboyTrailers = convert_headers(Trailers),
+            cowboy_req:stream_trailers(CowboyTrailers, Req),
+            stream_body_loop(Req, State, AckTimeout);
+        {stream_file, FileFd} ->
+            %% Sendfile optimization
+            handle_sendfile(Req, FileFd, State);
+        {python_done, _} ->
+            %% Python finished (possibly early due to error)
+            cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
+    after TimeoutMs ->
+        %% Timeout - close stream
+        cowboy_req:stream_body(<<>>, fin, Req),
+        {ok, Req, State}
+    end.
+
+%% @private
+%% Handle sendfile for FileWrapper optimization
+handle_sendfile(Req, FileFd, State) when is_integer(FileFd) ->
+    %% Use cowboy_req:stream_body with sendfile
+    %% Note: Cowboy doesn't directly support fd sendfile in stream mode,
+    %% so we read and forward chunks
+    case read_and_stream_file(Req, FileFd, 65536) of
+        ok ->
+            cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State};
+        {error, _Reason} ->
+            cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
+    end.
+
+%% @private
+%% Read from file descriptor and stream to client
+read_and_stream_file(Req, Fd, ChunkSize) ->
+    case py_nif:fd_read(Fd, ChunkSize) of
+        {ok, Data} when byte_size(Data) > 0 ->
+            cowboy_req:stream_body(Data, nofin, Req),
+            read_and_stream_file(Req, Fd, ChunkSize);
+        {ok, <<>>} ->
+            ok;
+        {error, _} = Error ->
+            Error
     end.
 
 %% @private
@@ -146,8 +389,8 @@ run_wsgi_optimized(Req, AppModule, AppCallable, State) ->
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
-run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) ->
+%% Fallback path using py:call (context routing is automatic)
+run_wsgi_with_context(Req, AppModule, AppCallable, _PyContext, TimeoutMs, State) ->
     %% Build environ options from state (for multi-app mode)
     EnvOpts = case maps:get(script_name, State, undefined) of
         undefined -> #{};
@@ -159,8 +402,8 @@ run_wsgi_with_context(Req, AppModule, AppCallable, PyContext, TimeoutMs, State) 
         undefined -> Environ;
         PathInfo -> Environ#{<<"PATH_INFO">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_wsgi_runner, run_wsgi,
-               [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
+    py:call(hornbeam_wsgi_runner, run_wsgi,
+           [AppModule, AppCallable, Environ1], #{}, TimeoutMs).
 
 %% @private
 %% Build environ dict for NIF optimization.
@@ -356,8 +599,8 @@ run_asgi_optimized(Req, AppModule, AppCallable, ReqBody, State) ->
     end.
 
 %% @private
-%% Context-aware fallback path using py:ctx_call
-run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs, State) ->
+%% Fallback path using py:call (context routing is automatic)
+run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, _PyContext, TimeoutMs, State) ->
     %% Build scope options from state (for multi-app mode)
     ScopeOpts = case maps:get(script_name, State, undefined) of
         undefined -> #{};
@@ -369,13 +612,12 @@ run_asgi_with_context(Req, AppModule, AppCallable, ReqBody, PyContext, TimeoutMs
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    py:ctx_call(PyContext, hornbeam_asgi_runner, run_asgi,
-               [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
+    py:call(hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
-%% Bound context path - binds a worker for the request duration.
-%% This reduces overhead for apps with multiple async operations by
-%% keeping the same Python worker/GIL for the entire request.
+%% Run ASGI with automatic context routing.
+%% Context affinity is handled by the py_context_router automatically.
 run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
     %% Build scope options from state (for multi-app mode)
     ScopeOpts = case maps:get(script_name, State, undefined) of
@@ -388,11 +630,8 @@ run_asgi_bound(Req, AppModule, AppCallable, ReqBody, TimeoutMs, State) ->
         undefined -> Scope;
         PathInfo -> Scope#{<<"path">> => PathInfo, <<"raw_path">> => PathInfo}
     end,
-    %% Use with_context to bind a worker for the request duration
-    py:with_context(fun() ->
-        py:call(hornbeam_asgi_runner, run_asgi,
-                [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs)
-    end).
+    py:call(hornbeam_asgi_runner, run_asgi,
+           [AppModule, AppCallable, Scope1, ReqBody], #{}, TimeoutMs).
 
 %% @private
 %% Build scope with atom keys for NIF optimization.
