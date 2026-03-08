@@ -44,8 +44,11 @@ from typing import Optional, Dict, Any, Callable, Tuple, List
 # Import erlang module for messaging (available when running inside Erlang VM)
 try:
     import erlang
+    import erlang.reactor as reactor
     _HAS_ERLANG = True
 except ImportError:
+    erlang = None
+    reactor = None
     _HAS_ERLANG = False
 
 # Persistent event loop for ASGI tasks (uses Erlang event loop when available)
@@ -720,11 +723,7 @@ class HTTPProtocol:
             )
 
         # Signal reactor that response is ready
-        try:
-            erlang.send(self.reactor_pid, ('write_ready', self.fd))
-        except Exception:
-            # Reactor may have died, connection will be cleaned up
-            pass
+        reactor.signal_write_ready(self.fd)
 
     def _on_asgi_task_done(self, task: asyncio.Task) -> None:
         """Handle ASGI task completion/exception (for logging purposes)."""
