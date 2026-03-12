@@ -297,7 +297,7 @@ def create_environ(raw_environ):
     """Create a complete WSGI environ dict from raw environ.
 
     Ensures all required WSGI variables are present and properly typed.
-    Optimized for minimal overhead on hot path.
+    Optimized for minimal overhead on hot path using template and BytesIO pool.
 
     Args:
         raw_environ: Raw environ dict from Erlang
@@ -311,47 +311,39 @@ def create_environ(raw_environ):
     def early_hints_callback(headers):
         early_hints_list.append(headers)
 
-    # Handle wsgi.input - most common case is bytes
+    # Handle wsgi.input - use pooled BytesIO for common bytes case
     wsgi_input = raw_environ.get('wsgi.input', b'')
     wsgi_input_type = type(wsgi_input)
     if wsgi_input_type is bytes:
-        wsgi_input_stream = io.BytesIO(wsgi_input)
+        wsgi_input_stream = _get_bytesio(wsgi_input)
     elif wsgi_input_type is str:
-        wsgi_input_stream = io.BytesIO(wsgi_input.encode('utf-8'))
+        wsgi_input_stream = _get_bytesio(wsgi_input.encode('utf-8'))
     elif hasattr(wsgi_input, 'read'):
         wsgi_input_stream = wsgi_input
     else:
-        wsgi_input_stream = io.BytesIO(b'')
+        wsgi_input_stream = _get_bytesio(b'')
 
-    # Build environ with proper types
-    # Use direct access for speed on known keys
-    environ = {
-        # Required CGI variables with defaults
-        'REQUEST_METHOD': raw_environ.get('REQUEST_METHOD', 'GET'),
-        'SCRIPT_NAME': raw_environ.get('SCRIPT_NAME', ''),
-        'PATH_INFO': raw_environ.get('PATH_INFO', '/'),
-        'QUERY_STRING': raw_environ.get('QUERY_STRING', ''),
-        'SERVER_NAME': raw_environ.get('SERVER_NAME', 'localhost'),
-        'SERVER_PORT': str(raw_environ.get('SERVER_PORT', '80')),
-        'SERVER_PROTOCOL': raw_environ.get('SERVER_PROTOCOL', 'HTTP/1.1'),
+    # Start from template copy (faster than inline dict creation)
+    environ = _ENVIRON_TEMPLATE.copy()
 
-        # Required WSGI variables (use cached/shared where possible)
-        'wsgi.version': _WSGI_VERSION,
-        'wsgi.url_scheme': raw_environ.get('wsgi.url_scheme', 'http'),
-        'wsgi.input': wsgi_input_stream,
-        'wsgi.errors': _SHARED_ERRORS,
-        'wsgi.multithread': True,
-        'wsgi.multiprocess': True,
-        'wsgi.run_once': False,
+    # Update with request-specific required CGI variables
+    environ['REQUEST_METHOD'] = raw_environ.get('REQUEST_METHOD', 'GET')
+    environ['SCRIPT_NAME'] = raw_environ.get('SCRIPT_NAME', '')
+    environ['PATH_INFO'] = raw_environ.get('PATH_INFO', '/')
+    environ['QUERY_STRING'] = raw_environ.get('QUERY_STRING', '')
+    environ['SERVER_NAME'] = raw_environ.get('SERVER_NAME', 'localhost')
+    environ['SERVER_PORT'] = str(raw_environ.get('SERVER_PORT', '80'))
+    environ['SERVER_PROTOCOL'] = raw_environ.get('SERVER_PROTOCOL', 'HTTP/1.1')
 
-        # Recommended extensions
-        'wsgi.file_wrapper': FileWrapper,
-        'wsgi.input_terminated': True,
-        'wsgi.early_hints': early_hints_callback,
+    # Request-specific WSGI variables
+    environ['wsgi.url_scheme'] = raw_environ.get('wsgi.url_scheme', 'http')
+    environ['wsgi.input'] = wsgi_input_stream
+    environ['wsgi.errors'] = _SHARED_ERRORS
+    environ['wsgi.early_hints'] = early_hints_callback
 
-        # Store early hints list reference
-        '_hornbeam.early_hints': early_hints_list,
-    }
+    # Store references for cleanup and early hints
+    environ['_hornbeam.early_hints'] = early_hints_list
+    environ['_hornbeam.wsgi_input'] = wsgi_input_stream
 
     # Copy remaining keys (HTTP_*, CONTENT_TYPE, CONTENT_LENGTH, etc.)
     # Use pre-computed set for O(1) membership test
@@ -421,6 +413,10 @@ def run_wsgi(module_name, callable_name, raw_environ):
     finally:
         if hasattr(result, 'close'):
             result.close()
+        # Return BytesIO to pool
+        wsgi_input = environ.get('_hornbeam.wsgi_input')
+        if wsgi_input is not None:
+            _return_bytesio(wsgi_input)
 
     body = b''.join(body_parts)
 
