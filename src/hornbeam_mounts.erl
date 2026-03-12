@@ -58,9 +58,7 @@
     workers := pos_integer(),
     timeout := pos_integer(),
     mount_id => binary(),           %% 6-char random ID for pool routing
-    pool_enabled => boolean(),      %% Enable persistent worker pool
-    heartbeat_interval => pos_integer(),  %% Worker heartbeat interval (ms)
-    heartbeat_timeout => pos_integer()    %% Max time without heartbeat (ms)
+    pool_enabled => boolean()       %% Enable persistent worker pool
 }.
 
 -export_type([mount/0]).

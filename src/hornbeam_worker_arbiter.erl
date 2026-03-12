@@ -161,13 +161,12 @@ handle_info({heartbeat, WorkerId}, #state{workers = Workers} = State) ->
 handle_info(check_heartbeats, #state{workers = Workers, mount_id = MountId,
                                       mount_config = Config} = State) ->
     Now = erlang:system_time(millisecond),
-    HeartbeatTimeout = maps:get(heartbeat_timeout, Config, ?HEARTBEAT_TIMEOUT),
 
     %% Check each worker for heartbeat timeout
     UpdatedWorkers = maps:fold(fun(Idx, WorkerInfo, Acc) ->
         #worker_info{last_heartbeat = LastHB, status = Status} = WorkerInfo,
         case Status of
-            running when (Now - LastHB) > HeartbeatTimeout ->
+            running when (Now - LastHB) > ?HEARTBEAT_TIMEOUT ->
                 %% Worker missed heartbeats - restart it
                 error_logger:warning_msg("hornbeam_worker_arbiter: Worker ~s_~p missed heartbeats, restarting~n",
                                          [MountId, Idx]),
@@ -179,8 +178,7 @@ handle_info(check_heartbeats, #state{workers = Workers, mount_id = MountId,
     end, #{}, Workers),
 
     %% Schedule next heartbeat check
-    HeartbeatInterval = maps:get(heartbeat_interval, Config, ?HEARTBEAT_INTERVAL),
-    NewTimer = erlang:send_after(HeartbeatInterval, self(), check_heartbeats),
+    NewTimer = erlang:send_after(?HEARTBEAT_INTERVAL, self(), check_heartbeats),
 
     {noreply, State#state{workers = UpdatedWorkers, heartbeat_timer = NewTimer}};
 
