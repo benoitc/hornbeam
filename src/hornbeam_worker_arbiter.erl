@@ -19,7 +19,7 @@
 %%% reducing Python startup overhead.
 %%%
 %%% Features:
-%%% - O(1) channel lookup via persistent_term
+%%% - O(1) channel lookup via ETS
 %%% - Heartbeat monitoring with automatic restart
 %%% - Scheduler affinity for cache locality
 -module(hornbeam_worker_arbiter).
@@ -93,8 +93,8 @@ init({MountId, Config}) ->
     %% Start all workers
     Workers = start_all_workers(MountId, Config, NumWorkers),
 
-    %% Store channels tuple for O(1) lookup (single persistent_term entry)
-    update_channels_tuple(MountId, Workers, NumWorkers),
+    %% Store channels in ETS for O(1) lookup
+    store_channels(MountId, Workers, NumWorkers),
 
     %% Start heartbeat timer
     HeartbeatTimer = erlang:send_after(?HEARTBEAT_INTERVAL, self(), check_heartbeats),
@@ -165,9 +165,9 @@ handle_info(check_heartbeats, #state{workers = Workers, mount_id = MountId,
         end
     end, {#{}, false}, Workers),
 
-    %% Update channels tuple if any worker was restarted
+    %% Update channels in ETS if any worker was restarted
     case Changed of
-        true -> update_channels_tuple(MountId, UpdatedWorkers, NumWorkers);
+        true -> store_channels(MountId, UpdatedWorkers, NumWorkers);
         false -> ok
     end,
 
@@ -202,8 +202,8 @@ terminate(_Reason, #state{workers = Workers, mount_id = MountId}) ->
         catch py_channel:close(Channel)
     end, Workers),
 
-    %% Clear channels from mount
-    hornbeam_mounts:update_channels(MountId, undefined),
+    %% Clear channels from ETS
+    hornbeam_mounts:clear_channels(MountId),
 
     ok.
 
@@ -299,9 +299,9 @@ parse_worker_idx(WorkerId) when is_binary(WorkerId) ->
     end.
 
 %% @private
-%% Build and store channels tuple in mount record.
-%% Tuple is indexed 1..N, element((SchedId rem N) + 1, Tuple) gives channel.
-update_channels_tuple(MountId, Workers, NumWorkers) ->
-    ChannelsList = [maps:get(Idx, Workers) || Idx <- lists:seq(0, NumWorkers - 1)],
-    Channels = list_to_tuple([Ch#worker_info.channel || Ch <- ChannelsList]),
-    hornbeam_mounts:update_channels(MountId, Channels).
+%% Store each channel in ETS with key {MountId, Idx}.
+store_channels(MountId, Workers, NumWorkers) ->
+    lists:foreach(fun(Idx) ->
+        #worker_info{channel = Ch} = maps:get(Idx, Workers),
+        hornbeam_mounts:set_channel(MountId, Idx, Ch)
+    end, lists:seq(0, NumWorkers - 1)).

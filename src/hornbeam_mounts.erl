@@ -42,7 +42,8 @@
     lookup/1,
     list/0,
     clear/0,
-    update_channels/2,
+    set_channel/3,
+    clear_channels/1,
     get_channel/2
 ]).
 
@@ -92,16 +93,16 @@ lookup(Path) ->
             {error, no_match}
     end.
 
-%% @doc Update channels for a mount (called by arbiter).
--spec update_channels(MountId :: binary(), Channels :: tuple() | undefined) -> ok.
-update_channels(MountId, undefined) ->
+%% @doc Set a channel for a mount worker.
+-spec set_channel(MountId :: binary(), WorkerIdx :: non_neg_integer(), Channel :: term()) -> ok.
+set_channel(MountId, WorkerIdx, Channel) ->
+    ets:insert(?TABLE, {{MountId, WorkerIdx}, Channel}),
+    ok.
+
+%% @doc Clear all channels for a mount.
+-spec clear_channels(MountId :: binary()) -> ok.
+clear_channels(MountId) ->
     ets:match_delete(?TABLE, {{MountId, '_'}, '_'}),
-    ok;
-update_channels(MountId, Channels) ->
-    lists:foreach(fun(Idx) ->
-        Ch = element(Idx + 1, Channels),
-        ets:insert(?TABLE, {{MountId, Idx}, Ch})
-    end, lists:seq(0, tuple_size(Channels) - 1)),
     ok.
 
 %% @doc Get channel for a mount by worker index (0-based).
