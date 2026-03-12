@@ -28,8 +28,7 @@
 
 -export([
     start_link/2,
-    get_channel/2,
-    get_worker_count/1,
+    get_channels/1,
     worker_status/1
 ]).
 
@@ -77,16 +76,10 @@
 start_link(MountId, Config) ->
     gen_server:start_link(?MODULE, {MountId, Config}, []).
 
-%% @doc Get channel for a specific worker index.
-%% Uses persistent_term for O(1) lookup.
--spec get_channel(MountId :: binary(), WorkerIdx :: non_neg_integer()) -> term().
-get_channel(MountId, WorkerIdx) ->
-    persistent_term:get({hornbeam_worker, MountId, WorkerIdx}).
-
-%% @doc Get number of workers for a mount.
--spec get_worker_count(MountId :: binary()) -> pos_integer().
-get_worker_count(MountId) ->
-    persistent_term:get({hornbeam_worker_count, MountId}).
+%% @doc Get channels tuple for a mount. Single O(1) lookup.
+-spec get_channels(MountId :: binary()) -> tuple().
+get_channels(MountId) ->
+    persistent_term:get({hornbeam_channels, MountId}).
 
 %% @doc Get status of all workers managed by this arbiter.
 -spec worker_status(pid()) -> map().
@@ -102,11 +95,11 @@ init({MountId, Config}) ->
 
     NumWorkers = maps:get(workers, Config, erlang:system_info(schedulers)),
 
-    %% Store worker count for routing
-    persistent_term:put({hornbeam_worker_count, MountId}, NumWorkers),
-
     %% Start all workers
     Workers = start_all_workers(MountId, Config, NumWorkers),
+
+    %% Store channels tuple for O(1) lookup (single persistent_term entry)
+    update_channels_tuple(MountId, Workers, NumWorkers),
 
     %% Start heartbeat timer
     HeartbeatTimer = erlang:send_after(?HEARTBEAT_INTERVAL, self(), check_heartbeats),
@@ -159,11 +152,11 @@ handle_info({heartbeat, WorkerId}, #state{workers = Workers} = State) ->
     end;
 
 handle_info(check_heartbeats, #state{workers = Workers, mount_id = MountId,
-                                      mount_config = Config} = State) ->
+                                      mount_config = Config, num_workers = NumWorkers} = State) ->
     Now = erlang:system_time(millisecond),
 
     %% Check each worker for heartbeat timeout
-    UpdatedWorkers = maps:fold(fun(Idx, WorkerInfo, Acc) ->
+    {UpdatedWorkers, Changed} = maps:fold(fun(Idx, WorkerInfo, {Acc, Ch}) ->
         #worker_info{last_heartbeat = LastHB, status = Status} = WorkerInfo,
         case Status of
             running when (Now - LastHB) > ?HEARTBEAT_TIMEOUT ->
@@ -171,11 +164,17 @@ handle_info(check_heartbeats, #state{workers = Workers, mount_id = MountId,
                 error_logger:warning_msg("hornbeam_worker_arbiter: Worker ~s_~p missed heartbeats, restarting~n",
                                          [MountId, Idx]),
                 NewWorker = restart_worker(MountId, Config, Idx, WorkerInfo),
-                Acc#{Idx => NewWorker};
+                {Acc#{Idx => NewWorker}, true};
             _ ->
-                Acc#{Idx => WorkerInfo}
+                {Acc#{Idx => WorkerInfo}, Ch}
         end
-    end, #{}, Workers),
+    end, {#{}, false}, Workers),
+
+    %% Update channels tuple if any worker was restarted
+    case Changed of
+        true -> update_channels_tuple(MountId, UpdatedWorkers, NumWorkers);
+        false -> ok
+    end,
 
     %% Schedule next heartbeat check
     NewTimer = erlang:send_after(?HEARTBEAT_INTERVAL, self(), check_heartbeats),
@@ -194,7 +193,7 @@ handle_info({'EXIT', _Pid, Reason}, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{workers = Workers, mount_id = MountId, num_workers = NumWorkers}) ->
+terminate(_Reason, #state{workers = Workers, mount_id = MountId}) ->
     %% Send stop to all workers
     maps:foreach(fun(_Idx, #worker_info{channel = Channel}) ->
         catch py_channel:send(Channel, stop)
@@ -208,11 +207,8 @@ terminate(_Reason, #state{workers = Workers, mount_id = MountId, num_workers = N
         catch py_channel:close(Channel)
     end, Workers),
 
-    %% Clean up persistent_term entries
-    lists:foreach(fun(Idx) ->
-        persistent_term:erase({hornbeam_worker, MountId, Idx})
-    end, lists:seq(0, NumWorkers - 1)),
-    persistent_term:erase({hornbeam_worker_count, MountId}),
+    %% Clean up persistent_term entry
+    persistent_term:erase({hornbeam_channels, MountId}),
 
     ok.
 
@@ -232,9 +228,6 @@ start_all_workers(MountId, Config, NumWorkers) ->
 start_worker(MountId, Config, Idx) ->
     %% Create channel for this worker
     {ok, Channel} = py_channel:new(),
-
-    %% Store in persistent_term for O(1) lookup
-    persistent_term:put({hornbeam_worker, MountId, Idx}, Channel),
 
     %% Build worker ID
     WorkerId = <<MountId/binary, "_", (integer_to_binary(Idx))/binary>>,
@@ -309,3 +302,12 @@ parse_worker_idx(WorkerId) when is_binary(WorkerId) ->
         _ ->
             0
     end.
+
+%% @private
+%% Build and store channels tuple for O(1) lookup.
+%% Tuple is indexed 1..N, element((SchedId rem N) + 1, Tuple) gives channel.
+update_channels_tuple(MountId, Workers, NumWorkers) ->
+    %% Build list of channels in index order
+    ChannelsList = [maps:get(Idx, Workers) || Idx <- lists:seq(0, NumWorkers - 1)],
+    Channels = list_to_tuple([Ch#worker_info.channel || Ch <- ChannelsList]),
+    persistent_term:put({hornbeam_channels, MountId}, Channels).

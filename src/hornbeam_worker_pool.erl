@@ -85,17 +85,14 @@ stop_mount_pool(MountId) ->
             Error
     end.
 
-%% @doc Get channel for a specific worker in a mount's pool.
+%% @doc Get channel for a worker in a mount's pool.
 %%
-%% Uses scheduler affinity by default: the current scheduler ID is hashed
-%% to select a worker, providing cache locality.
-%%
-%% For explicit worker selection, pass the worker index directly.
--spec get_channel(MountId :: binary(), SchedIdOrIdx :: pos_integer()) -> term().
-get_channel(MountId, SchedIdOrIdx) ->
-    NumWorkers = hornbeam_worker_arbiter:get_worker_count(MountId),
-    WorkerIdx = erlang:phash2(SchedIdOrIdx, NumWorkers),
-    hornbeam_worker_arbiter:get_channel(MountId, WorkerIdx).
+%% Uses scheduler affinity: the scheduler ID selects a worker via
+%% modulo on the channels tuple size.
+-spec get_channel(MountId :: binary(), SchedId :: pos_integer()) -> term().
+get_channel(MountId, SchedId) ->
+    Channels = hornbeam_worker_arbiter:get_channels(MountId),
+    element((SchedId rem tuple_size(Channels)) + 1, Channels).
 
 %% @doc List all active worker pools.
 -spec list_pools() -> [#{mount_id := binary(), pid := pid()}].
