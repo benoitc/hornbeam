@@ -728,9 +728,9 @@ build_pooled_request_info(Req, State) ->
 receive_wsgi_response(Req, ReqInfo, TimeoutMs, State) ->
     receive
         {headers, StatusCode, Headers} ->
-            %% Got headers - now receive body chunks
+            %% Got headers - stream body directly to client
             CowboyHeaders = convert_headers(Headers),
-            receive_wsgi_body(Req, StatusCode, CowboyHeaders, [], TimeoutMs, State);
+            receive_wsgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State);
         {response, StatusCode, Headers, Body} ->
             %% Buffered response (single message)
             Response = #{
@@ -747,37 +747,28 @@ receive_wsgi_response(Req, ReqInfo, TimeoutMs, State) ->
     end.
 
 %% @private
-%% Receive WSGI body chunks from pooled worker
-receive_wsgi_body(Req, StatusCode, CowboyHeaders, BodyParts, TimeoutMs, State) ->
+%% Receive WSGI body chunks from pooled worker - streams directly to client
+receive_wsgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State) ->
+    %% Start streaming response immediately
+    Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+    stream_wsgi_body(Req2, TimeoutMs, State).
+
+stream_wsgi_body(Req, TimeoutMs, State) ->
     receive
         {chunk, Chunk} ->
-            receive_wsgi_body(Req, StatusCode, CowboyHeaders, [Chunk | BodyParts], TimeoutMs, State);
+            ok = cowboy_req:stream_body(Chunk, nofin, Req),
+            stream_wsgi_body(Req, TimeoutMs, State);
         done ->
-            Body = iolist_to_binary(lists:reverse(BodyParts)),
-            Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-            {ok, Req2, State};
-        {error, Reason} ->
-            Body = iolist_to_binary(lists:reverse(BodyParts)),
-            if
-                Body =/= <<>> ->
-                    %% Partial response - send what we have
-                    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-                    {ok, Req2, State};
-                true ->
-                    ReqInfo = build_request_info(Req),
-                    handle_error(Req, Reason, ReqInfo, State)
-            end
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State};
+        {error, _Reason} ->
+            %% Error mid-stream - close connection
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
     after TimeoutMs ->
-        %% Timeout - send what we have
-        Body = iolist_to_binary(lists:reverse(BodyParts)),
-        if
-            Body =/= <<>> ->
-                Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-                {ok, Req2, State};
-            true ->
-                ReqInfo = build_request_info(Req),
-                handle_error(Req, timeout, ReqInfo, State)
-        end
+        %% Timeout - close stream
+        ok = cowboy_req:stream_body(<<>>, fin, Req),
+        {ok, Req, State}
     end.
 
 %% @private
@@ -804,9 +795,9 @@ receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
             Response1 = hornbeam_http_hooks:run_on_response(Response),
             send_asgi_response(Req, Response1, State);
         {headers, StatusCode, Headers} ->
-            %% Streaming response - receive body chunks
+            %% Streaming response - stream directly to client
             CowboyHeaders = convert_headers(Headers),
-            receive_asgi_body(Req, StatusCode, CowboyHeaders, [], TimeoutMs, State);
+            receive_asgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State);
         {error, Reason} ->
             handle_error(Req, Reason, ReqInfo, State)
     after TimeoutMs ->
@@ -814,35 +805,28 @@ receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
     end.
 
 %% @private
-%% Receive ASGI body chunks from pooled worker
-receive_asgi_body(Req, StatusCode, CowboyHeaders, BodyParts, TimeoutMs, State) ->
+%% Receive ASGI body chunks from pooled worker - streams directly to client
+receive_asgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State) ->
+    %% Start streaming response immediately
+    Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+    stream_asgi_body(Req2, TimeoutMs, State).
+
+stream_asgi_body(Req, TimeoutMs, State) ->
     receive
         {chunk, Chunk} ->
-            receive_asgi_body(Req, StatusCode, CowboyHeaders, [Chunk | BodyParts], TimeoutMs, State);
+            ok = cowboy_req:stream_body(Chunk, nofin, Req),
+            stream_asgi_body(Req, TimeoutMs, State);
         done ->
-            Body = iolist_to_binary(lists:reverse(BodyParts)),
-            Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-            {ok, Req2, State};
-        {error, Reason} ->
-            Body = iolist_to_binary(lists:reverse(BodyParts)),
-            if
-                Body =/= <<>> ->
-                    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-                    {ok, Req2, State};
-                true ->
-                    ReqInfo = build_request_info(Req),
-                    handle_error(Req, Reason, ReqInfo, State)
-            end
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State};
+        {error, _Reason} ->
+            %% Error mid-stream - close connection
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
     after TimeoutMs ->
-        Body = iolist_to_binary(lists:reverse(BodyParts)),
-        if
-            Body =/= <<>> ->
-                Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
-                {ok, Req2, State};
-            true ->
-                ReqInfo = build_request_info(Req),
-                handle_error(Req, timeout, ReqInfo, State)
-        end
+        %% Timeout - close stream
+        ok = cowboy_req:stream_body(<<>>, fin, Req),
+        {ok, Req, State}
     end.
 
 %%% ============================================================================
