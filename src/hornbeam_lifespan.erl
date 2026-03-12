@@ -155,11 +155,11 @@ init(Opts) ->
         {read_concurrency, true}
     ]),
 
-    %% Create a dedicated Python context for ASGI affinity
+    %% Get a Python context for ASGI affinity
     %% This ensures module-level state persists across requests
-    PyContext = case py:bind(new) of
-        {ok, Ctx} -> Ctx;
-        _ -> undefined
+    PyContext = case py:contexts_started() of
+        true -> py:context();
+        false -> undefined
     end,
 
     %% Cache initial values
@@ -261,12 +261,8 @@ terminate(_Reason, #state{started = true, supported = true,
                           py_context = PyContext}) ->
     %% Run shutdown on terminate
     _ = run_shutdown(AppModule, AppCallable, PyContext),
-    %% Unbind the context
-    catch py:unbind(PyContext),
     ok;
-terminate(_Reason, #state{py_context = PyContext}) ->
-    %% Just unbind context if lifespan not started
-    catch py:unbind(PyContext),
+terminate(_Reason, _State) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -293,10 +289,10 @@ run_startup(AppModule, AppCallable, PyContext) ->
         Result = case PyContext of
             undefined ->
                 py:call(hornbeam_lifespan_runner, startup,
-                       [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000);
+                       [AppModule, AppCallable, TimeoutMs], #{timeout => TimeoutMs + 5000});
             Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, startup,
-                           [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000)
+                py:call(Ctx, hornbeam_lifespan_runner, startup,
+                           [AppModule, AppCallable, TimeoutMs], #{timeout => TimeoutMs + 5000})
         end,
         case Result of
             {ok, Response} ->
@@ -337,10 +333,10 @@ run_shutdown(AppModule, AppCallable, PyContext) ->
         Result = case PyContext of
             undefined ->
                 py:call(hornbeam_lifespan_runner, shutdown,
-                       [AppModule, AppCallable], #{}, TimeoutMs);
+                       [AppModule, AppCallable], #{timeout => TimeoutMs});
             Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, shutdown,
-                           [AppModule, AppCallable], #{}, TimeoutMs)
+                py:call(Ctx, hornbeam_lifespan_runner, shutdown,
+                           [AppModule, AppCallable], #{timeout => TimeoutMs})
         end,
         case Result of
             {ok, Response} ->
