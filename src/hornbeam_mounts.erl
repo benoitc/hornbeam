@@ -56,7 +56,11 @@
     app_callable := binary(),
     worker_class := wsgi | asgi,
     workers := pos_integer(),
-    timeout := pos_integer()
+    timeout := pos_integer(),
+    mount_id => binary(),           %% 6-char random ID for pool routing
+    pool_enabled => boolean(),      %% Enable persistent worker pool
+    heartbeat_interval => pos_integer(),  %% Worker heartbeat interval (ms)
+    heartbeat_timeout => pos_integer()    %% Max time without heartbeat (ms)
 }.
 
 -export_type([mount/0]).
@@ -111,17 +115,61 @@ init([]) ->
     {ok, #{}}.
 
 handle_call({register, Mounts}, _From, State) ->
+    %% Generate mount_id for each mount and sort by prefix length
+    MountsWithIds = lists:map(fun(Mount) ->
+        MountId = case maps:get(mount_id, Mount, undefined) of
+            undefined -> generate_mount_id();
+            Existing -> Existing
+        end,
+        Mount#{mount_id => MountId}
+    end, Mounts),
+
     %% Sort mounts by prefix length descending (longest first)
     SortedMounts = lists:sort(
         fun(#{prefix := P1}, #{prefix := P2}) ->
             byte_size(P1) >= byte_size(P2)
         end,
-        Mounts
+        MountsWithIds
     ),
     ets:insert(?TABLE, {sorted_mounts, SortedMounts}),
+
+    %% Start worker pools for mounts with pool_enabled = true
+    lists:foreach(fun(Mount) ->
+        case maps:get(pool_enabled, Mount, false) of
+            true ->
+                MountId = maps:get(mount_id, Mount),
+                case hornbeam_worker_pool:start_mount_pool(MountId, Mount) of
+                    {ok, _Pid} ->
+                        ok;
+                    {error, {already_started, _}} ->
+                        ok;
+                    {error, Reason} ->
+                        error_logger:error_msg("hornbeam_mounts: Failed to start pool for ~s: ~p~n",
+                                               [MountId, Reason])
+                end;
+            false ->
+                ok
+        end
+    end, SortedMounts),
+
     {reply, ok, State};
 
 handle_call(clear, _From, State) ->
+    %% Stop all worker pools first
+    case ets:lookup(?TABLE, sorted_mounts) of
+        [{sorted_mounts, Mounts}] ->
+            lists:foreach(fun(Mount) ->
+                case maps:get(pool_enabled, Mount, false) of
+                    true ->
+                        MountId = maps:get(mount_id, Mount),
+                        catch hornbeam_worker_pool:stop_mount_pool(MountId);
+                    false ->
+                        ok
+                end
+            end, Mounts);
+        [] ->
+            ok
+    end,
     ets:delete_all_objects(?TABLE),
     {reply, ok, State};
 
@@ -203,3 +251,13 @@ strip_prefix(Path, Prefix) ->
                     end
             end
     end.
+
+%% @private
+%% Generate a 6-character URL-safe random ID for mount routing.
+%% Uses 3 random bytes encoded as URL-safe base64 (no padding).
+generate_mount_id() ->
+    Bytes = crypto:strong_rand_bytes(3),
+    %% URL-safe base64 encoding (replaces + with - and / with _)
+    B64 = base64:encode(Bytes),
+    %% Replace unsafe characters and remove padding
+    binary:replace(binary:replace(B64, <<"+">>, <<"-">>), <<"/">>, <<"_">>).

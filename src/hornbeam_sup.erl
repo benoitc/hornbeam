@@ -124,6 +124,14 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [hornbeam_presence]
+        },
+        #{
+            id => hornbeam_worker_pool,
+            start => {hornbeam_worker_pool, start_link, []},
+            restart => permanent,
+            shutdown => infinity,
+            type => supervisor,
+            modules => [hornbeam_worker_pool]
         }
     ],
 

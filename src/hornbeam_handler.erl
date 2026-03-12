@@ -39,7 +39,11 @@ init(Req, #{multi_app := true} = State) ->
                 worker_class => maps:get(worker_class, Mount),
                 timeout => maps:get(timeout, Mount),
                 script_name => maps:get(prefix, Mount),
-                path_info => PathInfo
+                path_info => PathInfo,
+                %% Pool settings (for persistent worker dispatch)
+                pool_enabled => maps:get(pool_enabled, Mount, false),
+                mount_id => maps:get(mount_id, Mount, undefined),
+                workers => maps:get(workers, Mount, 4)
             },
             WorkerClass = maps:get(worker_class, Mount),
             handle_request(WorkerClass, Req, NewState);
@@ -84,7 +88,53 @@ handle_websocket_upgrade(Req, State) ->
 %%% WSGI Handler
 %%% ============================================================================
 
+handle_wsgi(Req, #{pool_enabled := true, mount_id := MountId} = State) ->
+    %% Pooled worker path - dispatch to persistent worker via channel
+    handle_wsgi_pooled(Req, MountId, State);
 handle_wsgi(Req, State) ->
+    %% Non-pooled path - existing behavior
+    handle_wsgi_direct(Req, State).
+
+%% @private
+%% Dispatch WSGI request to persistent worker pool via channel
+handle_wsgi_pooled(Req, MountId, State) ->
+    ReqInfo = build_request_info(Req),
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        TimeoutMs = maps:get(timeout, State, 30000),
+
+        %% Get channel via scheduler affinity
+        SchedId = erlang:system_info(scheduler_id),
+        Channel = hornbeam_worker_pool:get_channel(MountId, SchedId),
+
+        %% Build request info for Python worker
+        ReqTuple = build_pooled_request_info(Req, State),
+
+        %% Check content-length to decide streaming vs buffered
+        ContentLength = cowboy_req:header(<<"content-length">>, Req),
+        case should_buffer_body(ContentLength) of
+            true ->
+                %% Small body - read fully and send in single message
+                {ok, Body, Req2} = cowboy_req:read_body(Req),
+                py_channel:send(Channel, {start_request, self(), ReqTuple, Body}),
+                receive_wsgi_response(Req2, ReqInfo1, TimeoutMs, State);
+            false ->
+                %% Large/unknown body - stream chunks
+                py_channel:send(Channel, {start_request_streaming, self(), ReqTuple}),
+                Req2 = stream_body_to_channel(Channel, Req),
+                receive_wsgi_response(Req2, ReqInfo1, TimeoutMs, State)
+        end
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("WSGI pooled handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
+    end.
+
+%% @private
+%% Original direct WSGI handler (non-pooled path)
+handle_wsgi_direct(Req, State) ->
     %% Build initial request map for hooks
     ReqInfo = build_request_info(Req),
 
@@ -285,7 +335,53 @@ parse_status_code(Status) when is_integer(Status) ->
 %%% ASGI Handler
 %%% ============================================================================
 
+handle_asgi(Req, #{pool_enabled := true, mount_id := MountId} = State) ->
+    %% Pooled worker path - dispatch to persistent worker via channel
+    handle_asgi_pooled(Req, MountId, State);
 handle_asgi(Req, State) ->
+    %% Non-pooled path - existing behavior
+    handle_asgi_direct(Req, State).
+
+%% @private
+%% Dispatch ASGI request to persistent worker pool via channel
+handle_asgi_pooled(Req, MountId, State) ->
+    ReqInfo = build_request_info(Req),
+    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
+
+    try
+        TimeoutMs = maps:get(timeout, State, 30000),
+
+        %% Get channel via scheduler affinity
+        SchedId = erlang:system_info(scheduler_id),
+        Channel = hornbeam_worker_pool:get_channel(MountId, SchedId),
+
+        %% Build ASGI scope for Python worker
+        Scope = build_scope_for_nif(Req, State),
+
+        %% Check content-length to decide streaming vs buffered
+        ContentLength = cowboy_req:header(<<"content-length">>, Req),
+        case should_buffer_body(ContentLength) of
+            true ->
+                %% Small body - read fully and send in single message
+                {ok, Body, Req2} = cowboy_req:read_body(Req),
+                py_channel:send(Channel, {start_request, self(), Scope, Body}),
+                receive_asgi_response(Req2, ReqInfo1, TimeoutMs, State);
+            false ->
+                %% Large/unknown body - stream chunks
+                py_channel:send(Channel, {start_request_streaming, self(), Scope}),
+                Req2 = stream_body_to_channel(Channel, Req),
+                receive_asgi_response(Req2, ReqInfo1, TimeoutMs, State)
+        end
+    catch
+        Class:Reason:Stack ->
+            error_logger:error_msg("ASGI pooled handler error: ~p:~p~n~p~n",
+                                   [Class, Reason, Stack]),
+            handle_error(Req, {Class, Reason}, ReqInfo1, State)
+    end.
+
+%% @private
+%% Original direct ASGI handler (non-pooled path)
+handle_asgi_direct(Req, State) ->
     %% Build initial request map for hooks
     ReqInfo = build_request_info(Req),
 
@@ -550,6 +646,204 @@ to_lower_binary(V) when is_binary(V) -> string:lowercase(V);
 to_lower_binary(V) when is_list(V) -> string:lowercase(list_to_binary(V));
 to_lower_binary(V) when is_atom(V) -> string:lowercase(atom_to_binary(V, utf8));
 to_lower_binary(V) -> string:lowercase(to_binary(V)).
+
+%%% ============================================================================
+%%% Pooled Worker Dispatch Helpers
+%%% ============================================================================
+
+%% @private
+%% Determine if body should be buffered (small) or streamed (large/unknown)
+%% Buffer threshold is 16KB
+should_buffer_body(undefined) ->
+    %% Unknown length - stream it
+    false;
+should_buffer_body(ContentLengthBin) ->
+    try
+        ContentLength = binary_to_integer(ContentLengthBin),
+        ContentLength =< 16384
+    catch
+        _:_ -> false
+    end.
+
+%% @private
+%% Stream request body chunks to the worker channel
+stream_body_to_channel(Channel, Req) ->
+    case cowboy_req:read_body(Req) of
+        {ok, Data, Req2} ->
+            py_channel:send(Channel, {body_chunk, Data}),
+            py_channel:send(Channel, body_done),
+            Req2;
+        {more, Data, Req2} ->
+            py_channel:send(Channel, {body_chunk, Data}),
+            stream_body_to_channel(Channel, Req2)
+    end.
+
+%% @private
+%% Build request info map for WSGI pooled workers
+build_pooled_request_info(Req, State) ->
+    Method = cowboy_req:method(Req),
+    Path = cowboy_req:path(Req),
+    Qs = cowboy_req:qs(Req),
+    Headers = cowboy_req:headers(Req),
+    Host = cowboy_req:host(Req),
+    Port = cowboy_req:port(Req),
+    Scheme = cowboy_req:scheme(Req),
+    Version = cowboy_req:version(Req),
+    {ClientIp, ClientPort} = cowboy_req:peer(Req),
+
+    %% Get SCRIPT_NAME and PATH_INFO from state (multi-app) or defaults
+    ScriptName = maps:get(script_name, State, <<>>),
+    PathInfo = maps:get(path_info, State, Path),
+
+    %% Build HTTP_* headers (pre-converted for Python)
+    WsgiHeaders = maps:fold(fun(Name, Value, Acc) ->
+        HeaderKey = header_to_wsgi_key(Name),
+        Acc#{HeaderKey => Value}
+    end, #{}, Headers),
+
+    %% Extract content-type and content-length
+    ContentType = maps:get(<<"content-type">>, Headers, undefined),
+    ContentLength = maps:get(<<"content-length">>, Headers, undefined),
+
+    %% Get lifespan state
+    LifespanState = hornbeam_lifespan:get_state(),
+
+    #{
+        method => Method,
+        script_name => ScriptName,
+        path_info => PathInfo,
+        query_string => Qs,
+        wsgi_headers => WsgiHeaders,
+        content_type => ContentType,
+        content_length => ContentLength,
+        server => {Host, Port},
+        client => {format_ip(ClientIp), ClientPort},
+        scheme => Scheme,
+        protocol => format_protocol(Version),
+        lifespan_state => LifespanState
+    }.
+
+%% @private
+%% Receive WSGI response from pooled worker
+receive_wsgi_response(Req, ReqInfo, TimeoutMs, State) ->
+    receive
+        {headers, StatusCode, Headers} ->
+            %% Got headers - now receive body chunks
+            CowboyHeaders = convert_headers(Headers),
+            receive_wsgi_body(Req, StatusCode, CowboyHeaders, [], TimeoutMs, State);
+        {response, StatusCode, Headers, Body} ->
+            %% Buffered response (single message)
+            Response = #{
+                <<"status">> => StatusCode,
+                <<"headers">> => Headers,
+                <<"body">> => Body
+            },
+            Response1 = hornbeam_http_hooks:run_on_response(Response),
+            send_wsgi_response(Req, Response1, State);
+        {error, Reason} ->
+            handle_error(Req, Reason, ReqInfo, State)
+    after TimeoutMs ->
+        handle_error(Req, timeout, ReqInfo, State)
+    end.
+
+%% @private
+%% Receive WSGI body chunks from pooled worker
+receive_wsgi_body(Req, StatusCode, CowboyHeaders, BodyParts, TimeoutMs, State) ->
+    receive
+        {chunk, Chunk} ->
+            receive_wsgi_body(Req, StatusCode, CowboyHeaders, [Chunk | BodyParts], TimeoutMs, State);
+        done ->
+            Body = iolist_to_binary(lists:reverse(BodyParts)),
+            Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+            {ok, Req2, State};
+        {error, Reason} ->
+            Body = iolist_to_binary(lists:reverse(BodyParts)),
+            if
+                Body =/= <<>> ->
+                    %% Partial response - send what we have
+                    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+                    {ok, Req2, State};
+                true ->
+                    ReqInfo = build_request_info(Req),
+                    handle_error(Req, Reason, ReqInfo, State)
+            end
+    after TimeoutMs ->
+        %% Timeout - send what we have
+        Body = iolist_to_binary(lists:reverse(BodyParts)),
+        if
+            Body =/= <<>> ->
+                Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+                {ok, Req2, State};
+            true ->
+                ReqInfo = build_request_info(Req),
+                handle_error(Req, timeout, ReqInfo, State)
+        end
+    end.
+
+%% @private
+%% Receive ASGI response from pooled worker
+receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
+    receive
+        {response, StatusCode, Headers, Body} ->
+            %% Buffered response (single message)
+            Response = #{
+                <<"status">> => StatusCode,
+                <<"headers">> => Headers,
+                <<"body">> => Body
+            },
+            Response1 = hornbeam_http_hooks:run_on_response(Response),
+            send_asgi_response(Req, Response1, State);
+        {response, StatusCode, Headers, Body, EarlyHints} ->
+            %% Buffered response with early hints
+            Response = #{
+                <<"status">> => StatusCode,
+                <<"headers">> => Headers,
+                <<"body">> => Body,
+                <<"early_hints">> => EarlyHints
+            },
+            Response1 = hornbeam_http_hooks:run_on_response(Response),
+            send_asgi_response(Req, Response1, State);
+        {headers, StatusCode, Headers} ->
+            %% Streaming response - receive body chunks
+            CowboyHeaders = convert_headers(Headers),
+            receive_asgi_body(Req, StatusCode, CowboyHeaders, [], TimeoutMs, State);
+        {error, Reason} ->
+            handle_error(Req, Reason, ReqInfo, State)
+    after TimeoutMs ->
+        handle_error(Req, timeout, ReqInfo, State)
+    end.
+
+%% @private
+%% Receive ASGI body chunks from pooled worker
+receive_asgi_body(Req, StatusCode, CowboyHeaders, BodyParts, TimeoutMs, State) ->
+    receive
+        {chunk, Chunk} ->
+            receive_asgi_body(Req, StatusCode, CowboyHeaders, [Chunk | BodyParts], TimeoutMs, State);
+        done ->
+            Body = iolist_to_binary(lists:reverse(BodyParts)),
+            Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+            {ok, Req2, State};
+        {error, Reason} ->
+            Body = iolist_to_binary(lists:reverse(BodyParts)),
+            if
+                Body =/= <<>> ->
+                    Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+                    {ok, Req2, State};
+                true ->
+                    ReqInfo = build_request_info(Req),
+                    handle_error(Req, Reason, ReqInfo, State)
+            end
+    after TimeoutMs ->
+        Body = iolist_to_binary(lists:reverse(BodyParts)),
+        if
+            Body =/= <<>> ->
+                Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, Body, Req),
+                {ok, Req2, State};
+            true ->
+                ReqInfo = build_request_info(Req),
+                handle_error(Req, timeout, ReqInfo, State)
+        end
+    end.
 
 %%% ============================================================================
 %%% WebSocket callbacks (delegate to hornbeam_websocket)
