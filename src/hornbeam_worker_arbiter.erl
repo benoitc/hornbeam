@@ -28,7 +28,6 @@
 
 -export([
     start_link/2,
-    get_channels/1,
     worker_status/1
 ]).
 
@@ -76,10 +75,6 @@
 start_link(MountId, Config) ->
     gen_server:start_link(?MODULE, {MountId, Config}, []).
 
-%% @doc Get channels tuple for a mount. Single O(1) lookup.
--spec get_channels(MountId :: binary()) -> tuple().
-get_channels(MountId) ->
-    persistent_term:get({hornbeam_channels, MountId}).
 
 %% @doc Get status of all workers managed by this arbiter.
 -spec worker_status(pid()) -> map().
@@ -207,8 +202,8 @@ terminate(_Reason, #state{workers = Workers, mount_id = MountId}) ->
         catch py_channel:close(Channel)
     end, Workers),
 
-    %% Clean up persistent_term entry
-    persistent_term:erase({hornbeam_channels, MountId}),
+    %% Clear channels from mount
+    hornbeam_mounts:update_channels(MountId, undefined),
 
     ok.
 
@@ -304,10 +299,9 @@ parse_worker_idx(WorkerId) when is_binary(WorkerId) ->
     end.
 
 %% @private
-%% Build and store channels tuple for O(1) lookup.
+%% Build and store channels tuple in mount record.
 %% Tuple is indexed 1..N, element((SchedId rem N) + 1, Tuple) gives channel.
 update_channels_tuple(MountId, Workers, NumWorkers) ->
-    %% Build list of channels in index order
     ChannelsList = [maps:get(Idx, Workers) || Idx <- lists:seq(0, NumWorkers - 1)],
     Channels = list_to_tuple([Ch#worker_info.channel || Ch <- ChannelsList]),
-    persistent_term:put({hornbeam_channels, MountId}, Channels).
+    hornbeam_mounts:update_channels(MountId, Channels).

@@ -40,7 +40,6 @@ init(Req, #{multi_app := true} = State) ->
                 timeout => maps:get(timeout, Mount),
                 script_name => maps:get(prefix, Mount),
                 path_info => PathInfo,
-                %% Pool settings (for persistent worker dispatch)
                 pool_enabled => maps:get(pool_enabled, Mount, false),
                 mount_id => maps:get(mount_id, Mount, undefined),
                 workers => maps:get(workers, Mount, 4)
@@ -88,25 +87,23 @@ handle_websocket_upgrade(Req, State) ->
 %%% WSGI Handler
 %%% ============================================================================
 
-handle_wsgi(Req, #{pool_enabled := true, mount_id := MountId} = State) ->
-    %% Pooled worker path - dispatch to persistent worker via channel
-    handle_wsgi_pooled(Req, MountId, State);
+handle_wsgi(Req, #{pool_enabled := true, mount_id := MountId, workers := NumWorkers} = State) ->
+    %% Pooled worker path - single ETS lookup_element
+    SchedId = erlang:system_info(scheduler_id),
+    Channel = hornbeam_mounts:get_channel(MountId, SchedId rem NumWorkers),
+    handle_wsgi_pooled(Req, Channel, State);
 handle_wsgi(Req, State) ->
     %% Non-pooled path - existing behavior
     handle_wsgi_direct(Req, State).
 
 %% @private
 %% Dispatch WSGI request to persistent worker pool via channel
-handle_wsgi_pooled(Req, MountId, State) ->
+handle_wsgi_pooled(Req, Channel, State) ->
     ReqInfo = build_request_info(Req),
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
 
     try
         TimeoutMs = maps:get(timeout, State, 30000),
-
-        %% Get channel via scheduler affinity
-        SchedId = erlang:system_info(scheduler_id),
-        Channel = hornbeam_worker_pool:get_channel(MountId, SchedId),
 
         %% Build request info for Python worker
         ReqTuple = build_pooled_request_info(Req, State),
@@ -335,25 +332,23 @@ parse_status_code(Status) when is_integer(Status) ->
 %%% ASGI Handler
 %%% ============================================================================
 
-handle_asgi(Req, #{pool_enabled := true, mount_id := MountId} = State) ->
-    %% Pooled worker path - dispatch to persistent worker via channel
-    handle_asgi_pooled(Req, MountId, State);
+handle_asgi(Req, #{pool_enabled := true, mount_id := MountId, workers := NumWorkers} = State) ->
+    %% Pooled worker path - single ETS lookup_element
+    SchedId = erlang:system_info(scheduler_id),
+    Channel = hornbeam_mounts:get_channel(MountId, SchedId rem NumWorkers),
+    handle_asgi_pooled(Req, Channel, State);
 handle_asgi(Req, State) ->
     %% Non-pooled path - existing behavior
     handle_asgi_direct(Req, State).
 
 %% @private
 %% Dispatch ASGI request to persistent worker pool via channel
-handle_asgi_pooled(Req, MountId, State) ->
+handle_asgi_pooled(Req, Channel, State) ->
     ReqInfo = build_request_info(Req),
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
 
     try
         TimeoutMs = maps:get(timeout, State, 30000),
-
-        %% Get channel via scheduler affinity
-        SchedId = erlang:system_info(scheduler_id),
-        Channel = hornbeam_worker_pool:get_channel(MountId, SchedId),
 
         %% Build ASGI scope for Python worker
         Scope = build_scope_for_nif(Req, State),

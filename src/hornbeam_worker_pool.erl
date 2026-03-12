@@ -33,7 +33,6 @@
     start_link/0,
     start_mount_pool/2,
     stop_mount_pool/1,
-    get_channel/2,
     list_pools/0
 ]).
 
@@ -85,14 +84,6 @@ stop_mount_pool(MountId) ->
             Error
     end.
 
-%% @doc Get channel for a worker in a mount's pool.
-%%
-%% Uses scheduler affinity: the scheduler ID selects a worker via
-%% modulo on the channels tuple size.
--spec get_channel(MountId :: binary(), SchedId :: pos_integer()) -> term().
-get_channel(MountId, SchedId) ->
-    Channels = hornbeam_worker_arbiter:get_channels(MountId),
-    element((SchedId rem tuple_size(Channels)) + 1, Channels).
 
 %% @doc List all active worker pools.
 -spec list_pools() -> [#{mount_id := binary(), pid := pid()}].

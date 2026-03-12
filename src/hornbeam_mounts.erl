@@ -41,7 +41,9 @@
     register/1,
     lookup/1,
     list/0,
-    clear/0
+    clear/0,
+    update_channels/2,
+    get_channel/2
 ]).
 
 %% gen_server callbacks
@@ -89,6 +91,23 @@ lookup(Path) ->
         [] ->
             {error, no_match}
     end.
+
+%% @doc Update channels for a mount (called by arbiter).
+%% Stores as {{pool, MountId}, Ch1, Ch2, ...} for direct lookup_element access.
+-spec update_channels(MountId :: binary(), Channels :: tuple() | undefined) -> ok.
+update_channels(MountId, undefined) ->
+    ets:delete(?TABLE, {pool, MountId}),
+    ok;
+update_channels(MountId, Channels) ->
+    Entry = list_to_tuple([{pool, MountId} | tuple_to_list(Channels)]),
+    ets:insert(?TABLE, Entry),
+    ok.
+
+%% @doc Get channel for a mount by worker index (0-based).
+%% Single lookup_element call - O(1).
+-spec get_channel(MountId :: binary(), WorkerIdx :: non_neg_integer()) -> term().
+get_channel(MountId, WorkerIdx) ->
+    ets:lookup_element(?TABLE, {pool, MountId}, WorkerIdx + 2).
 
 %% @doc List all registered mounts.
 -spec list() -> [mount()].
