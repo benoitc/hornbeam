@@ -337,6 +337,12 @@ def reload_app(module_name: str, callable_name: str):
         return app
 
 
+# Response object pool for reuse
+_RESPONSE_POOL = []
+_RESPONSE_POOL_SIZE = 100
+_RESPONSE_POOL_LOCK = threading.Lock()
+
+
 class ASGIResponse:
     """Collects ASGI response messages.
 
@@ -350,6 +356,16 @@ class ASGIResponse:
                  'informational', 'trailers', 'early_hints')
 
     def __init__(self):
+        self.status = None
+        self.headers = []
+        self.body_parts = []
+        self.more_body = False
+        self.informational = []
+        self.trailers = []
+        self.early_hints = []
+
+    def reset(self):
+        """Reset response for reuse from pool."""
         self.status = None
         self.headers = []
         self.body_parts = []
@@ -408,6 +424,23 @@ class ASGIResponse:
             result['trailers'] = self.trailers
 
         return result
+
+
+def _get_response() -> ASGIResponse:
+    """Get an ASGIResponse from pool or create new."""
+    with _RESPONSE_POOL_LOCK:
+        if _RESPONSE_POOL:
+            resp = _RESPONSE_POOL.pop()
+            resp.reset()
+            return resp
+    return ASGIResponse()
+
+
+def _return_response(resp: ASGIResponse) -> None:
+    """Return an ASGIResponse to the pool."""
+    with _RESPONSE_POOL_LOCK:
+        if len(_RESPONSE_POOL) < _RESPONSE_POOL_SIZE:
+            _RESPONSE_POOL.append(resp)
 
 
 async def _run_asgi_async(module_name: str, callable_name: str,
