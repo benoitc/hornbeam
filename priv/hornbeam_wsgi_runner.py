@@ -254,6 +254,44 @@ _SHARED_ERRORS = WSGIErrorsWrapper()
 # Cached WSGI version tuple
 _WSGI_VERSION = (1, 0)
 
+# BytesIO pool for wsgi.input - reduces allocation overhead
+_BYTESIO_POOL = []
+_BYTESIO_POOL_SIZE = 100
+_BYTESIO_POOL_LOCK = threading.Lock()
+
+
+def _get_bytesio(data: bytes) -> io.BytesIO:
+    """Get a BytesIO from pool or create new one."""
+    bio = None
+    with _BYTESIO_POOL_LOCK:
+        if _BYTESIO_POOL:
+            bio = _BYTESIO_POOL.pop()
+    if bio is not None:
+        bio.seek(0)
+        bio.truncate()
+        bio.write(data)
+        bio.seek(0)
+        return bio
+    return io.BytesIO(data)
+
+
+def _return_bytesio(bio: io.BytesIO) -> None:
+    """Return a BytesIO to the pool for reuse."""
+    with _BYTESIO_POOL_LOCK:
+        if len(_BYTESIO_POOL) < _BYTESIO_POOL_SIZE:
+            _BYTESIO_POOL.append(bio)
+
+
+# Pre-computed environ template - shared base for all requests
+_ENVIRON_TEMPLATE = {
+    'wsgi.version': _WSGI_VERSION,
+    'wsgi.multithread': True,
+    'wsgi.multiprocess': True,
+    'wsgi.run_once': False,
+    'wsgi.file_wrapper': FileWrapper,
+    'wsgi.input_terminated': True,
+}
+
 
 def create_environ(raw_environ):
     """Create a complete WSGI environ dict from raw environ.
@@ -427,3 +465,134 @@ def _run_wsgi_sync(module_name: str, callable_name: str,
         result.get('headers', []),
         result.get('body', b'')
     )
+
+
+def create_environ_from_tuple(req_tuple):
+    """Create WSGI environ from pre-parsed Erlang tuple - O(1) operations only.
+
+    This is the fast path for WSGI requests. Erlang pre-parses all headers
+    into WSGI format so Python only does dict updates (no loops).
+
+    Args:
+        req_tuple: Pre-parsed request tuple from hornbeam_request:build_wsgi_tuple/2
+            (method, script_name, path_info, query_string, wsgi_headers,
+             content_type, content_length, body, server, client, scheme,
+             protocol, lifespan_state)
+
+    Returns:
+        Complete WSGI environ dict
+    """
+    (method, script_name, path_info, query_string, wsgi_headers,
+     content_type, content_length, body, server, client, scheme,
+     protocol, lifespan_state) = req_tuple
+
+    # Create early hints callback (must be per-request)
+    early_hints_list = []
+
+    def early_hints_callback(headers):
+        early_hints_list.append(headers)
+
+    # Get BytesIO from pool
+    wsgi_input = _get_bytesio(body if body.__class__ is bytes else b'')
+
+    # Start with template copy (O(1) - shallow copy of small dict)
+    environ = _ENVIRON_TEMPLATE.copy()
+
+    # Update with request-specific values (no loops!)
+    environ['REQUEST_METHOD'] = method
+    environ['SCRIPT_NAME'] = script_name if script_name else ''
+    environ['PATH_INFO'] = path_info
+    environ['QUERY_STRING'] = query_string
+    environ['SERVER_NAME'] = server[0]
+    environ['SERVER_PORT'] = str(server[1])
+    environ['SERVER_PROTOCOL'] = protocol
+    environ['wsgi.url_scheme'] = scheme
+    environ['wsgi.input'] = wsgi_input
+    environ['wsgi.errors'] = _SHARED_ERRORS
+    environ['wsgi.early_hints'] = early_hints_callback
+    environ['REMOTE_ADDR'] = client[0]
+    environ['REMOTE_PORT'] = str(client[1])
+    environ['_hornbeam.early_hints'] = early_hints_list
+    environ['_hornbeam.wsgi_input'] = wsgi_input  # For pool return
+    environ['_hornbeam.lifespan_state'] = lifespan_state
+
+    # Add pre-converted HTTP_* headers (already in correct format from Erlang)
+    environ.update(wsgi_headers)
+
+    # Add content-type/length if present
+    if content_type is not None:
+        environ['CONTENT_TYPE'] = content_type
+    if content_length is not None:
+        environ['CONTENT_LENGTH'] = content_length
+
+    return environ
+
+
+def run_wsgi_fast(module_name, callable_name, req_tuple):
+    """Run WSGI app with pre-parsed request tuple - fastest path.
+
+    Args:
+        module_name: Python module containing the WSGI app
+        callable_name: Name of the WSGI callable
+        req_tuple: Pre-parsed request tuple from Erlang
+
+    Returns:
+        Dict with status, headers, body, and optional early_hints
+    """
+    # Load the application
+    app = load_app(module_name, callable_name)
+
+    # Create environ from pre-parsed tuple
+    environ = create_environ_from_tuple(req_tuple)
+
+    # Create response handler
+    response = Response(environ)
+
+    # Call the WSGI app
+    result = app(environ, response.start_response)
+
+    # Collect body
+    body_parts = []
+
+    # Add any write() buffer content first
+    body_parts.extend(response._write_buffer)
+
+    # Check if result is a FileWrapper (for optimized file serving)
+    is_file_wrapper = isinstance(result, FileWrapper)
+
+    try:
+        if isinstance(result, (bytes, bytearray)):
+            body_parts.append(bytes(result))
+        else:
+            for chunk in result:
+                if isinstance(chunk, (bytes, bytearray)):
+                    body_parts.append(bytes(chunk))
+                elif isinstance(chunk, str):
+                    body_parts.append(chunk.encode('utf-8'))
+    finally:
+        if hasattr(result, 'close'):
+            result.close()
+        # Return BytesIO to pool
+        wsgi_input = environ.get('_hornbeam.wsgi_input')
+        if wsgi_input is not None:
+            _return_bytesio(wsgi_input)
+
+    body = b''.join(body_parts)
+
+    # Build response dict
+    result_dict = {
+        'status': response.status or '500 Internal Server Error',
+        'headers': response.headers,
+        'body': body,
+    }
+
+    # Include early hints if any were sent
+    early_hints = environ.get('_hornbeam.early_hints', [])
+    if early_hints:
+        result_dict['early_hints'] = early_hints
+
+    # Include file wrapper info for potential sendfile optimization
+    if is_file_wrapper:
+        result_dict['file_wrapper'] = True
+
+    return result_dict
