@@ -555,7 +555,7 @@ class StreamingBodyReader:
                 if size > 0 and len(self._buffer) >= size:
                     break
 
-                msg = self.channel.receive(timeout=30000)
+                msg = self.channel.receive(timeout_ms=30000)
 
                 if msg == b'body_done' or msg == 'body_done':
                     self._eof = True
@@ -619,6 +619,102 @@ class StreamingBodyReader:
         if not line:
             raise StopIteration
         return line
+
+
+# ============================================================================
+# Streaming request body entry point
+# ============================================================================
+
+def handle_wsgi_streaming(caller_pid, app_module: bytes, app_callable: bytes,
+                          environ_map: dict, channel_ref, content_length: int):
+    """Handle a WSGI request with streaming body via channel.
+
+    This entry point is used for large request bodies (> 64KB) that are
+    streamed via py_channel instead of buffered.
+
+    Args:
+        caller_pid: Erlang PID to send response to
+        app_module: Python module containing WSGI app (bytes)
+        app_callable: Name of WSGI callable in module (bytes)
+        environ_map: Pre-built environ dict from Erlang
+        channel_ref: py_channel reference for receiving body chunks
+        content_length: Content-Length header value
+
+    Returns:
+        'done' on success, 'error' on failure
+    """
+    if not HAS_ERLANG:
+        return b'error'
+
+    from erlang import Channel
+
+    # Convert bytes to strings
+    module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
+    callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
+
+    try:
+        # Create channel wrapper and streaming body reader
+        channel = Channel(channel_ref)
+        wsgi_input = StreamingBodyReader(channel, content_length)
+
+        # Build environ with streaming input
+        environ = _build_environ_streaming(environ_map, wsgi_input, content_length)
+
+        # Load and call WSGI app
+        app = _load_app(module_name, callable_name)
+        response = _Response()
+
+        result = app(environ, response.start_response)
+
+        # Build state for response processing
+        state = {
+            'caller': caller_pid,
+            'response': response,
+            'result': result,
+            'result_iter': iter(result) if not isinstance(result, (bytes, bytearray)) else None,
+            'body_parts': list(response._write_buffer),
+            'total_size': sum(len(p) for p in response._write_buffer),
+            'streaming': False,
+            'phase': 'collect',
+            'wsgi_input': wsgi_input,
+            'channel': channel,
+        }
+
+        return _wsgi_collect(state)
+
+    except Exception as e:
+        try:
+            reply(caller_pid, (b'error', str(e).encode('utf-8')))
+        except Exception:
+            pass
+        return b'error'
+
+
+def _build_environ_streaming(environ_map: dict, wsgi_input, content_length: int) -> dict:
+    """Build WSGI environ with streaming body reader."""
+    # Build environ from template
+    environ = _ENVIRON_TEMPLATE.copy()
+
+    # Copy from environ_map, converting bytes to strings
+    for key, value in environ_map.items():
+        str_key = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+        if isinstance(value, bytes):
+            str_value = value.decode('utf-8', errors='replace')
+        elif value is None or (hasattr(value, '__class__') and value.__class__.__name__ == 'Atom'):
+            str_value = ''
+        else:
+            str_value = value
+        environ[str_key] = str_value
+
+    # Set required WSGI keys with streaming input
+    environ['wsgi.input'] = wsgi_input
+    environ['wsgi.errors'] = _SHARED_ERRORS
+
+    # Ensure CONTENT_LENGTH is set if provided
+    if content_length is not None:
+        environ['CONTENT_LENGTH'] = str(content_length)
+
+    return environ
 
 
 # ============================================================================

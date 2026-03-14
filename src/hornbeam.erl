@@ -647,7 +647,11 @@ setup_python_paths(Config) ->
             "import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
             [AbsPath, AbsPath]),
         py:exec(Code)
-    end, AbsPaths).
+    end, AbsPaths),
+
+    %% Also add paths to all contexts in the pool
+    %% This is needed because context_call uses separate Python contexts
+    hornbeam_context_pool:add_paths(AbsPaths).
 
 maybe_run_lifespan_startup(asgi, Config) ->
     LifespanMode = maps:get(lifespan, Config, auto),

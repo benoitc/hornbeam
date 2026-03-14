@@ -32,7 +32,8 @@
     get_context_ref/0,
     get_context_rr/0,
     pool_size/0,
-    stats/0
+    stats/0,
+    add_paths/1
 ]).
 
 %% gen_server callbacks
@@ -98,6 +99,14 @@ pool_size() ->
 stats() ->
     gen_server:call(?MODULE, stats).
 
+%% @doc Add paths to sys.path in all contexts.
+%%
+%% Call this after starting the context pool to add user-specified paths
+%% (like pythonpath from config) to all Python contexts.
+-spec add_paths([string() | binary()]) -> ok.
+add_paths(Paths) when is_list(Paths) ->
+    gen_server:call(?MODULE, {add_paths, Paths}).
+
 %% ============================================================================
 %% gen_server callbacks
 %% ============================================================================
@@ -125,6 +134,13 @@ handle_call(stats, _From, #state{pool_size = PoolSize} = State) ->
         execution_mode => py_nif:execution_mode()
     },
     {reply, Stats, State};
+
+handle_call({add_paths, Paths}, _From, #state{contexts = Contexts} = State) ->
+    %% Add paths to all contexts
+    maps:foreach(fun(_Id, Ref) ->
+        add_paths_to_context(Ref, Paths)
+    end, Contexts),
+    {reply, ok, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -162,6 +178,24 @@ create_contexts(PoolSize) ->
         persistent_term:put({hornbeam_context, Id}, {Ref, InterpId}),
         maps:put(Id, Ref, Acc)
     end, #{}, lists:seq(0, PoolSize - 1)).
+
+%% @private
+%% Add paths to a context's sys.path
+add_paths_to_context(Ref, Paths) ->
+    lists:foreach(fun(Path) ->
+        PathBin = if
+            is_binary(Path) -> Path;
+            is_list(Path) -> list_to_binary(Path);
+            true -> Path
+        end,
+        AbsPath = list_to_binary(filename:absname(binary_to_list(PathBin))),
+        Code = <<"import sys; sys.path.insert(0, '", AbsPath/binary, "') if '", AbsPath/binary, "' not in sys.path else None">>,
+        case py_nif:context_exec(Ref, Code) of
+            ok -> ok;
+            {error, Err} ->
+                error_logger:warning_msg("Failed to add path ~s to context: ~p~n", [AbsPath, Err])
+        end
+    end, Paths).
 
 create_context(Id, PrivDir) ->
     case py_nif:context_create(auto) of

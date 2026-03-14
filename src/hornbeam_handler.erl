@@ -90,41 +90,126 @@ handle_websocket_upgrade(Req, State) ->
 %%% WSGI Handler - uses context_call with schedule_inline
 %%% ============================================================================
 
+%% Streaming threshold: bodies larger than this are streamed via channel
+-define(WSGI_STREAMING_THRESHOLD, 65536).  %% 64KB
+-define(WSGI_BODY_CHUNK_SIZE, 65536).       %% 64KB chunks
+
 handle_wsgi(Req, State) ->
     ReqInfo = build_request_info(Req),
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
 
     try
-        AppModule = maps:get(app_module, State),
-        AppCallable = maps:get(app_callable, State),
-        TimeoutMs = maps:get(timeout, State, 30000),
-
-        %% Build environ map
-        Environ = build_environ_map(Req, State),
-
-        %% Read request body
-        {ok, Body, _Req2} = cowboy_req:read_body(Req),
-
-        %% Get context ref from pool (zero-copy via persistent_term)
-        CtxRef = hornbeam_context_pool:get_context_ref(),
-
-        %% Call Python via context - uses schedule_inline internally
-        case py_nif:context_call(CtxRef,
-                <<"hornbeam_wsgi_worker">>, <<"handle_wsgi">>,
-                [self(), AppModule, AppCallable, Environ, Body], #{}) of
-            {ok, <<"done">>} ->
-                %% Response sent via receive loop
-                receive_wsgi_response(Req, ReqInfo1, TimeoutMs, State);
-            {ok, <<"error">>} ->
-                handle_error(Req, wsgi_error, ReqInfo1, State);
-            {error, Reason} ->
-                handle_error(Req, Reason, ReqInfo1, State)
+        %% Check content-length to decide streaming vs buffered
+        ContentLength = get_content_length(Req),
+        case ContentLength of
+            CL when CL =:= undefined; CL < ?WSGI_STREAMING_THRESHOLD ->
+                %% Small body: use buffered path
+                handle_wsgi_buffered(Req, ReqInfo1, State);
+            _ ->
+                %% Large body: stream via channel
+                handle_wsgi_streaming(Req, ReqInfo1, ContentLength, State)
         end
     catch
         Class:Error:Stack ->
             error_logger:error_msg("WSGI handler error: ~p:~p~n~p~n",
                                    [Class, Error, Stack]),
             handle_error(Req, {Class, Error}, ReqInfo1, State)
+    end.
+
+%% @private
+%% Get content-length as integer, or undefined if not present/invalid
+get_content_length(Req) ->
+    case cowboy_req:header(<<"content-length">>, Req) of
+        undefined -> undefined;
+        CLBin ->
+            try binary_to_integer(CLBin)
+            catch _:_ -> undefined
+            end
+    end.
+
+%% @private
+%% Handle small request bodies - read fully before calling Python
+handle_wsgi_buffered(Req, ReqInfo, State) ->
+    AppModule = maps:get(app_module, State),
+    AppCallable = maps:get(app_callable, State),
+    TimeoutMs = maps:get(timeout, State, 30000),
+
+    %% Build environ map
+    Environ = build_environ_map(Req, State),
+
+    %% Read request body fully
+    {ok, Body, _Req2} = cowboy_req:read_body(Req),
+
+    %% Get context ref from pool (zero-copy via persistent_term)
+    CtxRef = hornbeam_context_pool:get_context_ref(),
+
+    %% Call Python via context - uses schedule_inline internally
+    case py_nif:context_call(CtxRef,
+            <<"hornbeam_wsgi_worker">>, <<"handle_wsgi">>,
+            [self(), AppModule, AppCallable, Environ, Body], #{}) of
+        {ok, <<"done">>} ->
+            %% Response sent via receive loop
+            receive_wsgi_response(Req, ReqInfo, TimeoutMs, State);
+        {ok, <<"error">>} ->
+            handle_error(Req, wsgi_error, ReqInfo, State);
+        {error, Reason} ->
+            handle_error(Req, Reason, ReqInfo, State)
+    end.
+
+%% @private
+%% Handle large request bodies - stream via channel
+handle_wsgi_streaming(Req, ReqInfo, ContentLength, State) ->
+    AppModule = maps:get(app_module, State),
+    AppCallable = maps:get(app_callable, State),
+    TimeoutMs = maps:get(timeout, State, 30000),
+
+    %% Build environ map
+    Environ = build_environ_map(Req, State),
+
+    %% Create channel for body streaming
+    {ok, BodyChannel} = py_channel:new(#{max_size => 1048576}),
+
+    %% Spawn process to stream body chunks to channel
+    Self = self(),
+    spawn_link(fun() ->
+        try
+            stream_body_to_channel(Req, BodyChannel, ?WSGI_BODY_CHUNK_SIZE),
+            Self ! body_stream_done
+        catch
+            _:Reason ->
+                Self ! {body_stream_error, Reason}
+        end
+    end),
+
+    %% Get context ref from pool
+    CtxRef = hornbeam_context_pool:get_context_ref(),
+
+    %% Call Python with channel reference for streaming body
+    case py_nif:context_call(CtxRef,
+            <<"hornbeam_wsgi_worker">>, <<"handle_wsgi_streaming">>,
+            [self(), AppModule, AppCallable, Environ, BodyChannel, ContentLength], #{}) of
+        {ok, <<"done">>} ->
+            receive_wsgi_response(Req, ReqInfo, TimeoutMs, State);
+        {ok, <<"error">>} ->
+            py_channel:close(BodyChannel),
+            handle_error(Req, wsgi_error, ReqInfo, State);
+        {error, Reason} ->
+            py_channel:close(BodyChannel),
+            handle_error(Req, Reason, ReqInfo, State)
+    end.
+
+%% @private
+%% Stream request body to channel in chunks
+stream_body_to_channel(Req, Channel, ChunkSize) ->
+    case cowboy_req:read_body(Req, #{length => ChunkSize}) of
+        {ok, Chunk, _Req2} ->
+            %% Last chunk
+            py_channel:send(Channel, {body_chunk, Chunk}),
+            py_channel:send(Channel, body_done);
+        {more, Chunk, Req2} ->
+            %% More data available
+            py_channel:send(Channel, {body_chunk, Chunk}),
+            stream_body_to_channel(Req2, Channel, ChunkSize)
     end.
 
 %% @private
