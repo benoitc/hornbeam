@@ -180,8 +180,13 @@ start(AppSpec, Options) ->
                     %% Setup Python paths
                     setup_python_paths(Config1),
 
-                    %% Run lifespan startup for ASGI apps
+                    %% Preload app in all contexts for fast access
                     WorkerClass = maps:get(worker_class, Config1),
+                    AppModule = maps:get(app_module, Config1),
+                    AppCallable = maps:get(app_callable, Config1),
+                    hornbeam_context_pool:preload_app(WorkerClass, AppModule, AppCallable),
+
+                    %% Run lifespan startup for ASGI apps
                     case maybe_run_lifespan_startup(WorkerClass, Config1) of
                         ok ->
                             %% Start the HTTP listener

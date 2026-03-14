@@ -33,7 +33,8 @@
     get_context_rr/0,
     pool_size/0,
     stats/0,
-    add_paths/1
+    add_paths/1,
+    preload_app/3
 ]).
 
 %% gen_server callbacks
@@ -107,6 +108,13 @@ stats() ->
 add_paths(Paths) when is_list(Paths) ->
     gen_server:call(?MODULE, {add_paths, Paths}).
 
+%% @doc Preload WSGI/ASGI application in all contexts.
+%%
+%% Imports the app module and caches the callable for fast access.
+-spec preload_app(wsgi | asgi, binary(), binary()) -> ok.
+preload_app(WorkerClass, AppModule, AppCallable) ->
+    gen_server:call(?MODULE, {preload_app, WorkerClass, AppModule, AppCallable}).
+
 %% ============================================================================
 %% gen_server callbacks
 %% ============================================================================
@@ -139,6 +147,24 @@ handle_call({add_paths, Paths}, _From, #state{contexts = Contexts} = State) ->
     %% Add paths to all contexts
     maps:foreach(fun(_Id, Ref) ->
         add_paths_to_context(Ref, Paths)
+    end, Contexts),
+    {reply, ok, State};
+
+handle_call({preload_app, WorkerClass, AppModule, AppCallable}, _From,
+            #state{contexts = Contexts} = State) ->
+    %% Preload app in all contexts
+    WorkerModule = case WorkerClass of
+        wsgi -> <<"hornbeam_wsgi_worker">>;
+        asgi -> <<"hornbeam_asgi_worker">>
+    end,
+    maps:foreach(fun(_Id, Ref) ->
+        case py_nif:context_call(Ref, WorkerModule, <<"preload_app">>,
+                                 [AppModule, AppCallable], #{}) of
+            {ok, <<"ok">>} -> ok;
+            {error, Err} ->
+                error_logger:warning_msg(
+                    "hornbeam: failed to preload app in context: ~p~n", [Err])
+        end
     end, Contexts),
     {reply, ok, State};
 
@@ -198,7 +224,7 @@ add_paths_to_context(Ref, Paths) ->
     end, Paths).
 
 create_context(Id, PrivDir) ->
-    case py_nif:context_create(auto) of
+    case py_nif:context_create(worker) of
         {ok, Ref, InterpId} ->
             %% Set up callback handler (for erlang.call from Python)
             py_nif:context_set_callback_handler(Ref, self()),

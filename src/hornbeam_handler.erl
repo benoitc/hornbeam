@@ -113,26 +113,30 @@ handle_wsgi(Req, State) ->
         %% Build complete environ in Erlang
         Environ = build_wsgi_environ(Req, State),
 
-        %% Create channel for body + responses
-        {ok, Channel} = py_channel:new(#{max_size => 1048576}),
-
-        %% Send body via channel (small or large)
+        %% Create buffer for request body (skip for bodyless requests)
         ContentLength = get_content_length(Req),
-        send_body_to_channel(Req, Channel, ContentLength),
+        Method = cowboy_req:method(Req),
+        Buffer = case has_request_body(Method, ContentLength) of
+            false ->
+                %% No body expected - use empty buffer marker
+                empty;
+            true ->
+                {ok, Buf} = create_body_buffer(ContentLength),
+                write_body_to_buffer(Req, Buf, ContentLength),
+                Buf
+        end,
 
         %% Call Python
         CtxRef = hornbeam_context_pool:get_context_ref(),
         case py_nif:context_call(CtxRef,
                 <<"hornbeam_wsgi_worker">>, <<"handle_request">>,
-                [self(), Channel, AppModule, AppCallable, Environ], #{}) of
+                [self(), Buffer, AppModule, AppCallable, Environ], #{}) of
             {ok, <<"done">>} ->
                 %% Enter receive loop
-                wsgi_receive_loop(Req, ReqInfo1, Channel, TimeoutMs, State);
+                wsgi_receive_loop(Req, ReqInfo1, TimeoutMs, State);
             {ok, <<"error">>} ->
-                py_channel:close(Channel),
                 handle_error(Req, wsgi_error, ReqInfo1, State);
             {error, Reason} ->
-                py_channel:close(Channel),
                 handle_error(Req, Reason, ReqInfo1, State)
         end
     catch
@@ -154,40 +158,59 @@ get_content_length(Req) ->
     end.
 
 %% @private
-%% Send body to channel - unified for small and large bodies
-send_body_to_channel(Req, Channel, ContentLength) when
-        ContentLength =:= undefined; ContentLength < ?WSGI_STREAMING_THRESHOLD ->
-    %% Small body: read all, send once
-    {ok, Body, _Req2} = cowboy_req:read_body(Req),
-    py_channel:send(Channel, {body, Body});
-send_body_to_channel(Req, Channel, _ContentLength) ->
-    %% Large body: spawn process to stream chunks
-    spawn_link(fun() -> stream_body_to_channel(Req, Channel, ?WSGI_BODY_CHUNK_SIZE) end).
+%% Check if request has a body (based on method and content-length)
+has_request_body(<<"GET">>, undefined) -> false;
+has_request_body(<<"HEAD">>, undefined) -> false;
+has_request_body(<<"DELETE">>, undefined) -> false;
+has_request_body(<<"OPTIONS">>, undefined) -> false;
+has_request_body(_, 0) -> false;
+has_request_body(_, _) -> true.
 
 %% @private
-%% Stream request body to channel in chunks
-stream_body_to_channel(Req, Channel, ChunkSize) ->
+%% Create buffer for body - pre-allocate if content-length known
+create_body_buffer(undefined) ->
+    py_buffer:new();
+create_body_buffer(ContentLength) when is_integer(ContentLength), ContentLength > 0 ->
+    py_buffer:new(ContentLength);
+create_body_buffer(_) ->
+    py_buffer:new().
+
+%% @private
+%% Write body to buffer - unified for small and large bodies
+write_body_to_buffer(Req, Buffer, ContentLength) when
+        ContentLength =:= undefined; ContentLength < ?WSGI_STREAMING_THRESHOLD ->
+    %% Small body: read all, write once, close
+    {ok, Body, _Req2} = cowboy_req:read_body(Req),
+    py_buffer:write(Buffer, Body),
+    py_buffer:close(Buffer);
+write_body_to_buffer(Req, Buffer, _ContentLength) ->
+    %% Large body: spawn process to stream chunks
+    spawn_link(fun() -> stream_body_to_buffer(Req, Buffer, ?WSGI_BODY_CHUNK_SIZE) end).
+
+%% @private
+%% Stream request body to buffer in chunks
+stream_body_to_buffer(Req, Buffer, ChunkSize) ->
     case cowboy_req:read_body(Req, #{length => ChunkSize}) of
         {ok, Chunk, _Req2} ->
             %% Last chunk
-            py_channel:send(Channel, {body_chunk, Chunk}),
-            py_channel:send(Channel, body_done);
+            py_buffer:write(Buffer, Chunk),
+            py_buffer:close(Buffer);
         {more, Chunk, Req2} ->
             %% More data available
-            py_channel:send(Channel, {body_chunk, Chunk}),
-            stream_body_to_channel(Req2, Channel, ChunkSize)
+            py_buffer:write(Buffer, Chunk),
+            stream_body_to_buffer(Req2, Buffer, ChunkSize)
     end.
 
 %% @private
 %% Main receive loop for WSGI responses from Python
-wsgi_receive_loop(Req, ReqInfo, Channel, TimeoutMs, State) ->
+wsgi_receive_loop(Req, ReqInfo, TimeoutMs, State) ->
     receive
         {<<"start_response">>, StatusCode, Headers} ->
             %% Streaming response - filter hop-by-hop and start streaming
             SafeHeaders = filter_hop_by_hop(Headers),
             CowboyHeaders = convert_headers(SafeHeaders),
             Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-            stream_response_loop(Req2, Channel, TimeoutMs, State);
+            stream_response_loop(Req2, TimeoutMs, State);
         {<<"response">>, StatusCode, Headers, Body} ->
             %% Complete response
             SafeHeaders = filter_hop_by_hop(Headers),
@@ -197,34 +220,28 @@ wsgi_receive_loop(Req, ReqInfo, Channel, TimeoutMs, State) ->
                 <<"body">> => Body
             },
             Response1 = hornbeam_http_hooks:run_on_response(Response),
-            py_channel:close(Channel),
             send_response(Req, Response1, State);
         {<<"error">>, Reason} ->
-            py_channel:close(Channel),
             handle_error(Req, Reason, ReqInfo, State)
     after TimeoutMs ->
-        py_channel:close(Channel),
         handle_error(Req, timeout, ReqInfo, State)
     end.
 
 %% @private
 %% Receive and stream response chunks to client
-stream_response_loop(Req, Channel, TimeoutMs, State) ->
+stream_response_loop(Req, TimeoutMs, State) ->
     receive
         {<<"chunk">>, Chunk} ->
             ok = cowboy_req:stream_body(Chunk, nofin, Req),
-            stream_response_loop(Req, Channel, TimeoutMs, State);
+            stream_response_loop(Req, TimeoutMs, State);
         <<"done">> ->
             ok = cowboy_req:stream_body(<<>>, fin, Req),
-            py_channel:close(Channel),
             {ok, Req, State};
         {<<"error">>, _Reason} ->
             ok = cowboy_req:stream_body(<<>>, fin, Req),
-            py_channel:close(Channel),
             {ok, Req, State}
     after TimeoutMs ->
         ok = cowboy_req:stream_body(<<>>, fin, Req),
-        py_channel:close(Channel),
         {ok, Req, State}
     end.
 

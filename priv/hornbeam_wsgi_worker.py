@@ -12,33 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Simplified WSGI worker using unified channel-based approach.
+"""WSGI worker using py_buffer for zero-copy request body streaming.
 
 This module provides a WSGI worker with:
 - Single entry point for all requests
-- Channel-based body delivery via ChannelBuffer (file-like object)
-- Clear schedule_inline phases for yielding
+- py_buffer as wsgi.input (zero-copy shared memory)
+- erlang.send for responses
 
 Architecture:
-1. Erlang sends body via channel (single {body, Data} or streamed chunks)
-2. Python phases using schedule_inline:
-   - Phase 1: handle_request - setup ChannelBuffer, call app, schedule iteration
-   - Phase 2: _iterate_response - send response chunks, yield every N chunks
+1. Erlang creates py_buffer and writes body data
+2. Python uses buffer directly as wsgi.input (file-like interface)
+3. Python sends responses via erlang.send()
 """
 
 import io
 import threading
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Tuple
 
 try:
     import erlang
-    from erlang import reply, Channel
     HAS_ERLANG = True
 except ImportError:
     HAS_ERLANG = False
     erlang = None
-    reply = None
-    Channel = None
 
 
 # ============================================================================
@@ -100,213 +96,44 @@ _ENVIRON_TEMPLATE = {
 
 
 # ============================================================================
-# ChannelBuffer - BufferedIOBase backed by channel
+# App loading and preloading
 # ============================================================================
 
-class ChannelBuffer(io.BufferedIOBase):
-    """Buffered IO object that reads body from Erlang channel.
+# Cached app reference - set by preload_app() for fast access
+_preloaded_app: Callable = None
+_preloaded_key: Tuple[str, str] = None
 
-    Inherits from io.BufferedIOBase for proper file-like interface.
-    Supports both single-message bodies ({body, Data}) and
-    streaming bodies ({body_chunk, Chunk}... body_done).
+
+def preload_app(app_module: bytes, app_callable: bytes) -> bytes:
+    """Preload WSGI application at startup for zero-overhead access.
+
+    Called from Erlang during context initialization.
     """
+    global _preloaded_app, _preloaded_key
 
-    def __init__(self, channel):
-        self._channel = channel
-        self._buffer = b''
-        self._eof = False
-        self._closed = False
+    module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
+    callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
 
-    def readable(self) -> bool:
-        return True
+    import importlib
+    module = importlib.import_module(module_name)
+    app = getattr(module, callable_name)
 
-    def writable(self) -> bool:
-        return False
+    _preloaded_app = app
+    _preloaded_key = (module_name, callable_name)
 
-    def seekable(self) -> bool:
-        return False
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
-    def read(self, size: int = -1) -> bytes:
-        """Read up to size bytes from the body."""
-        if self._closed:
-            raise ValueError("I/O operation on closed file")
-
-        if self._eof and not self._buffer:
-            return b''
-
-        # If we have enough in buffer, return it
-        if size > 0 and len(self._buffer) >= size:
-            result = self._buffer[:size]
-            self._buffer = self._buffer[size:]
-            return result
-
-        # Need to read more from channel
-        self._fill_buffer(size)
-
-        # Return requested amount
-        if size is None or size < 0:
-            result = self._buffer
-            self._buffer = b''
-        else:
-            result = self._buffer[:size]
-            self._buffer = self._buffer[size:]
-
-        return result
-
-    def read1(self, size: int = -1) -> bytes:
-        """Read up to size bytes with at most one channel read."""
-        if self._closed:
-            raise ValueError("I/O operation on closed file")
-
-        if self._eof and not self._buffer:
-            return b''
-
-        # If buffer is empty, do one read from channel
-        if not self._buffer and not self._eof:
-            self._pull_one()
-
-        # Return what we have (up to size)
-        if size is None or size < 0:
-            result = self._buffer
-            self._buffer = b''
-        else:
-            result = self._buffer[:size]
-            self._buffer = self._buffer[size:]
-
-        return result
-
-    def readinto(self, b) -> int:
-        """Read bytes into a pre-allocated buffer."""
-        data = self.read(len(b))
-        n = len(data)
-        b[:n] = data
-        return n
-
-    def readinto1(self, b) -> int:
-        """Read bytes into buffer with at most one channel read."""
-        data = self.read1(len(b))
-        n = len(data)
-        b[:n] = data
-        return n
-
-    def _pull_one(self):
-        """Pull one message from channel."""
-        if self._eof:
-            return
-
-        try:
-            msg = self._channel.receive(timeout_ms=30000)
-        except Exception:
-            self._eof = True
-            return
-
-        if msg == b'body_done' or msg == 'body_done':
-            self._eof = True
-        elif isinstance(msg, tuple) and len(msg) >= 2:
-            tag, data = msg[0], msg[1]
-            if tag in (b'body', 'body'):
-                # Complete body in one message
-                if isinstance(data, bytes):
-                    self._buffer += data
-                elif isinstance(data, str):
-                    self._buffer += data.encode('utf-8')
-                self._eof = True
-            elif tag in (b'body_chunk', 'body_chunk'):
-                if isinstance(data, bytes):
-                    self._buffer += data
-                elif isinstance(data, str):
-                    self._buffer += data.encode('utf-8')
-
-    def _fill_buffer(self, target_size: int = -1):
-        """Fill buffer from channel until we have enough or EOF."""
-        while not self._eof:
-            if target_size > 0 and len(self._buffer) >= target_size:
-                break
-            self._pull_one()
-
-    def readline(self, size: int = -1) -> bytes:
-        """Read a line from the body."""
-        if self._closed:
-            raise ValueError("I/O operation on closed file")
-
-        result = b''
-        while True:
-            if size > 0 and len(result) >= size:
-                break
-            chunk = self.read(1)
-            if not chunk:
-                break
-            result += chunk
-            if chunk == b'\n':
-                break
-        return result
-
-    def readlines(self, hint: int = -1) -> List[bytes]:
-        """Read all lines from the body."""
-        lines = []
-        total = 0
-        while True:
-            line = self.readline()
-            if not line:
-                break
-            lines.append(line)
-            total += len(line)
-            if hint > 0 and total >= hint:
-                break
-        return lines
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        line = self.readline()
-        if not line:
-            raise StopIteration
-        return line
-
-    def close(self):
-        """Close the buffer."""
-        if not self._closed:
-            self._eof = True
-            self._buffer = b''
-            self._closed = True
-            super().close()
+    return b'ok'
 
 
-# ============================================================================
-# App loading
-# ============================================================================
+def _get_app(module_name: str, callable_name: str) -> Callable:
+    """Get WSGI application - uses preloaded app if available."""
+    # Fast path: use preloaded app if it matches
+    if _preloaded_key == (module_name, callable_name):
+        return _preloaded_app
 
-_app_cache: Dict[Tuple[str, str], Callable] = {}
-_app_cache_lock = threading.Lock()
-
-
-def _load_app(module_name: str, callable_name: str) -> Callable:
-    """Load a WSGI application with thread-safe caching."""
-    cache_key = (module_name, callable_name)
-
-    if cache_key in _app_cache:
-        return _app_cache[cache_key]
-
-    with _app_cache_lock:
-        if cache_key in _app_cache:
-            return _app_cache[cache_key]
-
-        import importlib
-        import sys
-
-        if module_name not in sys.modules:
-            module = importlib.import_module(module_name)
-        else:
-            module = sys.modules[module_name]
-
-        app = getattr(module, callable_name)
-        _app_cache[cache_key] = app
-        return app
+    # Fallback: import on demand
+    import importlib
+    module = importlib.import_module(module_name)
+    return getattr(module, callable_name)
 
 
 # ============================================================================
@@ -388,15 +215,15 @@ class _Response:
 
 
 # ============================================================================
-# Phase 1: Entry point - setup and call app
+# Entry point - setup and call app
 # ============================================================================
 
-def handle_request(caller_pid, channel_ref, app_module: bytes, app_callable: bytes, environ_map: dict):
-    """Entry point - setup ChannelBuffer, call app, iterate response.
+def handle_request(caller_pid, buffer, app_module: bytes, app_callable: bytes, environ_map: dict):
+    """Entry point - use py_buffer as wsgi.input, call app.
 
     Args:
         caller_pid: Erlang PID to send response to
-        channel_ref: Channel reference for receiving body
+        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
         app_module: Python module containing WSGI app (bytes)
         app_callable: Name of WSGI callable in module (bytes)
         environ_map: Pre-built environ dict from Erlang
@@ -408,9 +235,6 @@ def handle_request(caller_pid, channel_ref, app_module: bytes, app_callable: byt
         return b'error'
 
     try:
-        # Wrap channel reference
-        channel = Channel(channel_ref)
-
         # Convert bytes to strings
         module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
         callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
@@ -418,13 +242,39 @@ def handle_request(caller_pid, channel_ref, app_module: bytes, app_callable: byt
         # Process environ (convert bytes to strings)
         environ = _process_environ(environ_map)
 
-        # Create ChannelBuffer as wsgi.input
-        wsgi_input = ChannelBuffer(channel)
-        environ['wsgi.input'] = wsgi_input
+        # Use buffer as wsgi.input, or empty BytesIO for bodyless requests
+        if buffer == b'empty' or (hasattr(buffer, '__class__') and buffer.__class__.__name__ == 'Atom'):
+            environ['wsgi.input'] = io.BytesIO()
+        else:
+            environ['wsgi.input'] = buffer
         environ['wsgi.errors'] = _SHARED_ERRORS
 
-        # Load and call app
-        app = _load_app(module_name, callable_name)
+        # Call app in separate function (allows schedule_inline continuation)
+        return _call_app(caller_pid, module_name, callable_name, environ)
+
+    except Exception as e:
+        try:
+            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
+        except Exception:
+            pass
+        return b'error'
+
+
+def _call_app(caller_pid, module_name: str, callable_name: str, environ: dict):
+    """Call WSGI app and iterate response.
+
+    Args:
+        caller_pid: Erlang PID to send response to
+        module_name: Python module name
+        callable_name: WSGI callable name
+        environ: Prepared environ dict with wsgi.input
+
+    Returns:
+        'done' on success, or schedule_inline marker for continuation
+    """
+    try:
+        # Get app (preloaded or import on demand)
+        app = _get_app(module_name, callable_name)
         response = _Response()
         result = app(environ, response.start_response)
 
@@ -439,20 +289,19 @@ def handle_request(caller_pid, channel_ref, app_module: bytes, app_callable: byt
             'headers_sent': False,
         }
 
-        # Call iterate_response directly (not via schedule_inline)
-        # schedule_inline is only used for continuation within iteration
+        # Call iterate_response directly
         return _iterate_response(state)
 
     except Exception as e:
         try:
-            reply(caller_pid, (b'error', str(e).encode('utf-8')))
+            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
         except Exception:
             pass
         return b'error'
 
 
 # ============================================================================
-# Phase 2: Iterate response
+# Iterate response
 # ============================================================================
 
 def _iterate_response(state: dict):
@@ -476,16 +325,23 @@ def _iterate_response(state: dict):
             body = _to_bytes(result) if isinstance(result, (bytes, bytearray)) else b''
             if write_buffer:
                 body = b''.join(_to_bytes(p) for p in write_buffer) + body
-            reply(caller, (b'response', state['status'], state['headers'], body))
+            erlang.send(caller, (b'response', state['status'], state['headers'], body))
+            _cleanup_result(result)
+            return b'done'
+
+        # Fast path: list with small number of items - collect and send as single response
+        if isinstance(result, list) and len(result) <= 2 and not write_buffer:
+            body = b''.join(_to_bytes(chunk) for chunk in result if chunk)
+            erlang.send(caller, (b'response', state['status'], state['headers'], body))
             _cleanup_result(result)
             return b'done'
 
         # Send any buffered write() data first
         if write_buffer and not headers_sent:
-            reply(caller, (b'start_response', state['status'], state['headers']))
+            erlang.send(caller, (b'start_response', state['status'], state['headers']))
             state['headers_sent'] = True
             for part in write_buffer:
-                reply(caller, (b'chunk', _to_bytes(part)))
+                erlang.send(caller, (b'chunk', _to_bytes(part)))
             state['write_buffer'] = []
 
         # Process chunks from iterator
@@ -502,10 +358,10 @@ def _iterate_response(state: dict):
 
                 # Send headers on first chunk
                 if not state['headers_sent']:
-                    reply(caller, (b'start_response', state['status'], state['headers']))
+                    erlang.send(caller, (b'start_response', state['status'], state['headers']))
                     state['headers_sent'] = True
 
-                reply(caller, (b'chunk', chunk))
+                erlang.send(caller, (b'chunk', chunk))
                 chunks_processed += 1
 
                 # Yield after batch to release scheduler
@@ -517,10 +373,10 @@ def _iterate_response(state: dict):
 
         # Done iterating
         if state['headers_sent']:
-            reply(caller, b'done')
+            erlang.send(caller, b'done')
         else:
             # Empty response (no chunks produced)
-            reply(caller, (b'response', state['status'], state['headers'], b''))
+            erlang.send(caller, (b'response', state['status'], state['headers'], b''))
 
         _cleanup_result(result)
         return b'done'
@@ -528,7 +384,7 @@ def _iterate_response(state: dict):
     except Exception as e:
         _cleanup_result(state.get('result'))
         try:
-            reply(caller, (b'error', str(e).encode('utf-8')))
+            erlang.send(caller, (b'error', str(e).encode('utf-8')))
         except Exception:
             pass
         return b'error'
