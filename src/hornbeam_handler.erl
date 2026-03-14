@@ -87,27 +87,53 @@ handle_websocket_upgrade(Req, State) ->
     hornbeam_websocket:init(Req, State).
 
 %%% ============================================================================
-%%% WSGI Handler - uses context_call with schedule_inline
+%%% WSGI Handler - unified channel-based approach with schedule_inline
 %%% ============================================================================
 
 %% Streaming threshold: bodies larger than this are streamed via channel
 -define(WSGI_STREAMING_THRESHOLD, 65536).  %% 64KB
 -define(WSGI_BODY_CHUNK_SIZE, 65536).       %% 64KB chunks
 
+%% Hop-by-hop headers that should not be forwarded
+-define(HOP_BY_HOP_HEADERS, [
+    <<"connection">>, <<"keep-alive">>, <<"proxy-authenticate">>,
+    <<"proxy-authorization">>, <<"te">>, <<"trailers">>,
+    <<"transfer-encoding">>, <<"upgrade">>
+]).
+
 handle_wsgi(Req, State) ->
     ReqInfo = build_request_info(Req),
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
 
     try
-        %% Check content-length to decide streaming vs buffered
+        AppModule = maps:get(app_module, State),
+        AppCallable = maps:get(app_callable, State),
+        TimeoutMs = maps:get(timeout, State, 30000),
+
+        %% Build complete environ in Erlang
+        Environ = build_wsgi_environ(Req, State),
+
+        %% Create channel for body + responses
+        {ok, Channel} = py_channel:new(#{max_size => 1048576}),
+
+        %% Send body via channel (small or large)
         ContentLength = get_content_length(Req),
-        case ContentLength of
-            CL when CL =:= undefined; CL < ?WSGI_STREAMING_THRESHOLD ->
-                %% Small body: use buffered path
-                handle_wsgi_buffered(Req, ReqInfo1, State);
-            _ ->
-                %% Large body: stream via channel
-                handle_wsgi_streaming(Req, ReqInfo1, ContentLength, State)
+        send_body_to_channel(Req, Channel, ContentLength),
+
+        %% Call Python
+        CtxRef = hornbeam_context_pool:get_context_ref(),
+        case py_nif:context_call(CtxRef,
+                <<"hornbeam_wsgi_worker">>, <<"handle_request">>,
+                [self(), Channel, AppModule, AppCallable, Environ], #{}) of
+            {ok, <<"done">>} ->
+                %% Enter receive loop
+                wsgi_receive_loop(Req, ReqInfo1, Channel, TimeoutMs, State);
+            {ok, <<"error">>} ->
+                py_channel:close(Channel),
+                handle_error(Req, wsgi_error, ReqInfo1, State);
+            {error, Reason} ->
+                py_channel:close(Channel),
+                handle_error(Req, Reason, ReqInfo1, State)
         end
     catch
         Class:Error:Stack ->
@@ -128,75 +154,15 @@ get_content_length(Req) ->
     end.
 
 %% @private
-%% Handle small request bodies - read fully before calling Python
-handle_wsgi_buffered(Req, ReqInfo, State) ->
-    AppModule = maps:get(app_module, State),
-    AppCallable = maps:get(app_callable, State),
-    TimeoutMs = maps:get(timeout, State, 30000),
-
-    %% Build environ map
-    Environ = build_environ_map(Req, State),
-
-    %% Read request body fully
+%% Send body to channel - unified for small and large bodies
+send_body_to_channel(Req, Channel, ContentLength) when
+        ContentLength =:= undefined; ContentLength < ?WSGI_STREAMING_THRESHOLD ->
+    %% Small body: read all, send once
     {ok, Body, _Req2} = cowboy_req:read_body(Req),
-
-    %% Get context ref from pool (zero-copy via persistent_term)
-    CtxRef = hornbeam_context_pool:get_context_ref(),
-
-    %% Call Python via context - uses schedule_inline internally
-    case py_nif:context_call(CtxRef,
-            <<"hornbeam_wsgi_worker">>, <<"handle_wsgi">>,
-            [self(), AppModule, AppCallable, Environ, Body], #{}) of
-        {ok, <<"done">>} ->
-            %% Response sent via receive loop
-            receive_wsgi_response(Req, ReqInfo, TimeoutMs, State);
-        {ok, <<"error">>} ->
-            handle_error(Req, wsgi_error, ReqInfo, State);
-        {error, Reason} ->
-            handle_error(Req, Reason, ReqInfo, State)
-    end.
-
-%% @private
-%% Handle large request bodies - stream via channel
-handle_wsgi_streaming(Req, ReqInfo, ContentLength, State) ->
-    AppModule = maps:get(app_module, State),
-    AppCallable = maps:get(app_callable, State),
-    TimeoutMs = maps:get(timeout, State, 30000),
-
-    %% Build environ map
-    Environ = build_environ_map(Req, State),
-
-    %% Create channel for body streaming
-    {ok, BodyChannel} = py_channel:new(#{max_size => 1048576}),
-
-    %% Spawn process to stream body chunks to channel
-    Self = self(),
-    spawn_link(fun() ->
-        try
-            stream_body_to_channel(Req, BodyChannel, ?WSGI_BODY_CHUNK_SIZE),
-            Self ! body_stream_done
-        catch
-            _:Reason ->
-                Self ! {body_stream_error, Reason}
-        end
-    end),
-
-    %% Get context ref from pool
-    CtxRef = hornbeam_context_pool:get_context_ref(),
-
-    %% Call Python with channel reference for streaming body
-    case py_nif:context_call(CtxRef,
-            <<"hornbeam_wsgi_worker">>, <<"handle_wsgi_streaming">>,
-            [self(), AppModule, AppCallable, Environ, BodyChannel, ContentLength], #{}) of
-        {ok, <<"done">>} ->
-            receive_wsgi_response(Req, ReqInfo, TimeoutMs, State);
-        {ok, <<"error">>} ->
-            py_channel:close(BodyChannel),
-            handle_error(Req, wsgi_error, ReqInfo, State);
-        {error, Reason} ->
-            py_channel:close(BodyChannel),
-            handle_error(Req, Reason, ReqInfo, State)
-    end.
+    py_channel:send(Channel, {body, Body});
+send_body_to_channel(Req, Channel, _ContentLength) ->
+    %% Large body: spawn process to stream chunks
+    spawn_link(fun() -> stream_body_to_channel(Req, Channel, ?WSGI_BODY_CHUNK_SIZE) end).
 
 %% @private
 %% Stream request body to channel in chunks
@@ -213,53 +179,70 @@ stream_body_to_channel(Req, Channel, ChunkSize) ->
     end.
 
 %% @private
-%% Receive WSGI response from Python worker
-receive_wsgi_response(Req, ReqInfo, TimeoutMs, State) ->
+%% Main receive loop for WSGI responses from Python
+wsgi_receive_loop(Req, ReqInfo, Channel, TimeoutMs, State) ->
     receive
-        {<<"headers">>, StatusCode, Headers} ->
-            %% Streaming response - stream directly to client
-            CowboyHeaders = convert_headers(Headers),
-            receive_wsgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State);
+        {<<"start_response">>, StatusCode, Headers} ->
+            %% Streaming response - filter hop-by-hop and start streaming
+            SafeHeaders = filter_hop_by_hop(Headers),
+            CowboyHeaders = convert_headers(SafeHeaders),
+            Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+            stream_response_loop(Req2, Channel, TimeoutMs, State);
         {<<"response">>, StatusCode, Headers, Body} ->
-            %% Buffered response (single message)
+            %% Complete response
+            SafeHeaders = filter_hop_by_hop(Headers),
             Response = #{
                 <<"status">> => StatusCode,
-                <<"headers">> => Headers,
+                <<"headers">> => SafeHeaders,
                 <<"body">> => Body
             },
             Response1 = hornbeam_http_hooks:run_on_response(Response),
+            py_channel:close(Channel),
             send_response(Req, Response1, State);
         {<<"error">>, Reason} ->
+            py_channel:close(Channel),
             handle_error(Req, Reason, ReqInfo, State)
     after TimeoutMs ->
+        py_channel:close(Channel),
         handle_error(Req, timeout, ReqInfo, State)
     end.
 
 %% @private
-%% Receive body chunks - stream directly to client
-receive_wsgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State) ->
-    Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-    stream_body(Req2, TimeoutMs, State).
-
-stream_body(Req, TimeoutMs, State) ->
+%% Receive and stream response chunks to client
+stream_response_loop(Req, Channel, TimeoutMs, State) ->
     receive
         {<<"chunk">>, Chunk} ->
             ok = cowboy_req:stream_body(Chunk, nofin, Req),
-            stream_body(Req, TimeoutMs, State);
+            stream_response_loop(Req, Channel, TimeoutMs, State);
         <<"done">> ->
             ok = cowboy_req:stream_body(<<>>, fin, Req),
+            py_channel:close(Channel),
             {ok, Req, State};
         {<<"error">>, _Reason} ->
             ok = cowboy_req:stream_body(<<>>, fin, Req),
+            py_channel:close(Channel),
             {ok, Req, State}
     after TimeoutMs ->
         ok = cowboy_req:stream_body(<<>>, fin, Req),
+        py_channel:close(Channel),
         {ok, Req, State}
     end.
 
 %% @private
+%% Filter hop-by-hop headers from response
+filter_hop_by_hop(Headers) ->
+    lists:filter(fun(Header) ->
+        Name = case Header of
+            [N, _] -> N;
+            {N, _} -> N
+        end,
+        LowerName = string:lowercase(to_binary(Name)),
+        not lists:member(LowerName, ?HOP_BY_HOP_HEADERS)
+    end, Headers).
+
+%% @private
 %% Build environ map for WSGI
-build_environ_map(Req, State) ->
+build_wsgi_environ(Req, State) ->
     Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
     Qs = cowboy_req:qs(Req),
@@ -373,7 +356,25 @@ receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
 %% @private
 receive_asgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State) ->
     Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-    stream_body(Req2, TimeoutMs, State).
+    asgi_stream_body(Req2, TimeoutMs, State).
+
+%% @private
+%% Stream ASGI response body chunks to client
+asgi_stream_body(Req, TimeoutMs, State) ->
+    receive
+        {<<"chunk">>, Chunk} ->
+            ok = cowboy_req:stream_body(Chunk, nofin, Req),
+            asgi_stream_body(Req, TimeoutMs, State);
+        <<"done">> ->
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State};
+        {<<"error">>, _Reason} ->
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
+    after TimeoutMs ->
+        ok = cowboy_req:stream_body(<<>>, fin, Req),
+        {ok, Req, State}
+    end.
 
 %% @private
 %% Build ASGI scope
