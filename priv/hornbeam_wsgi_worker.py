@@ -249,7 +249,7 @@ def handle_request(caller_pid, buffer, app_module: bytes, app_callable: bytes, e
             environ['wsgi.input'] = buffer
         environ['wsgi.errors'] = _SHARED_ERRORS
 
-        # Call app in separate function (allows schedule_inline continuation)
+        # Call app directly (faster than schedule_inline for simple requests)
         return _call_app(caller_pid, module_name, callable_name, environ)
 
     except Exception as e:
