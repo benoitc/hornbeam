@@ -41,10 +41,7 @@
     register/1,
     lookup/1,
     list/0,
-    clear/0,
-    set_channel/3,
-    clear_channels/1,
-    get_channel/2
+    clear/0
 ]).
 
 %% gen_server callbacks
@@ -93,23 +90,6 @@ lookup(Path) ->
             {error, no_match}
     end.
 
-%% @doc Set a channel for a mount worker.
--spec set_channel(MountId :: binary(), WorkerIdx :: non_neg_integer(), Channel :: term()) -> ok.
-set_channel(MountId, WorkerIdx, Channel) ->
-    ets:insert(?TABLE, {{MountId, WorkerIdx}, Channel}),
-    ok.
-
-%% @doc Clear all channels for a mount.
--spec clear_channels(MountId :: binary()) -> ok.
-clear_channels(MountId) ->
-    ets:match_delete(?TABLE, {{MountId, '_'}, '_'}),
-    ok.
-
-%% @doc Get channel for a mount by worker index (0-based).
--spec get_channel(MountId :: binary(), WorkerIdx :: non_neg_integer()) -> term().
-get_channel(MountId, WorkerIdx) ->
-    ets:lookup_element(?TABLE, {MountId, WorkerIdx}, 2).
-
 %% @doc List all registered mounts.
 -spec list() -> [mount()].
 list() ->
@@ -151,43 +131,9 @@ handle_call({register, Mounts}, _From, State) ->
     ),
     ets:insert(?TABLE, {sorted_mounts, SortedMounts}),
 
-    %% Start worker pools for mounts with pool_enabled = true
-    lists:foreach(fun(Mount) ->
-        case maps:get(pool_enabled, Mount, false) of
-            true ->
-                MountId = maps:get(mount_id, Mount),
-                case hornbeam_worker_pool:start_mount_pool(MountId, Mount) of
-                    {ok, _Pid} ->
-                        ok;
-                    {error, {already_started, _}} ->
-                        ok;
-                    {error, Reason} ->
-                        error_logger:error_msg("hornbeam_mounts: Failed to start pool for ~s: ~p~n",
-                                               [MountId, Reason])
-                end;
-            false ->
-                ok
-        end
-    end, SortedMounts),
-
     {reply, ok, State};
 
 handle_call(clear, _From, State) ->
-    %% Stop all worker pools first
-    case ets:lookup(?TABLE, sorted_mounts) of
-        [{sorted_mounts, Mounts}] ->
-            lists:foreach(fun(Mount) ->
-                case maps:get(pool_enabled, Mount, false) of
-                    true ->
-                        MountId = maps:get(mount_id, Mount),
-                        catch hornbeam_worker_pool:stop_mount_pool(MountId);
-                    false ->
-                        ok
-                end
-            end, Mounts);
-        [] ->
-            ok
-    end,
     ets:delete_all_objects(?TABLE),
     {reply, ok, State};
 

@@ -22,6 +22,7 @@
 %%% - hornbeam_callbacks: Erlang callback registry
 %%% - hornbeam_pubsub: Pub/sub messaging
 %%% - hornbeam_lifespan: ASGI lifespan management
+%%% - hornbeam_pool: Python context pool
 %%% - hornbeam_hooks: Hooks-style execution API
 %%% - hornbeam_channel_registry: Channel topic pattern matching
 %%% - hornbeam_presence: Distributed presence tracking (CRDT)
@@ -102,6 +103,14 @@ init([]) ->
             modules => [hornbeam_lifespan]
         },
         #{
+            id => hornbeam_context_pool,
+            start => {hornbeam_context_pool, start_link, []},
+            restart => permanent,
+            shutdown => 10000,
+            type => worker,
+            modules => [hornbeam_context_pool]
+        },
+        #{
             id => hornbeam_hooks,
             start => {hornbeam_hooks, start_link, []},
             restart => permanent,
@@ -124,14 +133,6 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [hornbeam_presence]
-        },
-        #{
-            id => hornbeam_worker_pool,
-            start => {hornbeam_worker_pool, start_link, []},
-            restart => permanent,
-            shutdown => infinity,
-            type => supervisor,
-            modules => [hornbeam_worker_pool]
         }
     ],
 

@@ -32,6 +32,7 @@
     start_link/0,
     start_link/1,
     get_context/0,
+    get_context_rr/0,
     call/4,
     call/5,
     pool_size/0,
@@ -84,6 +85,16 @@ get_context() ->
     Idx = (SchedId - 1) rem N,
     ets:lookup_element(?TABLE, {context, Idx}, 2).
 
+%% @doc Get a context from the pool using round-robin selection.
+%%
+%% Uses an atomic counter for fair distribution across all contexts.
+%% Useful when scheduler affinity isn't desired (e.g., long-running requests).
+-spec get_context_rr() -> pid().
+get_context_rr() ->
+    N = ets:lookup_element(?TABLE, pool_size, 2),
+    Idx = ets:update_counter(?TABLE, rr_counter, {2, 1, N - 1, 0}),
+    ets:lookup_element(?TABLE, {context, Idx}, 2).
+
 %% @doc Call a Python function using a pooled context.
 %%
 %% Automatically selects a context using scheduler affinity.
@@ -131,7 +142,13 @@ init(Opts) ->
     %% Create ETS table for pool data
     _ = ets:new(?TABLE, [named_table, public, set, {read_concurrency, true}]),
 
-    PoolSize = maps:get(pool_size, Opts, ?DEFAULT_POOL_SIZE),
+    %% Pool size: Opts > app env > default (schedulers)
+    PoolSize = case maps:get(pool_size, Opts, undefined) of
+        undefined ->
+            application:get_env(hornbeam, pool_size, ?DEFAULT_POOL_SIZE);
+        Size ->
+            Size
+    end,
 
     %% Try to create contexts (may fail if Python not started)
     {Monitors, ActualSize} = try
@@ -147,6 +164,9 @@ init(Opts) ->
     lists:foreach(fun(Idx) ->
         ets:insert(?TABLE, {{counter, Idx}, 0})
     end, lists:seq(0, max(0, ActualSize - 1))),
+
+    %% Initialize round-robin counter
+    ets:insert(?TABLE, {rr_counter, 0}),
 
     %% Store pool size
     ets:insert(?TABLE, {pool_size, ActualSize}),
