@@ -324,14 +324,23 @@ handle_asgi(Req, State) ->
         %% Build ASGI scope
         Scope = build_scope(Req, State),
 
-        %% Read request body
-        {ok, Body, _Req2} = cowboy_req:read_body(Req),
+        %% Create buffer for request body (skip for bodyless requests)
+        ContentLength = get_content_length(Req),
+        Method = cowboy_req:method(Req),
+        Buffer = case has_request_body(Method, ContentLength) of
+            false ->
+                empty;
+            true ->
+                {ok, Buf} = create_body_buffer(ContentLength),
+                write_body_to_buffer(Req, Buf, ContentLength),
+                Buf
+        end,
 
-        %% Submit to event loop (non-blocking, async execution)
-        %% Python will send response via erlang.send()
-        _Ref = py_event_loop:create_task(
+        %% Spawn async task to run Python ASGI handler (fire-and-forget)
+        %% Python handler sends response via erlang.send() to this process
+        ok = py_event_loop:spawn_task(
             <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-            [self(), AppModule, AppCallable, Scope, Body]),
+            [self(), AppModule, AppCallable, Scope, Buffer]),
 
         %% Receive response from async Python
         receive_asgi_response(Req, ReqInfo1, TimeoutMs, State)
@@ -365,6 +374,10 @@ receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
             Req2 = cowboy_req:inform(103, HintHeaders, Req),
             receive_asgi_response(Req2, ReqInfo, TimeoutMs, State);
         {<<"error">>, Reason} ->
+            handle_error(Req, Reason, ReqInfo, State);
+        {async_result, _Ref, {ok, _}} ->
+            receive_asgi_response(Req, ReqInfo, TimeoutMs, State);
+        {async_result, _Ref, {error, Reason}} ->
             handle_error(Req, Reason, ReqInfo, State)
     after TimeoutMs ->
         handle_error(Req, timeout, ReqInfo, State)
@@ -387,7 +400,10 @@ asgi_stream_body(Req, TimeoutMs, State) ->
             {ok, Req, State};
         {<<"error">>, _Reason} ->
             ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State}
+            {ok, Req, State};
+        {async_result, _Ref, _Result} ->
+            %% Async task finished, continue streaming
+            asgi_stream_body(Req, TimeoutMs, State)
     after TimeoutMs ->
         ok = cowboy_req:stream_body(<<>>, fin, Req),
         {ok, Req, State}

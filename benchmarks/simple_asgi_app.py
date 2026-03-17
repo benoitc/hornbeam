@@ -1,5 +1,4 @@
 # Simple ASGI app for benchmarking
-# Async version of the WSGI benchmark app
 
 
 async def application(scope, receive, send):

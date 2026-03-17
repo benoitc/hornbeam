@@ -32,7 +32,6 @@ Architecture:
 import asyncio
 import importlib
 import sys
-import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -44,32 +43,38 @@ except ImportError:
 
 
 # ============================================================================
-# App loading
+# App loading and preloading
 # ============================================================================
 
-_app_cache: Dict[Tuple[str, str], Callable] = {}
-_app_cache_lock = threading.Lock()
+# Cached app reference - set by preload_app() for fast access
+_preloaded_app: Callable = None
+_preloaded_key: Tuple[str, str] = None
 
 
-def _load_app(module_name: str, callable_name: str) -> Callable:
-    """Load an ASGI application with thread-safe caching."""
-    cache_key = (module_name, callable_name)
+def preload_app(app_module: bytes, app_callable: bytes) -> bytes:
+    """Preload ASGI application at startup for zero-overhead access."""
+    global _preloaded_app, _preloaded_key
 
-    if cache_key in _app_cache:
-        return _app_cache[cache_key]
+    module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
+    callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
 
-    with _app_cache_lock:
-        if cache_key in _app_cache:
-            return _app_cache[cache_key]
+    module = importlib.import_module(module_name)
+    app = getattr(module, callable_name)
 
-        if module_name not in sys.modules:
-            module = importlib.import_module(module_name)
-        else:
-            module = sys.modules[module_name]
+    _preloaded_app = app
+    _preloaded_key = (module_name, callable_name)
 
-        app = getattr(module, callable_name)
-        _app_cache[cache_key] = app
-        return app
+    return b'ok'
+
+
+def _get_app(module_name: str, callable_name: str) -> Callable:
+    """Get ASGI application - uses preloaded app if available."""
+    if _preloaded_key == (module_name, callable_name):
+        return _preloaded_app
+
+    # Fallback: import on demand
+    module = importlib.import_module(module_name)
+    return getattr(module, callable_name)
 
 
 # ============================================================================
@@ -106,10 +111,10 @@ _DISCONNECT_MSG = {'type': 'http.disconnect'}
 # ============================================================================
 
 async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
-                      scope: dict, body: bytes):
+                      scope: dict, buffer):
     """Handle an ASGI request asynchronously.
 
-    This is the main entry point called from Erlang via py_event_loop.
+    This is the main entry point called from Erlang via erlang.run().
     Uses erlang.send() to stream response directly to caller.
 
     Args:
@@ -117,10 +122,7 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
         app_module: Python module containing ASGI app (bytes)
         app_callable: Name of ASGI callable in module (bytes)
         scope: ASGI scope dict
-        body: Request body bytes
-
-    Note: This function MUST be called via py_event_loop:create_task()
-    or erlang.run() for proper async execution.
+        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
     """
     if not HAS_ERLANG:
         return
@@ -129,18 +131,18 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
     module_name = _to_str(app_module)
     callable_name = _to_str(app_callable)
 
-    # Ensure body is bytes
-    if isinstance(body, str):
-        body = body.encode('utf-8')
-    elif not isinstance(body, bytes):
-        body = b''
+    # Determine buffer for receive (None for bodyless requests)
+    if buffer == b'empty' or (hasattr(buffer, '__class__') and buffer.__class__.__name__ == 'Atom'):
+        actual_buffer = None
+    else:
+        actual_buffer = buffer
 
     try:
-        # Load app
-        app = _load_app(module_name, callable_name)
+        # Get app (preloaded or import on demand)
+        app = _get_app(module_name, callable_name)
 
         # Create receive/send callables
-        receive = _ASGIReceive(body)
+        receive = _ASGIReceive(actual_buffer)
         send = _ASGISend(caller_pid)
 
         # Run ASGI app
@@ -160,14 +162,14 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
 
 
 class _ASGIReceive:
-    """ASGI receive callable with streaming support."""
-    __slots__ = ('body', 'body_sent', 'channel', 'disconnected')
+    """ASGI receive callable with async buffer support."""
+    __slots__ = ('buffer', 'body_sent', 'disconnected', '_cached_body')
 
-    def __init__(self, body: bytes, channel=None):
-        self.body = body
+    def __init__(self, buffer):
+        self.buffer = buffer  # py_buffer or None for empty
         self.body_sent = False
-        self.channel = channel  # Optional channel for streaming body
         self.disconnected = False
+        self._cached_body = None
 
     async def __call__(self) -> dict:
         if self.disconnected:
@@ -175,38 +177,44 @@ class _ASGIReceive:
 
         if not self.body_sent:
             self.body_sent = True
-
-            # If we have a channel, read body from it
-            if self.channel is not None:
-                body, more_body = await self._read_from_channel()
-                if not more_body:
-                    self.body_sent = True
-                return {'type': 'http.request', 'body': body, 'more_body': more_body}
-
-            # Use pre-loaded body
-            return {'type': 'http.request', 'body': self.body, 'more_body': False}
+            body = await self._read_body()
+            return {'type': 'http.request', 'body': body, 'more_body': False}
 
         return _DISCONNECT_MSG
 
-    async def _read_from_channel(self) -> Tuple[bytes, bool]:
-        """Read body chunk from channel (for streaming uploads)."""
-        from erlang import Channel, ChannelClosed
+    async def _read_body(self) -> bytes:
+        """Read body from buffer using async non-blocking reads."""
+        if self._cached_body is not None:
+            return self._cached_body
 
-        try:
-            msg = self.channel.receive(timeout=30000)
+        if self.buffer is None:
+            self._cached_body = b''
+            return b''
 
-            if msg == b'body_done' or msg == 'body_done':
-                return b'', False
+        # Use non-blocking reads with asyncio yield
+        chunks = []
+        while True:
+            # Check if data available
+            if hasattr(self.buffer, 'readable_amount'):
+                available = self.buffer.readable_amount()
+                if available > 0:
+                    chunk = self.buffer.read_nonblock(available)
+                    if chunk:
+                        chunks.append(chunk)
+                elif hasattr(self.buffer, 'at_eof') and self.buffer.at_eof():
+                    break
+                else:
+                    # Yield to event loop while waiting for data
+                    await asyncio.sleep(0)
+            else:
+                # Fallback: blocking read (buffer already complete)
+                chunk = self.buffer.read() if hasattr(self.buffer, 'read') else b''
+                if chunk:
+                    chunks.append(chunk)
+                break
 
-            if isinstance(msg, tuple) and len(msg) == 2:
-                tag, chunk = msg
-                if tag == b'body_chunk' or tag == 'body_chunk':
-                    return _to_bytes(chunk), True
-
-        except ChannelClosed:
-            self.disconnected = True
-
-        return b'', False
+        self._cached_body = b''.join(chunks)
+        return self._cached_body
 
 
 class _ASGISend:
@@ -293,76 +301,30 @@ class _ASGISend:
 
 
 # ============================================================================
-# Streaming request body support
-# ============================================================================
-
-async def handle_asgi_streaming(caller_pid, app_module: bytes, app_callable: bytes,
-                                scope: dict, channel_ref):
-    """Handle an ASGI request with streaming request body.
-
-    This variant reads the request body from a channel, enabling
-    streaming uploads without buffering the entire body.
-
-    Args:
-        caller_pid: Erlang PID to send response to
-        app_module: Python module containing ASGI app (bytes)
-        app_callable: Name of ASGI callable in module (bytes)
-        scope: ASGI scope dict
-        channel_ref: Channel reference for receiving body chunks
-    """
-    if not HAS_ERLANG:
-        return
-
-    from erlang import Channel
-
-    module_name = _to_str(app_module)
-    callable_name = _to_str(app_callable)
-
-    try:
-        app = _load_app(module_name, callable_name)
-
-        channel = Channel(channel_ref)
-        receive = _ASGIReceive(b'', channel=channel)
-        send = _ASGISend(caller_pid, buffering=False)  # Always stream response
-
-        await app(scope, receive, send)
-
-        if not send.finished:
-            if not send.headers_sent:
-                erlang.send(caller_pid, (b'headers', 500, []))
-            erlang.send(caller_pid, b'done')
-
-    except Exception as e:
-        try:
-            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
-        except Exception:
-            pass
-
-
-# ============================================================================
 # Synchronous wrapper for context_call
 # ============================================================================
 
 def handle_asgi_sync(caller_pid, app_module: bytes, app_callable: bytes,
-                     scope: dict, body: bytes):
+                     scope: dict, buffer):
     """Synchronous wrapper that runs handle_asgi with erlang.run().
 
     This is used when calling from py_nif:context_call() which expects
-    a synchronous function. Uses erlang.run() to get proper event loop.
+    a synchronous function. Uses erlang.run() for proper Erlang event
+    loop integration.
 
     Args:
         caller_pid: Erlang PID to send response to
         app_module: Python module containing ASGI app (bytes)
         app_callable: Name of ASGI callable in module (bytes)
         scope: ASGI scope dict
-        body: Request body bytes
+        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
     """
     if not HAS_ERLANG:
         return b'error'
 
     try:
         # Use erlang.run() for proper Erlang event loop integration
-        erlang.run(handle_asgi(caller_pid, app_module, app_callable, scope, body))
+        erlang.run(handle_asgi(caller_pid, app_module, app_callable, scope, buffer))
         return b'done'
     except Exception as e:
         try:
@@ -477,14 +439,10 @@ async def handle_websocket(caller_pid, app_module: bytes, app_callable: bytes,
             pass
 
 
-# ============================================================================
-# Legacy entry points (for backwards compatibility)
-# ============================================================================
-
 def handle_request_direct(args_tuple) -> None:
     """Legacy entry point - uses sync wrapper."""
     if not HAS_ERLANG:
         return
 
-    channel_ref, caller_pid, app_module, app_callable, scope, body = args_tuple
-    handle_asgi_sync(caller_pid, app_module, app_callable, scope, body)
+    caller_pid, app_module, app_callable, scope, buffer = args_tuple
+    handle_asgi_sync(caller_pid, app_module, app_callable, scope, buffer)
