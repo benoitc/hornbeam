@@ -473,8 +473,10 @@ start_listener_multi(Config) ->
     CustomRoutes = maps:get(routes, Config, []),
 
     %% Multi-app handler state - lookups mount per request
+    %% Lifespan state cached at startup (shared across mounts)
     HandlerState = #{
-        multi_app => true
+        multi_app => true,
+        lifespan_state => hornbeam_lifespan:get_state()
     },
 
     %% Default catchall route for Python apps (routes to mounts)
@@ -648,11 +650,13 @@ start_listener(Config) ->
 
     %% Cache frequently accessed config values in handler state to avoid
     %% repeated ETS lookups per request
+    %% Lifespan state is fetched once here since it doesn't change after startup
     HandlerState = #{
         worker_class => WorkerClass,
         app_module => maps:get(app_module, Config),
         app_callable => maps:get(app_callable, Config),
-        timeout => maps:get(timeout, Config, 30000)
+        timeout => maps:get(timeout, Config, 30000),
+        lifespan_state => hornbeam_lifespan:get_state()
     },
 
     %% Default catchall route for Python app

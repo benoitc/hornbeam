@@ -432,6 +432,9 @@ build_scope(Req, State) ->
         [[Name, Value] | Acc]
     end, [], cowboy_req:headers(Req)),
 
+    %% Get lifespan state from handler state (cached at startup, no lookup per request)
+    LifespanState = maps:get(lifespan_state, State, #{}),
+
     %% Merge dynamic fields into pre-computed template
     ?ASGI_SCOPE_TEMPLATE#{
         http_version => format_http_version(Version),
@@ -444,7 +447,7 @@ build_scope(Req, State) ->
         headers => HeaderList,
         server => {cowboy_req:host(Req), cowboy_req:port(Req)},
         client => {format_ip(ClientIp), ClientPort},
-        state => hornbeam_lifespan:get_state(),
+        state => LifespanState,
         extensions => build_extensions(Version)
     }.
 
