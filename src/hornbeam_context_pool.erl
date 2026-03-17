@@ -42,6 +42,7 @@
 
 -record(state, {
     pool_size :: pos_integer(),
+    context_mode :: worker | owngil,
     contexts :: #{pos_integer() => reference()}
 }).
 
@@ -60,6 +61,9 @@ start_link() ->
 %%
 %% Options:
 %% - pool_size: Number of contexts (default: number of schedulers)
+%% - context_mode: worker | owngil (default: worker)
+%%   - worker: Standard sub-interpreter mode
+%%   - owngil: Per-interpreter GIL mode (Python 3.12+, true parallelism)
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
 start_link(Opts) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
@@ -124,21 +128,24 @@ init(Opts) ->
 
     PoolSize = maps:get(pool_size, Opts,
         application:get_env(hornbeam, context_pool_size, ?DEFAULT_POOL_SIZE)),
+    ContextMode = maps:get(context_mode, Opts,
+        application:get_env(hornbeam, context_mode, worker)),
 
     %% Create atomic counter for round-robin
     Counter = atomics:new(1, [{signed, false}]),
     persistent_term:put(hornbeam_context_counter, Counter),
 
     %% Create contexts and store in persistent_term
-    Contexts = create_contexts(PoolSize),
+    Contexts = create_contexts(PoolSize, ContextMode),
 
     persistent_term:put(hornbeam_context_pool_size, PoolSize),
 
-    {ok, #state{pool_size = PoolSize, contexts = Contexts}}.
+    {ok, #state{pool_size = PoolSize, context_mode = ContextMode, contexts = Contexts}}.
 
-handle_call(stats, _From, #state{pool_size = PoolSize} = State) ->
+handle_call(stats, _From, #state{pool_size = PoolSize, context_mode = ContextMode} = State) ->
     Stats = #{
         pool_size => PoolSize,
+        context_mode => ContextMode,
         execution_mode => py_nif:execution_mode()
     },
     {reply, Stats, State};
@@ -195,12 +202,12 @@ terminate(_Reason, #state{pool_size = PoolSize, contexts = Contexts}) ->
 %% Internal functions
 %% ============================================================================
 
-create_contexts(PoolSize) ->
+create_contexts(PoolSize, ContextMode) ->
     PrivDir = code:priv_dir(hornbeam),
     PrivDirBin = list_to_binary(PrivDir),
 
     lists:foldl(fun(Id, Acc) ->
-        {Ref, InterpId} = create_context(Id, PrivDirBin),
+        {Ref, InterpId} = create_context(Id, PrivDirBin, ContextMode),
         persistent_term:put({hornbeam_context, Id}, {Ref, InterpId}),
         maps:put(Id, Ref, Acc)
     end, #{}, lists:seq(0, PoolSize - 1)).
@@ -223,8 +230,8 @@ add_paths_to_context(Ref, Paths) ->
         end
     end, Paths).
 
-create_context(Id, PrivDir) ->
-    case py_nif:context_create(worker) of
+create_context(Id, PrivDir, ContextMode) ->
+    case py_nif:context_create(ContextMode) of
         {ok, Ref, InterpId} ->
             %% Set up callback handler (for erlang.call from Python)
             py_nif:context_set_callback_handler(Ref, self()),

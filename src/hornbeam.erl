@@ -69,6 +69,7 @@
     num_contexts => pos_integer(),
     num_acceptors => pos_integer(),
     worker_class => wsgi | asgi,
+    context_mode => worker | owngil,
     timeout => pos_integer(),
     keepalive => pos_integer(),
     max_requests => pos_integer(),
@@ -545,7 +546,9 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
 
 ensure_python_runtime(Config) ->
     NumContexts = maps:get(num_contexts, Config, erlang:system_info(schedulers)),
+    ContextMode = maps:get(context_mode, Config, worker),
     ok = application:set_env(hornbeam, context_pool_size, NumContexts),
+    ok = application:set_env(hornbeam, context_mode, ContextMode),
     case current_context_count() of
         {ok, NumContexts} ->
             ok;
