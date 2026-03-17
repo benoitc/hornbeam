@@ -264,21 +264,25 @@ class _ASGISend:
 
                 total_size = sum(len(p) for p in self.body_parts)
 
-                if not more_body:
-                    # Done - send complete response
-                    body = b''.join(self.body_parts)
-                    self._send(self.caller_pid,
-                               (b'response', self.status or 500, self.headers, body))
-                    self.finished = True
-
-                elif total_size >= self.BUFFER_THRESHOLD:
-                    # Switch to streaming
+                if total_size >= self.BUFFER_THRESHOLD:
+                    # Body too large - switch to streaming
                     self._send(self.caller_pid, (b'headers', self.status or 500, self.headers))
                     self.headers_sent = True
                     for part in self.body_parts:
                         self._send(self.caller_pid, (b'chunk', part))
                     self.body_parts.clear()
                     self.buffering = False
+
+                    if not more_body:
+                        self._send(self.caller_pid, b'done')
+                        self.finished = True
+
+                elif not more_body:
+                    # Small response - send complete in one message
+                    body = b''.join(self.body_parts)
+                    self._send(self.caller_pid,
+                               (b'response', self.status or 500, self.headers, body))
+                    self.finished = True
 
             else:
                 # Streaming mode
