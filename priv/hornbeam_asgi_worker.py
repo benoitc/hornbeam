@@ -165,65 +165,72 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
 
 
 class _ASGIReceive:
-    """ASGI receive callable with async buffer support."""
-    __slots__ = ('buffer', 'body_sent', 'disconnected', '_cached_body')
+    """ASGI receive callable with streaming buffer support."""
+    __slots__ = ('buffer', 'body_sent', 'disconnected', '_eof_reached')
+
+    # Max chunk size for streaming
+    CHUNK_SIZE = 65536
 
     def __init__(self, buffer):
         self.buffer = buffer  # py_buffer or None for empty
         self.body_sent = False
         self.disconnected = False
-        self._cached_body = None
+        self._eof_reached = False
 
     async def __call__(self) -> dict:
         if self.disconnected:
             return _DISCONNECT_MSG
 
-        if not self.body_sent:
-            self.body_sent = True
-            body = await self._read_body()
-            return {'type': 'http.request', 'body': body, 'more_body': False}
-
-        return _DISCONNECT_MSG
-
-    async def _read_body(self) -> bytes:
-        """Read body from buffer using async non-blocking reads."""
-        if self._cached_body is not None:
-            return self._cached_body
-
         if self.buffer is None:
-            self._cached_body = b''
-            return b''
+            # No body - return empty with more_body=False
+            if not self.body_sent:
+                self.body_sent = True
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
+            return _DISCONNECT_MSG
 
-        # Use non-blocking reads with asyncio yield
-        chunks = []
-        while True:
-            # Check if data available
-            if hasattr(self.buffer, 'readable_amount'):
+        # Stream chunks from buffer with more_body=True until EOF
+        chunk = await self._read_chunk()
+        if chunk is None:
+            return _DISCONNECT_MSG
+
+        # Check if we've reached EOF
+        at_eof = self._eof_reached
+        return {'type': 'http.request', 'body': chunk, 'more_body': not at_eof}
+
+    async def _read_chunk(self) -> bytes:
+        """Read next available chunk from buffer."""
+        if self._eof_reached:
+            self.disconnected = True
+            return None
+
+        if hasattr(self.buffer, 'readable_amount'):
+            # Streaming buffer - wait for data
+            while True:
                 available = self.buffer.readable_amount()
                 if available > 0:
-                    chunk = self.buffer.read_nonblock(available)
-                    if chunk:
-                        chunks.append(chunk)
-                elif hasattr(self.buffer, 'at_eof') and self.buffer.at_eof():
-                    break
-                else:
-                    # Yield to event loop while waiting for data
-                    await asyncio.sleep(0)
-            else:
-                # Fallback: blocking read (buffer already complete)
-                chunk = self.buffer.read() if hasattr(self.buffer, 'read') else b''
-                if chunk:
-                    chunks.append(chunk)
-                break
-
-        self._cached_body = b''.join(chunks)
-        return self._cached_body
+                    chunk = self.buffer.read_nonblock(min(available, self.CHUNK_SIZE))
+                    # Check EOF after read
+                    if hasattr(self.buffer, 'at_eof') and self.buffer.at_eof():
+                        self._eof_reached = True
+                    return chunk if chunk else b''
+                if hasattr(self.buffer, 'at_eof') and self.buffer.at_eof():
+                    self._eof_reached = True
+                    return b''
+                # Yield to event loop while waiting for data
+                await asyncio.sleep(0)
+        else:
+            # Fallback: blocking read (buffer already complete)
+            if not self.body_sent:
+                self.body_sent = True
+                self._eof_reached = True
+                return self.buffer.read() if hasattr(self.buffer, 'read') else b''
+            return None
 
 
 class _ASGISend:
     """ASGI send callable that streams to Erlang via erlang.send()."""
     __slots__ = ('caller_pid', 'status', 'headers', 'headers_sent',
-                 'body_parts', 'finished', 'buffering', '_send')
+                 'body_parts', 'finished', 'buffering', '_send', '_total_size')
 
     # Buffer small responses before sending
     BUFFER_THRESHOLD = 65536
@@ -237,6 +244,7 @@ class _ASGISend:
         self.body_parts = []
         self.finished = False
         self.buffering = buffering
+        self._total_size = 0  # Track buffer size in O(1) instead of O(n)
 
     async def __call__(self, message: dict) -> None:
         msg_type = message.get('type', '')
@@ -261,16 +269,16 @@ class _ASGISend:
                 # Buffer body parts
                 if body_part:
                     self.body_parts.append(body_part)
+                    self._total_size += len(body_part)  # O(1) instead of O(n)
 
-                total_size = sum(len(p) for p in self.body_parts)
-
-                if total_size >= self.BUFFER_THRESHOLD:
+                if self._total_size >= self.BUFFER_THRESHOLD:
                     # Body too large - switch to streaming
                     self._send(self.caller_pid, (b'headers', self.status or 500, self.headers))
                     self.headers_sent = True
                     for part in self.body_parts:
                         self._send(self.caller_pid, (b'chunk', part))
                     self.body_parts.clear()
+                    self._total_size = 0
                     self.buffering = False
 
                     if not more_body:

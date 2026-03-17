@@ -51,9 +51,6 @@ build_wsgi_tuple(Req, State) ->
     ScriptName = maps:get(script_name, State, <<>>),
     PathInfo = maps:get(path_info, State, Path),
 
-    %% Read body
-    {ok, Body, _Req2} = cowboy_req:read_body(Req),
-
     %% Convert headers to WSGI format with Content-Type/Length extracted
     {WsgiHeaders, ContentType, ContentLength} = convert_headers_wsgi(Headers),
 
@@ -68,7 +65,7 @@ build_wsgi_tuple(Req, State) ->
         WsgiHeaders,                         % HTTP_* headers (pre-converted map)
         ContentType,                         % CONTENT_TYPE (or undefined)
         ContentLength,                       % CONTENT_LENGTH (or undefined)
-        Body,                                % wsgi.input (raw bytes)
+        undefined,                           % Body placeholder (passed via buffer)
         {Host, Port},                        % SERVER_NAME, SERVER_PORT
         {format_ip(ClientIp), ClientPort},   % REMOTE_ADDR, REMOTE_PORT
         Scheme,                              % wsgi.url_scheme

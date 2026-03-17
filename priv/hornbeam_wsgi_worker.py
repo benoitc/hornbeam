@@ -397,3 +397,111 @@ def _cleanup_result(result):
             result.close()
         except Exception:
             pass
+
+
+# ============================================================================
+# Tuple fast path - O(1) environ creation
+# ============================================================================
+
+def handle_request_tuple(caller_pid, buffer, app_module: bytes, app_callable: bytes, req_tuple):
+    """Fast path entry point using pre-parsed tuple from Erlang.
+
+    This avoids per-key iteration in Python by having Erlang pre-convert
+    all headers to WSGI format (HTTP_*).
+
+    Args:
+        caller_pid: Erlang PID to send response to
+        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
+        app_module: Python module containing WSGI app (bytes)
+        app_callable: Name of WSGI callable in module (bytes)
+        req_tuple: Pre-parsed request tuple from hornbeam_request:build_wsgi_tuple/2
+            (method, script_name, path_info, query_string, wsgi_headers,
+             content_type, content_length, body, server, client, scheme,
+             protocol, lifespan_state)
+
+    Returns:
+        'done' on success, or schedule_inline marker for continuation
+    """
+    if not HAS_ERLANG:
+        return b'error'
+
+    try:
+        # Convert bytes to strings
+        module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
+        callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
+
+        # Create environ from pre-parsed tuple (O(1) operations only)
+        environ = _create_environ_from_tuple(req_tuple, buffer)
+
+        # Call app directly
+        return _call_app(caller_pid, module_name, callable_name, environ)
+
+    except Exception as e:
+        try:
+            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
+        except Exception:
+            pass
+        return b'error'
+
+
+def _create_environ_from_tuple(req_tuple, buffer):
+    """Create WSGI environ from pre-parsed Erlang tuple - O(1) operations only.
+
+    Erlang pre-parses all headers into WSGI format so Python only does
+    dict updates (no loops over headers).
+
+    Args:
+        req_tuple: Pre-parsed request tuple from hornbeam_request:build_wsgi_tuple/2
+        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
+
+    Returns:
+        Complete WSGI environ dict
+    """
+    (method, script_name, path_info, query_string, wsgi_headers,
+     content_type, content_length, _body, server, client, scheme,
+     protocol, lifespan_state) = req_tuple
+
+    # Start with template copy (O(1) - shallow copy of small dict)
+    environ = _ENVIRON_TEMPLATE.copy()
+
+    # Convert bytes to strings for key values
+    def to_str(v):
+        if isinstance(v, bytes):
+            return v.decode('utf-8', errors='replace')
+        return str(v) if v is not None else ''
+
+    # Update with request-specific values (no loops!)
+    environ['REQUEST_METHOD'] = to_str(method)
+    environ['SCRIPT_NAME'] = to_str(script_name) if script_name else ''
+    environ['PATH_INFO'] = to_str(path_info)
+    environ['QUERY_STRING'] = to_str(query_string)
+    environ['SERVER_NAME'] = to_str(server[0])
+    environ['SERVER_PORT'] = str(server[1])
+    environ['SERVER_PROTOCOL'] = to_str(protocol)
+    environ['wsgi.url_scheme'] = to_str(scheme)
+    environ['REMOTE_ADDR'] = to_str(client[0])
+    environ['wsgi.errors'] = _SHARED_ERRORS
+
+    # Use buffer as wsgi.input, or empty BytesIO for bodyless requests
+    if buffer == b'empty' or (hasattr(buffer, '__class__') and buffer.__class__.__name__ == 'Atom'):
+        environ['wsgi.input'] = io.BytesIO()
+    else:
+        environ['wsgi.input'] = buffer
+
+    # Add pre-converted HTTP_* headers (already in correct format from Erlang)
+    # This is O(1) dict.update() instead of O(n) iteration
+    if wsgi_headers:
+        for key, value in wsgi_headers.items():
+            environ[to_str(key)] = to_str(value)
+
+    # Add content-type/length if present
+    if content_type is not None:
+        environ['CONTENT_TYPE'] = to_str(content_type)
+    if content_length is not None:
+        environ['CONTENT_LENGTH'] = to_str(content_length)
+
+    # Store lifespan state
+    if lifespan_state:
+        environ['_hornbeam.lifespan_state'] = lifespan_state
+
+    return environ

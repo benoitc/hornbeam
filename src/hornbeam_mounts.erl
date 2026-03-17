@@ -122,6 +122,11 @@ handle_call({register, Mounts}, _From, State) ->
         Mount#{mount_id => MountId}
     end, Mounts),
 
+    %% Setup pythonpath for each mount at registration time (not per-request)
+    lists:foreach(fun(Mount) ->
+        setup_mount_pythonpath(Mount)
+    end, MountsWithIds),
+
     %% Sort mounts by prefix length descending (longest first)
     SortedMounts = lists:sort(
         fun(#{prefix := P1}, #{prefix := P2}) ->
@@ -225,3 +230,21 @@ generate_mount_id() ->
     B64 = base64:encode(Bytes),
     %% Replace unsafe characters and remove padding
     binary:replace(binary:replace(B64, <<"+">>, <<"-">>), <<"/">>, <<"_">>).
+
+%% @private
+%% Setup mount's pythonpath at registration time (called once, not per-request).
+setup_mount_pythonpath(Mount) ->
+    case maps:get(pythonpath, Mount, []) of
+        [] ->
+            ok;
+        Paths when is_list(Paths) ->
+            lists:foreach(fun(Path) ->
+                PathBin = if
+                    is_binary(Path) -> Path;
+                    is_list(Path) -> list_to_binary(Path);
+                    true -> Path
+                end,
+                py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
+                        #{p => PathBin})
+            end, Paths)
+    end.

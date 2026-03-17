@@ -36,8 +36,7 @@ init(Req, #{multi_app := true} = State) ->
     Path = cowboy_req:path(Req),
     case hornbeam_mounts:lookup(Path) of
         {ok, Mount, PathInfo} ->
-            %% Setup mount's pythonpath if specified
-            setup_mount_pythonpath(Mount),
+            %% pythonpath is setup at mount registration time (hornbeam_mounts.erl)
             %% Build new state from mount config
             NewState = State#{
                 app_module => maps:get(app_module, Mount),
@@ -117,8 +116,8 @@ handle_wsgi(Req, State) ->
         AppCallable = maps:get(app_callable, State),
         TimeoutMs = maps:get(timeout, State, 30000),
 
-        %% Build complete environ in Erlang
-        Environ = build_wsgi_environ(Req, State),
+        %% Build pre-parsed WSGI tuple (O(1) environ creation in Python)
+        ReqTuple = hornbeam_request:build_wsgi_tuple(Req, State),
 
         %% Create buffer for request body (skip for bodyless requests)
         ContentLength = get_content_length(Req),
@@ -133,11 +132,11 @@ handle_wsgi(Req, State) ->
                 Buf
         end,
 
-        %% Call Python
+        %% Call Python with tuple fast path
         CtxRef = hornbeam_context_pool:get_context_ref(),
         case py_nif:context_call(CtxRef,
-                <<"hornbeam_wsgi_worker">>, <<"handle_request">>,
-                [self(), Buffer, AppModule, AppCallable, Environ], #{}) of
+                <<"hornbeam_wsgi_worker">>, <<"handle_request_tuple">>,
+                [self(), Buffer, AppModule, AppCallable, ReqTuple], #{}) of
             {ok, <<"done">>} ->
                 %% Enter receive loop
                 wsgi_receive_loop(Req, ReqInfo1, TimeoutMs, State);
@@ -264,57 +263,6 @@ filter_hop_by_hop(Headers) ->
         not lists:member(LowerName, ?HOP_BY_HOP_HEADERS)
     end, Headers).
 
-%% @private
-%% Build environ map for WSGI
-build_wsgi_environ(Req, State) ->
-    Method = cowboy_req:method(Req),
-    Path = cowboy_req:path(Req),
-    Qs = cowboy_req:qs(Req),
-    Headers = cowboy_req:headers(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    Scheme = cowboy_req:scheme(Req),
-    Version = cowboy_req:version(Req),
-    {ClientIp, _ClientPort} = cowboy_req:peer(Req),
-
-    %% Get SCRIPT_NAME and PATH_INFO from state (multi-app) or defaults
-    ScriptName = maps:get(script_name, State, <<>>),
-    PathInfo = maps:get(path_info, State, Path),
-
-    %% Build HTTP_* headers
-    HttpHeaders = maps:fold(fun(Name, Value, Acc) ->
-        HeaderKey = header_to_wsgi_key(Name),
-        Acc#{HeaderKey => Value}
-    end, #{}, Headers),
-
-    %% Build base environ
-    BaseEnviron = #{
-        <<"REQUEST_METHOD">> => Method,
-        <<"SCRIPT_NAME">> => ScriptName,
-        <<"PATH_INFO">> => PathInfo,
-        <<"QUERY_STRING">> => Qs,
-        <<"SERVER_NAME">> => Host,
-        <<"SERVER_PORT">> => integer_to_binary(Port),
-        <<"SERVER_PROTOCOL">> => format_protocol(Version),
-        <<"REMOTE_ADDR">> => format_ip(ClientIp),
-        <<"wsgi.url_scheme">> => Scheme
-    },
-
-    %% Merge HTTP headers
-    Environ1 = maps:merge(BaseEnviron, HttpHeaders),
-
-    %% Add CONTENT_TYPE and CONTENT_LENGTH if present
-    ContentType = maps:get(<<"content-type">>, Headers, undefined),
-    ContentLength = maps:get(<<"content-length">>, Headers, undefined),
-    Environ2 = case ContentType of
-        undefined -> Environ1;
-        CT -> Environ1#{<<"CONTENT_TYPE">> => CT}
-    end,
-    case ContentLength of
-        undefined -> Environ2;
-        CL -> Environ2#{<<"CONTENT_LENGTH">> => CL}
-    end.
-
 %%% ============================================================================
 %%% ASGI Handler - uses py_event_loop for full async
 %%% ============================================================================
@@ -343,9 +291,10 @@ handle_asgi(Req, State) ->
                 Buf
         end,
 
-        %% Spawn async task to run Python ASGI handler (fire-and-forget)
+        %% Create async task to run Python ASGI handler
         %% Python handler sends response via erlang.send() to this process
-        ok = py_event_loop:spawn_task(
+        %% Using create_task avoids a throwaway process per request (spawn_task overhead)
+        _TaskRef = py_event_loop:create_task(
             <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
             [self(), AppModule, AppCallable, Scope, Buffer]),
 
@@ -522,22 +471,6 @@ build_request_info(Req) ->
 %%% ============================================================================
 
 %% @private
-header_to_wsgi_key(Name) ->
-    case Name of
-        <<"content-type">> -> <<"CONTENT_TYPE">>;
-        <<"content-length">> -> <<"CONTENT_LENGTH">>;
-        _ ->
-            Upper = string:uppercase(Name),
-            Underscored = binary:replace(Upper, <<"-">>, <<"_">>, [global]),
-            <<"HTTP_", Underscored/binary>>
-    end.
-
-%% @private
-format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
-format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
-format_protocol('HTTP/2') -> <<"HTTP/2">>.
-
-%% @private
 format_http_version('HTTP/1.0') -> <<"1.0">>;
 format_http_version('HTTP/1.1') -> <<"1.1">>;
 format_http_version('HTTP/2') -> <<"2">>.
@@ -586,26 +519,6 @@ to_lower_binary(V) when is_binary(V) -> string:lowercase(V);
 to_lower_binary(V) when is_list(V) -> string:lowercase(list_to_binary(V));
 to_lower_binary(V) when is_atom(V) -> string:lowercase(atom_to_binary(V, utf8));
 to_lower_binary(V) -> string:lowercase(to_binary(V)).
-
-%%% ============================================================================
-%%% Mount pythonpath setup
-%%% ============================================================================
-
-setup_mount_pythonpath(Mount) ->
-    case maps:get(pythonpath, Mount, []) of
-        [] ->
-            ok;
-        Paths when is_list(Paths) ->
-            lists:foreach(fun(Path) ->
-                PathBin = if
-                    is_binary(Path) -> Path;
-                    is_list(Path) -> list_to_binary(Path);
-                    true -> Path
-                end,
-                py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
-                        #{p => PathBin})
-            end, Paths)
-    end.
 
 %%% ============================================================================
 %%% WebSocket callbacks (delegate to hornbeam_websocket)
