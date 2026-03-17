@@ -94,6 +94,13 @@ handle_websocket_upgrade(Req, State) ->
 -define(WSGI_STREAMING_THRESHOLD, 65536).  %% 64KB
 -define(WSGI_BODY_CHUNK_SIZE, 65536).       %% 64KB chunks
 
+%% Pre-computed ASGI scope template (static fields)
+%% Avoids recreating these maps on every request
+-define(ASGI_SCOPE_TEMPLATE, #{
+    type => <<"http">>,
+    asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>}
+}).
+
 %% Hop-by-hop headers that should not be forwarded
 -define(HOP_BY_HOP_HEADERS, [
     <<"connection">>, <<"keep-alive">>, <<"proxy-authenticate">>,
@@ -410,15 +417,9 @@ asgi_stream_body(Req, TimeoutMs, State) ->
     end.
 
 %% @private
-%% Build ASGI scope
+%% Build ASGI scope - uses pre-computed template for static fields
 build_scope(Req, State) ->
-    Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
-    Qs = cowboy_req:qs(Req),
-    Headers = cowboy_req:headers(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    Scheme = cowboy_req:scheme(Req),
     Version = cowboy_req:version(Req),
     {ClientIp, ClientPort} = cowboy_req:peer(Req),
 
@@ -426,26 +427,24 @@ build_scope(Req, State) ->
     RootPath = maps:get(script_name, State, <<>>),
     ScopePath = maps:get(path_info, State, Path),
 
+    %% Build headers list - inline for performance
     HeaderList = maps:fold(fun(Name, Value, Acc) ->
         [[Name, Value] | Acc]
-    end, [], Headers),
+    end, [], cowboy_req:headers(Req)),
 
-    LifespanState = hornbeam_lifespan:get_state(),
-
-    #{
-        type => <<"http">>,
-        asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>},
+    %% Merge dynamic fields into pre-computed template
+    ?ASGI_SCOPE_TEMPLATE#{
         http_version => format_http_version(Version),
-        method => Method,
-        scheme => Scheme,
+        method => cowboy_req:method(Req),
+        scheme => cowboy_req:scheme(Req),
         path => ScopePath,
         raw_path => ScopePath,
-        query_string => Qs,
+        query_string => cowboy_req:qs(Req),
         root_path => RootPath,
         headers => HeaderList,
-        server => {Host, Port},
+        server => {cowboy_req:host(Req), cowboy_req:port(Req)},
         client => {format_ip(ClientIp), ClientPort},
-        state => LifespanState,
+        state => hornbeam_lifespan:get_state(),
         extensions => build_extensions(Version)
     }.
 

@@ -37,9 +37,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 try:
     import erlang
     HAS_ERLANG = True
+    # Cache erlang.send for faster lookups (avoids attribute access per call)
+    _erlang_send = erlang.send
 except ImportError:
     HAS_ERLANG = False
     erlang = None
+    _erlang_send = None
 
 
 # ============================================================================
@@ -151,12 +154,12 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
         # Ensure completion is signaled
         if not send.finished:
             if not send.headers_sent:
-                erlang.send(caller_pid, (b'headers', 500, []))
-            erlang.send(caller_pid, b'done')
+                _erlang_send(caller_pid, (b'headers', 500, []))
+            _erlang_send(caller_pid, b'done')
 
     except Exception as e:
         try:
-            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
+            _erlang_send(caller_pid, (b'error', str(e).encode('utf-8')))
         except Exception:
             pass
 
@@ -220,13 +223,14 @@ class _ASGIReceive:
 class _ASGISend:
     """ASGI send callable that streams to Erlang via erlang.send()."""
     __slots__ = ('caller_pid', 'status', 'headers', 'headers_sent',
-                 'body_parts', 'finished', 'buffering')
+                 'body_parts', 'finished', 'buffering', '_send')
 
     # Buffer small responses before sending
     BUFFER_THRESHOLD = 65536
 
     def __init__(self, caller_pid, buffering: bool = True):
         self.caller_pid = caller_pid
+        self._send = _erlang_send  # Cached function reference
         self.status = None
         self.headers = []
         self.headers_sent = False
@@ -243,7 +247,7 @@ class _ASGISend:
 
             if not self.buffering:
                 # Send headers immediately for streaming
-                erlang.send(self.caller_pid, (b'headers', self.status, self.headers))
+                self._send(self.caller_pid, (b'headers', self.status, self.headers))
                 self.headers_sent = True
 
         elif msg_type == 'http.response.body':
@@ -263,30 +267,30 @@ class _ASGISend:
                 if not more_body:
                     # Done - send complete response
                     body = b''.join(self.body_parts)
-                    erlang.send(self.caller_pid,
+                    self._send(self.caller_pid,
                                (b'response', self.status or 500, self.headers, body))
                     self.finished = True
 
                 elif total_size >= self.BUFFER_THRESHOLD:
                     # Switch to streaming
-                    erlang.send(self.caller_pid, (b'headers', self.status or 500, self.headers))
+                    self._send(self.caller_pid, (b'headers', self.status or 500, self.headers))
                     self.headers_sent = True
                     for part in self.body_parts:
-                        erlang.send(self.caller_pid, (b'chunk', part))
+                        self._send(self.caller_pid, (b'chunk', part))
                     self.body_parts.clear()
                     self.buffering = False
 
             else:
                 # Streaming mode
                 if not self.headers_sent:
-                    erlang.send(self.caller_pid, (b'headers', self.status or 500, self.headers))
+                    self._send(self.caller_pid, (b'headers', self.status or 500, self.headers))
                     self.headers_sent = True
 
                 if body_part:
-                    erlang.send(self.caller_pid, (b'chunk', body_part))
+                    self._send(self.caller_pid, (b'chunk', body_part))
 
                 if not more_body:
-                    erlang.send(self.caller_pid, b'done')
+                    self._send(self.caller_pid, b'done')
                     self.finished = True
 
         elif msg_type == 'http.response.informational':
@@ -294,7 +298,7 @@ class _ASGISend:
             status = message.get('status', 100)
             headers = message.get('headers', [])
             if status == 103:
-                erlang.send(self.caller_pid, (b'early_hints', headers))
+                self._send(self.caller_pid, (b'early_hints', headers))
 
         elif msg_type == 'http.disconnect':
             self.finished = True
@@ -328,7 +332,7 @@ def handle_asgi_sync(caller_pid, app_module: bytes, app_callable: bytes,
         return b'done'
     except Exception as e:
         try:
-            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
+            _erlang_send(caller_pid, (b'error', str(e).encode('utf-8')))
         except Exception:
             pass
         return b'error'
@@ -410,31 +414,31 @@ async def handle_websocket(caller_pid, app_module: bytes, app_callable: bytes,
             connected = True
             subprotocol = message.get('subprotocol')
             headers = message.get('headers', [])
-            erlang.send(caller_pid, (b'accept', subprotocol, headers))
+            _erlang_send(caller_pid, (b'accept', subprotocol, headers))
 
         elif msg_type == 'websocket.send':
             if 'text' in message:
-                erlang.send(caller_pid, (b'text', message['text']))
+                _erlang_send(caller_pid, (b'text', message['text']))
             elif 'bytes' in message:
-                erlang.send(caller_pid, (b'bytes', message['bytes']))
+                _erlang_send(caller_pid, (b'bytes', message['bytes']))
 
         elif msg_type == 'websocket.close':
             code = message.get('code', 1000)
             reason = message.get('reason', '')
-            erlang.send(caller_pid, (b'close', code, reason))
+            _erlang_send(caller_pid, (b'close', code, reason))
             closed = True
 
     try:
-        app = _load_app(module_name, callable_name)
+        app = _get_app(module_name, callable_name)
         await app(scope, receive, send)
 
         # Ensure close is sent
         if not closed:
-            erlang.send(caller_pid, (b'close', 1000, b''))
+            _erlang_send(caller_pid, (b'close', 1000, b''))
 
     except Exception as e:
         try:
-            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
+            _erlang_send(caller_pid, (b'error', str(e).encode('utf-8')))
         except Exception:
             pass
 
