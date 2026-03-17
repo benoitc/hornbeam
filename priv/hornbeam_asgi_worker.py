@@ -144,6 +144,14 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
         # Get app (preloaded or import on demand)
         app = _get_app(module_name, callable_name)
 
+        # Use Python-side lifespan state (mutable, shared across requests)
+        # This is per ASGI spec - state modifications should persist
+        try:
+            from hornbeam_lifespan_runner import get_state
+            scope['state'] = get_state()
+        except ImportError:
+            pass  # Keep Erlang-provided state if lifespan runner not available
+
         # Create receive/send callables
         receive = _ASGIReceive(actual_buffer)
         send = _ASGISend(caller_pid)
