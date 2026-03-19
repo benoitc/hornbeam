@@ -315,14 +315,14 @@ handle_asgi(Req, State) ->
         end,
 
         %% Create async task to run Python ASGI handler
+        %% Uses event loop pool with process affinity for better distribution
         %% Python handler sends control messages via erlang.send()
         %% and body data via byte channel
-        _TaskRef = py_event_loop:create_task(
+        _TaskRef = py_event_loop_pool:create_task(
             <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
             [self(), AppModule, AppCallable, Scope, ReqBodyCh, RespBodyCh]),
 
         %% Receive response from async Python
-        %% Pass ReqBodyCh so it can be closed when response starts
         Result = receive_asgi_response(Req, ReqInfo1, ReqBodyCh, RespBodyCh, TimeoutMs, State),
 
         % ensure to kill body pump
