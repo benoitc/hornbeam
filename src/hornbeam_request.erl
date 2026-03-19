@@ -77,15 +77,10 @@ build_wsgi_tuple(Req, State) ->
 %%
 %% Headers are pre-formatted as [[name, value], ...] list.
 %% All binary conversions done in Erlang.
+%% Handles mount_id and per-mount lifespan state for multi-app mode.
 -spec build_asgi_scope(cowboy_req:req(), map()) -> map().
 build_asgi_scope(Req, State) ->
-    Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
-    Qs = cowboy_req:qs(Req),
-    Headers = cowboy_req:headers(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    Scheme = cowboy_req:scheme(Req),
     Version = cowboy_req:version(Req),
     {ClientIp, ClientPort} = cowboy_req:peer(Req),
 
@@ -96,26 +91,40 @@ build_asgi_scope(Req, State) ->
     %% Convert headers to ASGI format [[name, value], ...]
     HeaderList = maps:fold(fun(Name, Value, Acc) ->
         [[Name, Value] | Acc]
-    end, [], Headers),
+    end, [], cowboy_req:headers(Req)),
 
-    LifespanState = hornbeam_lifespan:get_state(),
+    %% Get mount_id for per-mount state isolation (multi-app mode)
+    MountId = maps:get(mount_id, State, undefined),
 
-    #{
+    %% Get fresh lifespan state from ETS on each request (supports mutable state)
+    LifespanState = case MountId of
+        undefined -> hornbeam_lifespan:get_state();
+        _ -> hornbeam_lifespan:get_state(MountId)
+    end,
+
+    %% Build scope map with all fields
+    BaseScope = #{
         type => <<"http">>,
         asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>},
         http_version => format_http_version(Version),
-        method => Method,
-        scheme => Scheme,
+        method => cowboy_req:method(Req),
+        scheme => cowboy_req:scheme(Req),
         path => ScopePath,
         raw_path => ScopePath,
-        query_string => Qs,
+        query_string => cowboy_req:qs(Req),
         root_path => RootPath,
         headers => HeaderList,
-        server => {Host, Port},
+        server => {cowboy_req:host(Req), cowboy_req:port(Req)},
         client => {format_ip(ClientIp), ClientPort},
         state => LifespanState,
         extensions => build_extensions(Version)
-    }.
+    },
+
+    %% Add mount_id to scope if in multi-app mode (used by Python to get correct state)
+    case MountId of
+        undefined -> BaseScope;
+        _ -> BaseScope#{mount_id => MountId}
+    end.
 
 %% @doc Convert header name to WSGI HTTP_* format.
 %% "accept-encoding" -> <<"HTTP_ACCEPT_ENCODING">>

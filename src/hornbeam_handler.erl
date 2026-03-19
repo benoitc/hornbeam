@@ -98,13 +98,6 @@ handle_websocket_upgrade(Req, State) ->
 -define(WSGI_STREAMING_THRESHOLD, 65536).  %% 64KB
 -define(WSGI_BODY_CHUNK_SIZE, 65536).       %% 64KB chunks
 
-%% Pre-computed ASGI scope template (static fields)
-%% Avoids recreating these maps on every request
--define(ASGI_SCOPE_TEMPLATE, #{
-    type => <<"http">>,
-    asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>}
-}).
-
 %% Hop-by-hop headers that should not be forwarded
 -define(HOP_BY_HOP_HEADERS, [
     <<"connection">>, <<"keep-alive">>, <<"proxy-authenticate">>,
@@ -274,6 +267,10 @@ filter_hop_by_hop(Headers) ->
 
 -define(ASGI_BODY_CHUNK_SIZE, 65536).  %% 64KB chunks for request body
 
+%% Chunk coalescing for response body streaming
+-define(CHUNK_COALESCE_SIZE, 4096).    %% 4KB threshold before flushing
+-define(CHUNK_COALESCE_TIMEOUT, 1).    %% 1ms max wait for more chunks
+
 handle_asgi(Req, State) ->
     ReqInfo = build_request_info(Req),
     ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
@@ -283,8 +280,8 @@ handle_asgi(Req, State) ->
         AppCallable = maps:get(app_callable, State),
         TimeoutMs = maps:get(timeout, State, 30000),
 
-        %% Build ASGI scope
-        Scope = build_scope(Req, State),
+        %% Build ASGI scope (unified builder in hornbeam_request)
+        Scope = hornbeam_request:build_asgi_scope(Req, State),
 
         %% Create byte channels for request and response bodies
         %% ReqBodyCh: Erlang writes request body, Python reads
@@ -433,70 +430,57 @@ maybe_close_channel(Channel) ->
   end.
 
 %% @private
-%% Drain response body from byte channel and stream to client
-%% Empty chunk signals EOF, then Erlang closes the channel
+%% Drain response body from byte channel and stream to client.
+%% Coalesces small chunks to reduce syscall overhead.
 drain_response_channel(Req, RespBodyCh, TimeoutMs, State) ->
-    case py_byte_channel:recv(RespBodyCh, TimeoutMs) of
+    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []).
+
+%% @private
+%% Drain with buffer accumulation - coalesce small chunks
+drain_response_channel(Req, RespBodyCh, TimeoutMs, State, Buffer) ->
+    case py_byte_channel:recv(RespBodyCh, ?CHUNK_COALESCE_TIMEOUT) of
         {ok, Chunk} ->
-            %% Got data - send as non-final chunk
-            ok = cowboy_req:stream_body(Chunk, nofin, Req),
-            drain_response_channel(Req, RespBodyCh, TimeoutMs, State);
-        {error, closed} ->
-            %% Channel closed = EOF
-            ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State};
+            NewBuffer = [Chunk | Buffer],
+            BufferSize = iolist_size(NewBuffer),
+            if
+                BufferSize >= ?CHUNK_COALESCE_SIZE ->
+                    %% Flush buffer - threshold reached
+                    ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(NewBuffer)), nofin, Req),
+                    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []);
+                true ->
+                    %% Keep buffering
+                    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, NewBuffer)
+            end;
+        {error, timeout} when Buffer =/= [] ->
+            %% Timeout with buffered data - flush and continue
+            ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(Buffer)), nofin, Req),
+            drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []);
         {error, timeout} ->
-            %% Timeout - close the stream
-            py_byte_channel:close(RespBodyCh),
+            %% Timeout with no buffer - wait longer
+            drain_response_channel_wait(Req, RespBodyCh, TimeoutMs, State);
+        {error, closed} ->
+            %% EOF - flush remaining buffer
+            case Buffer of
+                [] -> ok;
+                _ -> ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(Buffer)), nofin, Req)
+            end,
             ok = cowboy_req:stream_body(<<>>, fin, Req),
             {ok, Req, State}
     end.
 
 %% @private
-%% Build ASGI scope - uses pre-computed template for static fields
-build_scope(Req, State) ->
-    Path = cowboy_req:path(Req),
-    Version = cowboy_req:version(Req),
-    {ClientIp, ClientPort} = cowboy_req:peer(Req),
-
-    %% Get root_path and path from state (multi-app) or defaults
-    RootPath = maps:get(script_name, State, <<>>),
-    ScopePath = maps:get(path_info, State, Path),
-
-    %% Build headers list - inline for performance
-    HeaderList = maps:fold(fun(Name, Value, Acc) ->
-        [[Name, Value] | Acc]
-    end, [], cowboy_req:headers(Req)),
-
-    %% Get mount_id for per-mount state isolation (multi-app mode)
-    MountId = maps:get(mount_id, State, undefined),
-
-    %% Get fresh lifespan state from ETS on each request (supports mutable state)
-    LifespanState = case MountId of
-        undefined -> hornbeam_lifespan:get_state();
-        _ -> hornbeam_lifespan:get_state(MountId)
-    end,
-
-    %% Merge dynamic fields into pre-computed template
-    BaseScope = ?ASGI_SCOPE_TEMPLATE#{
-        http_version => format_http_version(Version),
-        method => cowboy_req:method(Req),
-        scheme => cowboy_req:scheme(Req),
-        path => ScopePath,
-        raw_path => ScopePath,
-        query_string => cowboy_req:qs(Req),
-        root_path => RootPath,
-        headers => HeaderList,
-        server => {cowboy_req:host(Req), cowboy_req:port(Req)},
-        client => {format_ip(ClientIp), ClientPort},
-        state => LifespanState,
-        extensions => build_extensions(Version)
-    },
-
-    %% Add mount_id to scope if in multi-app mode (used by Python to get correct state)
-    case MountId of
-        undefined -> BaseScope;
-        _ -> BaseScope#{mount_id => MountId}
+%% Wait for data with full timeout when buffer is empty
+drain_response_channel_wait(Req, RespBodyCh, TimeoutMs, State) ->
+    case py_byte_channel:recv(RespBodyCh, TimeoutMs) of
+        {ok, Chunk} ->
+            drain_response_channel(Req, RespBodyCh, TimeoutMs, State, [Chunk]);
+        {error, closed} ->
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State};
+        {error, timeout} ->
+            py_byte_channel:close(RespBodyCh),
+            ok = cowboy_req:stream_body(<<>>, fin, Req),
+            {ok, Req, State}
     end.
 
 %%% ============================================================================
@@ -568,33 +552,6 @@ build_request_info(Req) ->
 %%% ============================================================================
 %%% Utilities
 %%% ============================================================================
-
-%% @private
-format_http_version('HTTP/1.0') -> <<"1.0">>;
-format_http_version('HTTP/1.1') -> <<"1.1">>;
-format_http_version('HTTP/2') -> <<"2">>.
-
-%% @private
-format_ip({A, B, C, D}) ->
-    list_to_binary([
-        integer_to_list(A), $.,
-        integer_to_list(B), $.,
-        integer_to_list(C), $.,
-        integer_to_list(D)
-    ]);
-format_ip(Addr = {_, _, _, _, _, _, _, _}) ->
-    list_to_binary(inet:ntoa(Addr)).
-
-%% @private
-build_extensions('HTTP/2') ->
-    #{
-        <<"http.response.trailers">> => #{},
-        <<"http.response.early_hints">> => #{}
-    };
-build_extensions(_) ->
-    #{
-        <<"http.response.early_hints">> => #{}
-    }.
 
 %% @private
 convert_headers(Headers) ->

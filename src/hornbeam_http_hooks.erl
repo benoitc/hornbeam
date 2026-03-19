@@ -50,30 +50,40 @@
     run_on_error/2
 ]).
 
--define(HOOKS_KEY, {?MODULE, hooks}).
+%% Individual hook keys for direct persistent_term access
+%% Avoids try/catch on get_hooks() and maps:get() on every request
+-define(HOOK_ON_REQUEST, {?MODULE, on_request}).
+-define(HOOK_ON_RESPONSE, {?MODULE, on_response}).
+-define(HOOK_ON_ERROR, {?MODULE, on_error}).
 
 %% @doc Set the HTTP hooks configuration.
-%% Hooks are stored in persistent_term for fast access.
+%% Stores individual hooks in persistent_term with direct keys.
+%% Stores undefined when no hook is configured for zero-overhead check.
 -spec set_hooks(map()) -> ok.
 set_hooks(Hooks) when is_map(Hooks) ->
-    persistent_term:put(?HOOKS_KEY, Hooks),
+    persistent_term:put(?HOOK_ON_REQUEST, maps:get(on_request, Hooks, undefined)),
+    persistent_term:put(?HOOK_ON_RESPONSE, maps:get(on_response, Hooks, undefined)),
+    persistent_term:put(?HOOK_ON_ERROR, maps:get(on_error, Hooks, undefined)),
     ok.
 
 %% @doc Get the current hooks configuration.
+%% Reconstructs the map from individual persistent_term keys.
 -spec get_hooks() -> map().
 get_hooks() ->
-    try
-        persistent_term:get(?HOOKS_KEY)
-    catch
-        error:badarg -> #{}
-    end.
+    OnRequest = persistent_term:get(?HOOK_ON_REQUEST, undefined),
+    OnResponse = persistent_term:get(?HOOK_ON_RESPONSE, undefined),
+    OnError = persistent_term:get(?HOOK_ON_ERROR, undefined),
+    lists:foldl(fun
+        ({_, undefined}, Acc) -> Acc;
+        ({Key, Value}, Acc) -> Acc#{Key => Value}
+    end, #{}, [{on_request, OnRequest}, {on_response, OnResponse}, {on_error, OnError}]).
 
 %% @doc Run the on_request hook.
 %% The hook receives a request map and should return a (possibly modified) request map.
 %% If no hook is configured, returns the request unchanged.
 -spec run_on_request(map()) -> map().
 run_on_request(Request) when is_map(Request) ->
-    case maps:get(on_request, get_hooks(), undefined) of
+    case persistent_term:get(?HOOK_ON_REQUEST, undefined) of
         undefined ->
             Request;
         Hook when is_function(Hook, 1) ->
@@ -92,7 +102,7 @@ run_on_request(Request) when is_map(Request) ->
 %% If no hook is configured, returns the response unchanged.
 -spec run_on_response(map()) -> map().
 run_on_response(Response) when is_map(Response) ->
-    case maps:get(on_response, get_hooks(), undefined) of
+    case persistent_term:get(?HOOK_ON_RESPONSE, undefined) of
         undefined ->
             Response;
         Hook when is_function(Hook, 1) ->
@@ -112,7 +122,7 @@ run_on_response(Response) when is_map(Response) ->
 %% If no hook is configured, returns a default 500 error.
 -spec run_on_error(term(), map()) -> {integer(), binary()}.
 run_on_error(Error, Request) ->
-    case maps:get(on_error, get_hooks(), undefined) of
+    case persistent_term:get(?HOOK_ON_ERROR, undefined) of
         undefined ->
             %% Default error response
             {500, <<"Internal Server Error">>};
