@@ -316,46 +316,26 @@ class _ASGISend:
         if msg_type == 'http.response.start':
             self.status = message.get('status', 200)
             self.headers = message.get('headers', [])
-            self._send(self.caller_pid, (b'headers', self.status or 400, self.headers))
+            self._send(self.caller_pid, (b'headers', self.status or 200, self.headers))
             self.headers_sent = True
+
         elif msg_type == 'http.response.body':
             body_part = message.get('body', b'')
             if isinstance(body_part, str):
                 body_part = body_part.encode('utf-8')
 
-            # we don't need an intermediate buffer, just append to the channel queue
+            more_body = message.get('more_body', False)
+
+            # Send body to channel
             try:
                 self.resp_channel.send_bytes(body_part)
             except ByteChannelClosed:
-                # erlang has closed the channel.
                 self.finished = True
                 return
 
-            more_body = message.get('more_body', False)
-
-            if not self.headers_sent:
-                if self._total_size >= self.BUFFER_THRESHOLD:
-                    # Body too large - switch to streaming via byte channel
-                    self._send(self.caller_pid, (b'headers', self.status or 500, self.headers))
-                    self.headers_sent = True
-                    self._total_size = 0
-
-                    if not more_body:
-                        # channel close signal EOF
-                        self.resp_channel.close() 
-                        self.finished = True
-                elif not more_body:
-                    # TODO: check if this case can exists
-                    self._send(self.caller_pid,
-                               (b'response', self.status or 500, self.headers))
-                    self.resp_channel.close()
-                    self.finished = True
-
-            else:
-                if not more_body:
-                    # Send empty chunk to signal EOF (Erlang will close channel)
-                    self.resp_channel.close()
-                    self.finished = True
+            if not more_body:
+                self.resp_channel.close()
+                self.finished = True
 
         elif msg_type == 'http.response.informational':
             # Early hints (103) - control message via mailbox
