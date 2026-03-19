@@ -37,6 +37,8 @@ init(Req, #{multi_app := true} = State) ->
     case hornbeam_mounts:lookup(Path) of
         {ok, Mount, PathInfo} ->
             %% pythonpath is setup at mount registration time (hornbeam_mounts.erl)
+            %% Get mount_id for per-mount lifespan state isolation
+            MountId = maps:get(mount_id, Mount),
             %% Build new state from mount config
             NewState = State#{
                 app_module => maps:get(app_module, Mount),
@@ -44,7 +46,10 @@ init(Req, #{multi_app := true} = State) ->
                 worker_class => maps:get(worker_class, Mount),
                 timeout => maps:get(timeout, Mount),
                 script_name => maps:get(prefix, Mount),
-                path_info => PathInfo
+                path_info => PathInfo,
+                mount_id => MountId,
+                %% Get per-mount lifespan state (not global)
+                lifespan_state => hornbeam_lifespan:get_state(MountId)
             },
             WorkerClass = maps:get(worker_class, Mount),
             handle_request(WorkerClass, Req, NewState);
@@ -264,8 +269,10 @@ filter_hop_by_hop(Headers) ->
     end, Headers).
 
 %%% ============================================================================
-%%% ASGI Handler - uses py_event_loop for full async
+%%% ASGI Handler - uses py_event_loop for full async with byte channels
 %%% ============================================================================
+
+-define(ASGI_BODY_CHUNK_SIZE, 65536).  %% 64KB chunks for request body
 
 handle_asgi(Req, State) ->
     ReqInfo = build_request_info(Req),
@@ -279,27 +286,52 @@ handle_asgi(Req, State) ->
         %% Build ASGI scope
         Scope = build_scope(Req, State),
 
-        %% Create buffer for request body (skip for bodyless requests)
+        %% Create byte channels for request and response bodies
+        %% ReqBodyCh: Erlang writes request body, Python reads
+        %% RespBodyCh: Python writes response body, Erlang reads
+        {ok, ReqBodyCh} = py_byte_channel:new(),
+        {ok, RespBodyCh} = py_byte_channel:new(),
+
+        %% Check if request has a body
         ContentLength = get_content_length(Req),
         Method = cowboy_req:method(Req),
-        Buffer = case has_request_body(Method, ContentLength) of
-            false ->
-                empty;
+        HasBody = has_request_body(Method, ContentLength),
+
+        %% Spawn body pump process if there's a body
+        %% This reads from Cowboy and writes to ReqBodyCh
+        BodyPumpPid = case HasBody of
             true ->
-                {ok, Buf} = create_body_buffer(ContentLength),
-                write_body_to_buffer(Req, Buf, ContentLength),
-                Buf
+                Ref = make_ref(),
+                HandlerPid = self(),
+                Pid = spawn(fun() ->
+                    HandlerPid ! {pump_started, Ref},
+                    pump_request_body(Req, ReqBodyCh, ?ASGI_BODY_CHUNK_SIZE)
+                end),
+                %% Wait for pump to start before continuing
+                ok = wait_pump(Ref),
+                Pid;
+            false ->
+                %% No body - close channel to signal EOF
+                py_byte_channel:close(ReqBodyCh),
+                undefined
         end,
 
         %% Create async task to run Python ASGI handler
-        %% Python handler sends response via erlang.send() to this process
-        %% Using create_task avoids a throwaway process per request (spawn_task overhead)
+        %% Python handler sends control messages via erlang.send()
+        %% and body data via byte channel
         _TaskRef = py_event_loop:create_task(
             <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-            [self(), AppModule, AppCallable, Scope, Buffer]),
+            [self(), AppModule, AppCallable, Scope, ReqBodyCh, RespBodyCh]),
 
         %% Receive response from async Python
-        receive_asgi_response(Req, ReqInfo1, TimeoutMs, State)
+        %% Pass ReqBodyCh so it can be closed when response starts
+        Result = receive_asgi_response(Req, ReqInfo1, ReqBodyCh, RespBodyCh, TimeoutMs, State),
+
+        % ensure to kill body pump
+        % at this point, channels must have been closed, otherwise gc will do its job.
+        _ = maybe_kill_body_pump(BodyPumpPid),
+
+        Result
     catch
         Class:Reason:Stack ->
             error_logger:error_msg("ASGI handler error: ~p:~p~n~p~n",
@@ -307,62 +339,120 @@ handle_asgi(Req, State) ->
             handle_error(Req, {Class, Reason}, ReqInfo1, State)
     end.
 
+wait_pump(Ref) ->
+    receive
+        {pump_started, Ref} -> ok
+    after 5000 ->
+        timeout
+    end.
+
+
+maybe_kill_body_pump(undefined) -> true;
+maybe_kill_body_pump(BodyPumpPid) when is_pid(BodyPumpPid) -> 
+  exit(BodyPumpPid, kill).
+
+
+%% @private
+%% Pump request body from Cowboy to byte channel
+%% Closes channel to signal EOF
+pump_request_body(Req, ReqBodyCh, ChunkSize) ->
+    error_logger:info_msg("PUMP: starting~n"),
+    try
+        case cowboy_req:read_body(Req, #{length => ChunkSize}) of
+            {ok, Chunk, _Req2} ->
+                write_to_channel_with_backpressure(ReqBodyCh, Chunk),
+                py_byte_channel:close(ReqBodyCh);
+            {more, Chunk, Req2} ->
+                %% More data available - write and continue
+                write_to_channel_with_backpressure(ReqBodyCh, Chunk),
+                pump_request_body(Req2, ReqBodyCh, ChunkSize);
+            _Else ->
+              error_logger:error_msg("unexpected read body ~p", [_Else]),
+              py_byte_channel:close(ReqBodyCh)
+        end
+    catch
+        Class:Reason:Stack ->
+            py_byte_channel:close(ReqBodyCh)
+    end.
+
+%% @private
+%% Write to channel with backpressure handling
+write_to_channel_with_backpressure(Channel, Data) ->
+    case py_byte_channel:send(Channel, Data) of
+        ok -> ok;
+        busy ->
+            %% Channel full - wait a bit and retry
+            timer:sleep(1),
+            write_to_channel_with_backpressure(Channel, Data);
+        {error, closed} ->
+            %% Channel closed - stop writing
+            ok
+    end.
+
 %% @private
 %% Receive ASGI response from Python worker
-receive_asgi_response(Req, ReqInfo, TimeoutMs, State) ->
+%% Control messages come via mailbox, response body via RespBodyCh
+%% Closes ReqBodyCh when response starts (Python is done reading request)
+receive_asgi_response(Req, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State) ->
     receive
-        {<<"response">>, StatusCode, Headers, Body} ->
-            %% Buffered response (single message)
-            Response = #{
-                <<"status">> => StatusCode,
-                <<"headers">> => Headers,
-                <<"body">> => Body
-            },
-            Response1 = hornbeam_http_hooks:run_on_response(Response),
-            send_response(Req, Response1, State);
         {<<"headers">>, StatusCode, Headers} ->
-            %% Streaming response
+            error_logger:info_msg("Got response status ~p headers ~p~n", [StatusCode, Headers]),
             CowboyHeaders = convert_headers(Headers),
-            receive_asgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State);
+            Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+            drain_response_channel(Req2, RespBodyCh, TimeoutMs, State);
         {<<"early_hints">>, Headers} ->
             %% Early hints (103)
             HintHeaders = convert_headers(Headers),
             Req2 = cowboy_req:inform(103, HintHeaders, Req),
-            receive_asgi_response(Req2, ReqInfo, TimeoutMs, State);
+            receive_asgi_response(Req2, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State);
         {<<"error">>, Reason} ->
             handle_error(Req, Reason, ReqInfo, State);
         {async_result, _Ref, {ok, _}} ->
-            receive_asgi_response(Req, ReqInfo, TimeoutMs, State);
+            %% Async task completion - continue receiving
+            receive_asgi_response(Req, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State);
         {async_result, _Ref, {error, Reason}} ->
+        error_logger:info_msg("async result error ~p, ", [Reason]),
+            %% ensure to close channels there
+            ok = maybe_close_channel(ReqBodyCh),
+            ok = maybe_close_channel(RespBodyCh),
             handle_error(Req, Reason, ReqInfo, State)
     after TimeoutMs ->
         handle_error(Req, timeout, ReqInfo, State)
     end.
 
 %% @private
-receive_asgi_body(Req, StatusCode, CowboyHeaders, TimeoutMs, State) ->
-    Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-    asgi_stream_body(Req2, TimeoutMs, State).
+%% Maybe close a channel
+maybe_close_channel(Channel) ->
+  try 
+    case py_byte_channel:info(Channel) of
+      #{ closed := true } -> ok;
+      _ -> 
+        _ = catch py_byte_channel:close(Channel),
+        ok
+    end
+  catch
+    _:_ ->
+      ok
+  end.
 
 %% @private
-%% Stream ASGI response body chunks to client
-asgi_stream_body(Req, TimeoutMs, State) ->
-    receive
-        {<<"chunk">>, Chunk} ->
+%% Drain response body from byte channel and stream to client
+%% Empty chunk signals EOF, then Erlang closes the channel
+drain_response_channel(Req, RespBodyCh, TimeoutMs, State) ->
+    case py_byte_channel:recv(RespBodyCh, TimeoutMs) of
+        {ok, Chunk} ->
+            %% Got data - send as non-final chunk
             ok = cowboy_req:stream_body(Chunk, nofin, Req),
-            asgi_stream_body(Req, TimeoutMs, State);
-        <<"done">> ->
+            drain_response_channel(Req, RespBodyCh, TimeoutMs, State);
+        {error, closed} ->
+            %% Channel closed = EOF
             ok = cowboy_req:stream_body(<<>>, fin, Req),
             {ok, Req, State};
-        {<<"error">>, _Reason} ->
+        {error, timeout} ->
+            %% Timeout - close the stream
+            py_byte_channel:close(RespBodyCh),
             ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State};
-        {async_result, _Ref, _Result} ->
-            %% Async task finished, continue streaming
-            asgi_stream_body(Req, TimeoutMs, State)
-    after TimeoutMs ->
-        ok = cowboy_req:stream_body(<<>>, fin, Req),
-        {ok, Req, State}
+            {ok, Req, State}
     end.
 
 %% @private
@@ -381,11 +471,17 @@ build_scope(Req, State) ->
         [[Name, Value] | Acc]
     end, [], cowboy_req:headers(Req)),
 
-    %% Get lifespan state from handler state (cached at startup, no lookup per request)
-    LifespanState = maps:get(lifespan_state, State, #{}),
+    %% Get mount_id for per-mount state isolation (multi-app mode)
+    MountId = maps:get(mount_id, State, undefined),
+
+    %% Get fresh lifespan state from ETS on each request (supports mutable state)
+    LifespanState = case MountId of
+        undefined -> hornbeam_lifespan:get_state();
+        _ -> hornbeam_lifespan:get_state(MountId)
+    end,
 
     %% Merge dynamic fields into pre-computed template
-    ?ASGI_SCOPE_TEMPLATE#{
+    BaseScope = ?ASGI_SCOPE_TEMPLATE#{
         http_version => format_http_version(Version),
         method => cowboy_req:method(Req),
         scheme => cowboy_req:scheme(Req),
@@ -398,7 +494,13 @@ build_scope(Req, State) ->
         client => {format_ip(ClientIp), ClientPort},
         state => LifespanState,
         extensions => build_extensions(Version)
-    }.
+    },
+
+    %% Add mount_id to scope if in multi-app mode (used by Python to get correct state)
+    case MountId of
+        undefined -> BaseScope;
+        _ -> BaseScope#{mount_id => MountId}
+    end.
 
 %%% ============================================================================
 %%% Response sending

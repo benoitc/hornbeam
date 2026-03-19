@@ -59,6 +59,8 @@
     get_state/0,
     get_state/1,
     set_state/2,
+    update_state/2,
+    update_state/3,
     get_context/0,
     is_running/0,
     is_running/1
@@ -162,6 +164,23 @@ get_state(MountId) when is_binary(MountId) ->
 -spec set_state(binary(), map()) -> ok.
 set_state(MountId, State) when is_binary(MountId), is_map(State) ->
     ets:insert(?CACHE_TABLE, {{lifespan_state, MountId}, State}),
+    ok.
+
+%% @doc Update a single key in the lifespan state (single-app mode).
+%% This is called from Python to persist state changes.
+-spec update_state(binary(), term()) -> ok.
+update_state(Key, Value) ->
+    CurrentState = get_state(),
+    NewState = CurrentState#{Key => Value},
+    ets:insert(?CACHE_TABLE, {lifespan_state, NewState}),
+    ok.
+
+%% @doc Update a single key in the lifespan state for a specific mount.
+-spec update_state(binary(), binary(), term()) -> ok.
+update_state(MountId, Key, Value) when is_binary(MountId) ->
+    CurrentState = get_state(MountId),
+    NewState = CurrentState#{Key => Value},
+    ets:insert(?CACHE_TABLE, {{lifespan_state, MountId}, NewState}),
     ok.
 
 %% @doc Check if lifespan is running (single-app mode).
@@ -379,6 +398,18 @@ handle_call(_Request, _From, State) ->
 
 handle_cast(_Request, State) ->
     {noreply, State}.
+
+%% Handle state update messages from Python (via erlang.send)
+%% Python sends binaries, so we match on <<"update_state">>
+handle_info({<<"update_state">>, Key, Value}, State) ->
+    %% Single-app mode state update
+    update_state(Key, Value),
+    {noreply, State};
+
+handle_info({<<"update_state">>, MountId, Key, Value}, State) ->
+    %% Multi-app mode state update
+    update_state(MountId, Key, Value),
+    {noreply, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.

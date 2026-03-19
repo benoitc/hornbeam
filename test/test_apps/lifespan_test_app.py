@@ -87,6 +87,9 @@ async def handle_lifespan(scope, receive, send):
                 scope["state"]["db_connection"] = "simulated_connection"
                 scope["state"]["cache"] = {}
                 scope["state"]["request_count"] = 0
+                # Store startup tracking in scope state (passed via Erlang ETS)
+                scope["state"]["startup_called"] = True
+                scope["state"]["startup_complete"] = True
 
             _lifespan_state["startup_complete"] = True
 
@@ -137,13 +140,17 @@ async def handle_state(scope, receive, send):
 
     _lifespan_state["request_count"] += 1
 
-    # Collect state information
+    # Prefer scope state (passed via Erlang ETS) over module-level state
+    # since module-level state may not be shared across Python contexts
+    scope_state = scope.get("state", {})
+
+    # Collect state information - use scope state if available, fall back to module state
     state_info = {
         "module_state": {
-            "startup_called": _lifespan_state["startup_called"],
-            "startup_complete": _lifespan_state["startup_complete"],
+            "startup_called": scope_state.get("startup_called", _lifespan_state["startup_called"]),
+            "startup_complete": scope_state.get("startup_complete", _lifespan_state["startup_complete"]),
             "shutdown_called": _lifespan_state["shutdown_called"],
-            "startup_time": _lifespan_state["startup_time"],
+            "startup_time": scope_state.get("startup_time", _lifespan_state["startup_time"]),
             "startup_count": _lifespan_state["startup_count"],
             "request_count": _lifespan_state["request_count"],
         },
@@ -183,15 +190,19 @@ async def handle_lifespan_info(scope, receive, send):
     """Return lifespan-specific information."""
     await drain_body(receive)
 
+    # Prefer scope state (passed via Erlang ETS) over module-level state
+    scope_state = scope.get("state", {})
+
     info = {
         "lifespan_supported": True,
-        "startup_complete": _lifespan_state["startup_complete"],
+        "startup_complete": scope_state.get("startup_complete", _lifespan_state["startup_complete"]),
         "scope_state_present": "state" in scope,
         "uptime_seconds": None,
     }
 
-    if _lifespan_state["startup_time"]:
-        info["uptime_seconds"] = time.time() - _lifespan_state["startup_time"]
+    startup_time = scope_state.get("startup_time", _lifespan_state["startup_time"])
+    if startup_time:
+        info["uptime_seconds"] = time.time() - startup_time
 
     if "state" in scope:
         info["state_keys"] = list(scope["state"].keys())
@@ -252,7 +263,11 @@ async def handle_health(scope, receive, send):
     """Health check that verifies lifespan startup completed."""
     await drain_body(receive)
 
-    if not _lifespan_state["startup_complete"]:
+    # Prefer scope state (passed via Erlang ETS) over module-level state
+    scope_state = scope.get("state", {})
+    startup_complete = scope_state.get("startup_complete", _lifespan_state["startup_complete"])
+
+    if not startup_complete:
         body = b"Lifespan not started"
         status = 503
     else:
