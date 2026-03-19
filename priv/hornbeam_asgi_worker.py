@@ -165,7 +165,7 @@ _DISCONNECT_MSG = {'type': 'http.disconnect'}
 # ============================================================================
 
 async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
-                      scope: dict, req_body_ch, resp_body_ch):
+                      scope: dict, body_ref, resp_body_ch):
     """Handle an ASGI request asynchronously.
 
     This is the main entry point called from Erlang via py_event_loop:create_task.
@@ -173,14 +173,18 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
 
     Transport design:
     - Control plane (mailbox): headers, early_hints, error, response (small)
-    - Data plane (byte channels): request body (ReqBodyCh), response body (RespBodyCh)
+    - Data plane (byte channels): response body (RespBodyCh)
+    - Request body: passed as body_ref (see below)
 
     Args:
         caller_pid: Erlang PID to send control messages to
         app_module: Python module containing ASGI app (bytes)
         app_callable: Name of ASGI callable in module (bytes)
         scope: ASGI scope dict
-        req_body_ch: ByteChannel reference for reading request body
+        body_ref: One of:
+            - 'empty' or b'empty': no body
+            - ('body', binary) or (b'body', binary): small body passed directly
+            - ('channel', ref) or (b'channel', ref): large body via ByteChannel
         resp_body_ch: ByteChannel reference for writing response body
     """
     if not HAS_ERLANG:
@@ -190,8 +194,7 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
     module_name = app_module
     callable_name = app_callable
 
-    # Wrap channel references
-    req_channel = ByteChannel(req_body_ch)
+    # Wrap response channel reference
     resp_channel = ByteChannel(resp_body_ch)
 
     try:
@@ -204,8 +207,9 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
             mount_id = scope.get('mount_id')
             scope['state'] = _MutableStateProxy(scope['state'], mount_id)
 
-        # Create receive/send callables with byte channels
-        receive = _ASGIReceive(req_channel)
+        # Create receive/send callables
+        # _ASGIReceive handles the three body modes based on body_ref type
+        receive = _ASGIReceive(body_ref)
         send = _ASGISend(caller_pid, resp_channel)
 
         # Run ASGI app
@@ -230,22 +234,56 @@ async def handle_asgi(caller_pid, app_module: bytes, app_callable: bytes,
 
 
 class _ASGIReceive:
-    """ASGI receive callable using ByteChannel for request body.
+    """ASGI receive callable with three body modes.
 
-    Reads request body chunks from the byte channel provided by Erlang.
-    Channel close signals EOF (no more body data).
+    Handles request body based on how Erlang passed it:
+    - 'empty': No body (GET, HEAD, etc.)
+    - ('body', binary): Small body passed directly (< 64KB)
+    - ('channel', ref): Large body streamed via ByteChannel
+
+    The small body optimization eliminates channel/pump overhead for ~95% of requests.
     """
-    __slots__ = ('channel', 'disconnected', '_eof_reached')
+    __slots__ = ('_mode', '_body', '_channel', 'disconnected', '_eof_reached')
 
-    def __init__(self, channel):
+    def __init__(self, body_ref):
         """Initialize receive callable.
 
         Args:
-            channel: ByteChannel for reading request body from Erlang
+            body_ref: One of:
+                - 'empty' or b'empty': no body
+                - ('body', binary) or (b'body', binary): small body
+                - ('channel', ref) or (b'channel', ref): large body via channel
         """
-        self.channel = channel
         self.disconnected = False
         self._eof_reached = False
+        self._body = None
+        self._channel = None
+
+        # Detect body mode from body_ref type
+        # Note: erlang_python converts atoms to strings and binaries to str
+        if body_ref == 'empty' or body_ref == b'empty':
+            # No body
+            self._mode = 'empty'
+            self._eof_reached = True
+        elif isinstance(body_ref, tuple) and len(body_ref) >= 2:
+            tag = body_ref[0]
+            if tag == 'body' or tag == b'body':
+                # Small body passed directly
+                # erlang_python may convert binary to str, so use _to_bytes
+                self._mode = 'body'
+                self._body = _to_bytes(body_ref[1])
+            elif tag == 'channel' or tag == b'channel':
+                # Large body via ByteChannel
+                self._mode = 'channel'
+                self._channel = ByteChannel(body_ref[1])
+            else:
+                # Unknown tuple - treat as channel ref for backward compat
+                self._mode = 'channel'
+                self._channel = ByteChannel(body_ref)
+        else:
+            # Raw channel ref (backward compatibility)
+            self._mode = 'channel'
+            self._channel = ByteChannel(body_ref)
 
     async def __call__(self) -> dict:
         if self.disconnected:
@@ -256,42 +294,43 @@ class _ASGIReceive:
             self.disconnected = True
             return _DISCONNECT_MSG
 
-        chunk = await self._read_chunk()
-        if not chunk:
+        if self._mode == 'empty':
+            # No body - return empty request, mark EOF
+            self._eof_reached = True
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
+
+        if self._mode == 'body':
+            # Small body fast path - return entire body at once
+            self._eof_reached = True
+            return {'type': 'http.request', 'body': self._body, 'more_body': False}
+
+        # Channel mode - stream chunks from ByteChannel
+        return await self._read_channel()
+
+    async def _read_channel(self) -> dict:
+        """Read chunk from channel (large body streaming)."""
+        try:
+            chunk = await self._channel.async_receive_bytes()
+            if not chunk:
+                self._eof_reached = True
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
+            # Got data - return with more_body=True (may have more)
+            return {'type': 'http.request', 'body': chunk, 'more_body': True}
+        except ByteChannelClosed:
             # Channel closed = EOF
             self._eof_reached = True
             return {'type': 'http.request', 'body': b'', 'more_body': False}
-        # Got data - return with more_body=True (may have more)
-        return {'type': 'http.request', 'body': chunk, 'more_body': True}
-            
-    async def _read_chunk(self) -> bytes | None:
-        """Read next chunk asynchronously.
-
-        Channel close signals EOF.
-        """
-        try:
-            chunk = await self.channel.async_receive_bytes()
-            return chunk
-        except ByteChannelClosed:
-            return None
 
 
 class _ASGISend:
     """ASGI send callable using ByteChannel for response body.
 
     Transport design:
-    - Control plane (erlang.send): headers, early_hints, response (small)
-    - Data plane (ByteChannel): response body for streaming
-
-    For small responses (< BUFFER_THRESHOLD), sends complete response via
-    erlang.send() for efficiency. For larger/streaming responses, sends
-    headers via erlang.send() and body via ByteChannel.
+    - Control plane (erlang.send): headers, early_hints
+    - Data plane (ByteChannel): response body streaming
     """
     __slots__ = ('caller_pid', 'resp_channel', 'status', 'headers',
-                 'headers_sent', 'body_parts', 'finished', '_send', '_total_size')
-
-    # Buffer small responses before sending (optimization)
-    BUFFER_THRESHOLD = 65536
+                 'headers_sent', 'finished', '_send')
 
     def __init__(self, caller_pid, resp_channel):
         """Initialize send callable.
@@ -306,9 +345,7 @@ class _ASGISend:
         self.status = None
         self.headers = []
         self.headers_sent = False
-        self.body_parts = []  # Buffer for small responses
         self.finished = False
-        self._total_size = 0
 
     async def __call__(self, message: dict) -> None:
         if self.finished:
@@ -334,7 +371,7 @@ class _ASGISend:
 
             more_body = message.get('more_body', False)
 
-            # Send body to channel
+            # Send body directly to channel
             try:
                 self.resp_channel.send_bytes(body_part)
             except ByteChannelClosed:
@@ -353,7 +390,6 @@ class _ASGISend:
                 self._send(self.caller_pid, (b'early_hints', headers))
 
         elif msg_type == 'http.disconnect':
-            # We close the channel to signal EOF
             self.resp_channel.close()
             self.finished = True
 
@@ -363,7 +399,7 @@ class _ASGISend:
 # ============================================================================
 
 def handle_asgi_sync(caller_pid, app_module: bytes, app_callable: bytes,
-                     scope: dict, req_body_ch, resp_body_ch):
+                     scope: dict, body_ref, resp_body_ch):
     """Synchronous wrapper that runs handle_asgi with erlang.run().
 
     This is used when calling from py_nif:context_call() which expects
@@ -375,7 +411,7 @@ def handle_asgi_sync(caller_pid, app_module: bytes, app_callable: bytes,
         app_module: Python module containing ASGI app (bytes)
         app_callable: Name of ASGI callable in module (bytes)
         scope: ASGI scope dict
-        req_body_ch: ByteChannel reference for reading request body
+        body_ref: Body reference (see handle_asgi for variants)
         resp_body_ch: ByteChannel reference for writing response body
     """
     if not HAS_ERLANG:
@@ -384,7 +420,7 @@ def handle_asgi_sync(caller_pid, app_module: bytes, app_callable: bytes,
     try:
         # Use erlang.run() for proper Erlang event loop integration
         erlang.run(handle_asgi(caller_pid, app_module, app_callable, scope,
-                               req_body_ch, resp_body_ch))
+                               body_ref, resp_body_ch))
         return b'done'
     except Exception as e:
         try:
@@ -506,6 +542,6 @@ def handle_request_direct(args_tuple) -> None:
     if not HAS_ERLANG:
         return
 
-    caller_pid, app_module, app_callable, scope, req_body_ch, resp_body_ch = args_tuple
+    caller_pid, app_module, app_callable, scope, body_ref, resp_body_ch = args_tuple
     handle_asgi_sync(caller_pid, app_module, app_callable, scope,
-                     req_body_ch, resp_body_ch)
+                     body_ref, resp_body_ch)
