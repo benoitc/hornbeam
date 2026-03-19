@@ -293,12 +293,11 @@ handle_asgi(Req, State) ->
         {ok, RespBodyCh} = py_byte_channel:new(),
 
         %% Check if request has a body
-        ContentLength = get_content_length(Req),
         Method = cowboy_req:method(Req),
+        ContentLength = get_content_length(Req),
         HasBody = has_request_body(Method, ContentLength),
 
         %% Spawn body pump process if there's a body
-        %% This reads from Cowboy and writes to ReqBodyCh
         BodyPumpPid = case HasBody of
             true ->
                 Ref = make_ref(),
@@ -307,7 +306,6 @@ handle_asgi(Req, State) ->
                     HandlerPid ! {pump_started, Ref},
                     pump_request_body(Req, ReqBodyCh, ?ASGI_BODY_CHUNK_SIZE)
                 end),
-                %% Wait for pump to start before continuing
                 ok = wait_pump(Ref),
                 Pid;
             false ->
@@ -356,7 +354,6 @@ maybe_kill_body_pump(BodyPumpPid) when is_pid(BodyPumpPid) ->
 %% Pump request body from Cowboy to byte channel
 %% Closes channel to signal EOF
 pump_request_body(Req, ReqBodyCh, ChunkSize) ->
-    error_logger:info_msg("PUMP: starting~n"),
     try
         case cowboy_req:read_body(Req, #{length => ChunkSize}) of
             {ok, Chunk, _Req2} ->
@@ -367,11 +364,10 @@ pump_request_body(Req, ReqBodyCh, ChunkSize) ->
                 write_to_channel_with_backpressure(ReqBodyCh, Chunk),
                 pump_request_body(Req2, ReqBodyCh, ChunkSize);
             _Else ->
-              error_logger:error_msg("unexpected read body ~p", [_Else]),
-              py_byte_channel:close(ReqBodyCh)
+                py_byte_channel:close(ReqBodyCh)
         end
     catch
-        Class:Reason:Stack ->
+        _:_ ->
             py_byte_channel:close(ReqBodyCh)
     end.
 
@@ -396,8 +392,10 @@ write_to_channel_with_backpressure(Channel, Data) ->
 receive_asgi_response(Req, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State) ->
     receive
         {<<"headers">>, StatusCode, Headers} ->
-            error_logger:info_msg("Got response status ~p headers ~p~n", [StatusCode, Headers]),
-            CowboyHeaders = convert_headers(Headers),
+            %% Streaming path: headers first, then drain channel
+            ok = maybe_close_channel(ReqBodyCh),
+            SafeHeaders = filter_hop_by_hop(Headers),
+            CowboyHeaders = convert_headers(SafeHeaders),
             Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
             drain_response_channel(Req2, RespBodyCh, TimeoutMs, State);
         {<<"early_hints">>, Headers} ->
@@ -411,7 +409,6 @@ receive_asgi_response(Req, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State) ->
             %% Async task completion - continue receiving
             receive_asgi_response(Req, ReqInfo, ReqBodyCh, RespBodyCh, TimeoutMs, State);
         {async_result, _Ref, {error, Reason}} ->
-        error_logger:info_msg("async result error ~p, ", [Reason]),
             %% ensure to close channels there
             ok = maybe_close_channel(ReqBodyCh),
             ok = maybe_close_channel(RespBodyCh),
