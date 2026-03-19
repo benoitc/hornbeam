@@ -26,8 +26,11 @@
 -module(hornbeam_handler).
 
 -behaviour(cowboy_websocket).
+-behaviour(cowboy_loop).
 
 -export([init/2]).
+%% Loop handler callback (for asgi_loop mode)
+-export([info/3]).
 %% WebSocket callbacks (delegate to hornbeam_websocket)
 -export([websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
@@ -75,6 +78,14 @@ handle_request(asgi, Req, State) ->
             handle_websocket_upgrade(Req, State);
         false ->
             handle_asgi(Req, State)
+    end;
+handle_request(asgi_loop, Req, State) ->
+    %% ASGI with loop handler (experimental push/pull pattern)
+    case is_websocket_upgrade(Req) of
+        true ->
+            handle_websocket_upgrade(Req, State);
+        false ->
+            hornbeam_asgi_loop:init(Req, State)
     end.
 
 %% @private
@@ -590,6 +601,15 @@ to_lower_binary(V) when is_binary(V) -> string:lowercase(V);
 to_lower_binary(V) when is_list(V) -> string:lowercase(list_to_binary(V));
 to_lower_binary(V) when is_atom(V) -> string:lowercase(atom_to_binary(V, utf8));
 to_lower_binary(V) -> string:lowercase(to_binary(V)).
+
+%%% ============================================================================
+%%% Loop handler callback (for asgi_loop mode)
+%%% ============================================================================
+
+%% @private
+%% Delegate to hornbeam_asgi_loop for loop handler messages
+info(Msg, Req, State) ->
+    hornbeam_asgi_loop:info(Msg, Req, State).
 
 %%% ============================================================================
 %%% WebSocket callbacks (delegate to hornbeam_websocket)
