@@ -454,12 +454,14 @@ maybe_run_multi_lifespan_startup(Mounts, Config) ->
 run_lifespan_for_mounts([], _Opts) ->
     ok;
 run_lifespan_for_mounts([Mount | Rest], Opts) ->
-    %% Store mount info in config temporarily for lifespan
-    hornbeam_config:set_config(#{
+    %% Get mount_id for per-mount state isolation
+    MountId = maps:get(mount_id, Mount),
+    %% Build mount-specific options for lifespan startup
+    MountOpts = Opts#{
         app_module => maps:get(app_module, Mount),
         app_callable => maps:get(app_callable, Mount)
-    }),
-    case hornbeam_lifespan:startup(Opts) of
+    },
+    case hornbeam_lifespan:startup(MountId, MountOpts) of
         ok -> run_lifespan_for_mounts(Rest, Opts);
         {error, _} = Error -> Error
     end.

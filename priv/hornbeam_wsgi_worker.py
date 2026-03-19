@@ -111,15 +111,13 @@ def preload_app(app_module: bytes, app_callable: bytes) -> bytes:
     """
     global _preloaded_app, _preloaded_key
 
-    module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
-    callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
-
+    # erlang_python converts binaries to str in C
     import importlib
-    module = importlib.import_module(module_name)
-    app = getattr(module, callable_name)
+    module = importlib.import_module(app_module)
+    app = getattr(module, app_callable)
 
     _preloaded_app = app
-    _preloaded_key = (module_name, callable_name)
+    _preloaded_key = (app_module, app_callable)
 
     return b'ok'
 
@@ -236,8 +234,9 @@ def handle_request(caller_pid, buffer, app_module: bytes, app_callable: bytes, e
 
     try:
         # Convert bytes to strings
-        module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
-        callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
+        # erlang_python converts binaries to str in C
+        module_name = app_module
+        callable_name = app_callable
 
         # Process environ (convert bytes to strings)
         environ = _process_environ(environ_map)
@@ -427,8 +426,9 @@ def handle_request_tuple(caller_pid, buffer, app_module: bytes, app_callable: by
 
     try:
         # Convert bytes to strings
-        module_name = app_module.decode('utf-8') if isinstance(app_module, bytes) else app_module
-        callable_name = app_callable.decode('utf-8') if isinstance(app_callable, bytes) else app_callable
+        # erlang_python converts binaries to str in C
+        module_name = app_module
+        callable_name = app_callable
 
         # Create environ from pre-parsed tuple (O(1) operations only)
         environ = _create_environ_from_tuple(req_tuple, buffer)
@@ -450,6 +450,9 @@ def _create_environ_from_tuple(req_tuple, buffer):
     Erlang pre-parses all headers into WSGI format so Python only does
     dict updates (no loops over headers).
 
+    Note: erlang_python converts Erlang binaries to Python str in C,
+    so no decode() calls are needed here.
+
     Args:
         req_tuple: Pre-parsed request tuple from hornbeam_request:build_wsgi_tuple/2
         buffer: py_buffer for request body, or 'empty' atom for bodyless requests
@@ -464,22 +467,17 @@ def _create_environ_from_tuple(req_tuple, buffer):
     # Start with template copy (O(1) - shallow copy of small dict)
     environ = _ENVIRON_TEMPLATE.copy()
 
-    # Convert bytes to strings for key values
-    def to_str(v):
-        if isinstance(v, bytes):
-            return v.decode('utf-8', errors='replace')
-        return str(v) if v is not None else ''
-
-    # Update with request-specific values (no loops!)
-    environ['REQUEST_METHOD'] = to_str(method)
-    environ['SCRIPT_NAME'] = to_str(script_name) if script_name else ''
-    environ['PATH_INFO'] = to_str(path_info)
-    environ['QUERY_STRING'] = to_str(query_string)
-    environ['SERVER_NAME'] = to_str(server[0])
+    # Update with request-specific values
+    # All values are already str (erlang_python converts binaries to str in C)
+    environ['REQUEST_METHOD'] = method
+    environ['SCRIPT_NAME'] = script_name if script_name else ''
+    environ['PATH_INFO'] = path_info
+    environ['QUERY_STRING'] = query_string
+    environ['SERVER_NAME'] = server[0]
     environ['SERVER_PORT'] = str(server[1])
-    environ['SERVER_PROTOCOL'] = to_str(protocol)
-    environ['wsgi.url_scheme'] = to_str(scheme)
-    environ['REMOTE_ADDR'] = to_str(client[0])
+    environ['SERVER_PROTOCOL'] = protocol
+    environ['wsgi.url_scheme'] = scheme
+    environ['REMOTE_ADDR'] = client[0]
     environ['wsgi.errors'] = _SHARED_ERRORS
 
     # Use buffer as wsgi.input, or empty BytesIO for bodyless requests
@@ -488,17 +486,16 @@ def _create_environ_from_tuple(req_tuple, buffer):
     else:
         environ['wsgi.input'] = buffer
 
-    # Add pre-converted HTTP_* headers (already in correct format from Erlang)
-    # This is O(1) dict.update() instead of O(n) iteration
+    # Add pre-converted HTTP_* headers (already str from erlang_python)
+    # Direct dict.update() - O(n) but no per-item function calls
     if wsgi_headers:
-        for key, value in wsgi_headers.items():
-            environ[to_str(key)] = to_str(value)
+        environ.update(wsgi_headers)
 
     # Add content-type/length if present
     if content_type is not None:
-        environ['CONTENT_TYPE'] = to_str(content_type)
+        environ['CONTENT_TYPE'] = content_type
     if content_length is not None:
-        environ['CONTENT_LENGTH'] = to_str(content_length)
+        environ['CONTENT_LENGTH'] = content_length
 
     # Store lifespan state
     if lifespan_state:
