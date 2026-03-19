@@ -311,15 +311,23 @@ class _ASGISend:
         self._total_size = 0
 
     async def __call__(self, message: dict) -> None:
+        if self.finished:
+            raise RuntimeError("Response already completed")
+
         msg_type = message.get('type', '')
 
         if msg_type == 'http.response.start':
+            if self.headers_sent:
+                raise RuntimeError("http.response.start already sent")
             self.status = message.get('status', 200)
             self.headers = message.get('headers', [])
             self._send(self.caller_pid, (b'headers', self.status or 200, self.headers))
             self.headers_sent = True
 
         elif msg_type == 'http.response.body':
+            if not self.headers_sent:
+                raise RuntimeError("http.response.start must be sent before http.response.body")
+
             body_part = message.get('body', b'')
             if isinstance(body_part, str):
                 body_part = body_part.encode('utf-8')
@@ -331,7 +339,7 @@ class _ASGISend:
                 self.resp_channel.send_bytes(body_part)
             except ByteChannelClosed:
                 self.finished = True
-                return
+                raise OSError("Client disconnected")
 
             if not more_body:
                 self.resp_channel.close()
