@@ -12,20 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ASGI handler using asyncio.Protocol-style push/pull pattern.
+"""ASGI handler using Cowboy loop handler with direct message passing.
 
-This module implements ASGI request handling using a Protocol pattern:
-
-- ASGIProtocol handles the request lifecycle
-- Data flows via callbacks (data_received, eof_received)
-- Buffer + Event pattern for ASGI receive()
-- Clean separation of concerns
-
-The protocol mirrors asyncio.Protocol's interface but adapts it for
-Erlang channel communication.
+Simple design:
+- Request body: read from Erlang channel in receive()
+- Response: send via erlang.send() directly to Cowboy handler
+- No buffering, no extra tasks
 """
 
-import asyncio
 from typing import Callable, Optional
 
 try:
@@ -42,128 +36,49 @@ except ImportError:
 
 
 class ASGIProtocol:
-    """Protocol-style ASGI handler.
+    """ASGI handler using Erlang channels for request body.
 
-    Mirrors asyncio.Protocol interface but adapted for Erlang channels.
-    Handles the full request/response lifecycle.
+    Simple design: read from channel directly in receive(), no buffering.
     """
 
     def __init__(self, caller_pid, app: Callable, scope: dict,
-                 req_channel: ByteChannel, resp_channel: ByteChannel):
+                 req_channel: Optional[ByteChannel]):
         self._caller_pid = caller_pid
         self._app = app
         self._scope = scope
-        self._req_channel = req_channel
-        self._resp_channel = resp_channel
+        self._req_channel = req_channel  # None for no-body requests
         self._send_fn = _erlang_send
-
-        # Body state (like asyncio.Protocol)
-        self._buffer = bytearray()
-        self._body_event = asyncio.Event()
-        self._eof_received = False
-        self._disconnected = False
 
         # Response state
         self._response_started = False
         self._response_finished = False
-
-        # Tasks
-        self._reader_task: Optional[asyncio.Task] = None
-        self._app_task: Optional[asyncio.Task] = None
-
-    # =========================================================================
-    # Protocol callbacks (asyncio.Protocol style)
-    # =========================================================================
-
-    def connection_made(self):
-        """Called when channel is ready."""
-        # Start the channel reader
-        self._reader_task = asyncio.create_task(self._read_channel())
-
-    def data_received(self, data: bytes):
-        """Called when body data is received."""
-        self._buffer.extend(data)
-        self._body_event.set()
-
-    def eof_received(self):
-        """Called when body is complete (channel closed)."""
-        self._eof_received = True
-        self._body_event.set()
-
-    def connection_lost(self, exc: Optional[Exception]):
-        """Called when connection is lost."""
-        self._disconnected = True
-        self._eof_received = True
-        self._body_event.set()
-        if self._app_task and not self._app_task.done():
-            self._app_task.cancel()
-
-    # =========================================================================
-    # Channel reader (bridges channel to Protocol callbacks)
-    # =========================================================================
-
-    async def _read_channel(self):
-        """Read from channel and dispatch to Protocol callbacks."""
-        try:
-            while True:
-                try:
-                    chunk = await self._req_channel.async_receive_bytes()
-                    if chunk:
-                        self.data_received(chunk)
-                except ByteChannelClosed:
-                    self.eof_received()
-                    break
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            self.connection_lost(exc)
 
     # =========================================================================
     # ASGI interface
     # =========================================================================
 
     async def receive(self) -> dict:
-        """ASGI receive callable."""
-        if self._disconnected:
-            return {'type': 'http.disconnect'}
+        """ASGI receive callable - reads directly from channel."""
+        # No body case
+        if self._req_channel is None:
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
 
-        # Return buffered data if available
-        if self._buffer:
-            body = bytes(self._buffer)
-            self._buffer.clear()
+        # Read from channel
+        try:
+            chunk = await self._req_channel.async_receive_bytes()
             return {
                 'type': 'http.request',
-                'body': body,
-                'more_body': not self._eof_received,
+                'body': chunk if chunk else b'',
+                'more_body': True,
             }
-
-        # EOF with no data
-        if self._eof_received:
-            return {
-                'type': 'http.request',
-                'body': b'',
-                'more_body': False,
-            }
-
-        # Wait for data
-        await self._body_event.wait()
-        self._body_event.clear()
-
-        if self._disconnected:
-            return {'type': 'http.disconnect'}
-
-        # Return buffered data
-        body = bytes(self._buffer)
-        self._buffer.clear()
-
-        return {
-            'type': 'http.request',
-            'body': body,
-            'more_body': not self._eof_received,
-        }
+        except ByteChannelClosed:
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
 
     async def send(self, message: dict) -> None:
-        """ASGI send callable."""
+        """ASGI send callable.
+
+        Uses erlang.send() directly for all response data - no channel overhead.
+        """
         if self._response_finished:
             raise RuntimeError("Response already completed")
 
@@ -188,15 +103,10 @@ class ASGIProtocol:
 
             more_body = message.get('more_body', False)
 
-            try:
-                if body:
-                    self._resp_channel.send_bytes(body)
-            except ByteChannelClosed:
-                self._response_finished = True
-                raise OSError("Client disconnected")
+            # Send body directly via erlang.send - no channel overhead
+            self._send_fn(self._caller_pid, (b'body', body, more_body))
 
             if not more_body:
-                self._resp_channel.close()
                 self._response_finished = True
 
         elif msg_type == 'http.response.informational':
@@ -206,17 +116,10 @@ class ASGIProtocol:
                 self._send_fn(self._caller_pid, (b'early_hints', headers))
 
         elif msg_type == 'http.disconnect':
-            self._resp_channel.close()
             self._response_finished = True
-
-    # =========================================================================
-    # Lifecycle
-    # =========================================================================
 
     async def run(self):
         """Run the ASGI application."""
-        self.connection_made()
-
         try:
             await self._app(self._scope, self.receive, self.send)
 
@@ -224,26 +127,10 @@ class ASGIProtocol:
             if not self._response_finished:
                 if not self._response_started:
                     self._send_fn(self._caller_pid, (b'headers', 500, []))
-                try:
-                    self._resp_channel.close()
-                except ByteChannelClosed:
-                    pass
+                self._send_fn(self._caller_pid, (b'body', b'', False))
 
         except Exception as e:
-            try:
-                self._resp_channel.close()
-                self._send_fn(self._caller_pid, (b'error', str(e).encode('utf-8')))
-            except Exception:
-                pass
-
-        finally:
-            # Cleanup
-            if self._reader_task and not self._reader_task.done():
-                self._reader_task.cancel()
-                try:
-                    await self._reader_task
-                except asyncio.CancelledError:
-                    pass
+            self._send_fn(self._caller_pid, (b'error', str(e).encode('utf-8')))
 
 
 # =============================================================================
@@ -251,17 +138,20 @@ class ASGIProtocol:
 # =============================================================================
 
 async def handle_asgi_loop(caller_pid, app_module: str, app_callable: str,
-                           scope: dict, req_body_ch, resp_body_ch):
+                           scope: dict, req_body_ch):
     """Handle ASGI request using Protocol pattern.
 
     Entry point called from hornbeam_asgi_loop.erl.
+    Response is sent directly via erlang.send() - no channel needed.
     """
     if not HAS_ERLANG:
         return
 
-    # Wrap channels
-    req_channel = ByteChannel(req_body_ch)
-    resp_channel = ByteChannel(resp_body_ch)
+    # Wrap request channel (may be 'empty' atom for no-body requests)
+    if req_body_ch == 'empty' or req_body_ch == b'empty':
+        req_channel = None
+    else:
+        req_channel = ByteChannel(req_body_ch)
 
     # Get app
     app = _get_app(app_module, app_callable)
@@ -272,7 +162,7 @@ async def handle_asgi_loop(caller_pid, app_module: str, app_callable: str,
         scope['state'] = _MutableStateProxy(scope['state'], mount_id)
 
     # Create and run protocol
-    protocol = ASGIProtocol(caller_pid, app, scope, req_channel, resp_channel)
+    protocol = ASGIProtocol(caller_pid, app, scope, req_channel)
     await protocol.run()
 
 

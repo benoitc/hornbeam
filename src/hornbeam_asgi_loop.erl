@@ -46,15 +46,11 @@
     timeout_ms,
     scope,
     req_body_ch,
-    resp_body_ch,
     body_ref,           %% Reference for async body reading
     has_body,
     headers_sent = false,
     handler_state       %% Original handler state from init
 }).
-
--define(CHUNK_COALESCE_SIZE, 4096).
--define(CHUNK_COALESCE_TIMEOUT, 1).
 
 %%% ============================================================================
 %%% Cowboy Loop Handler Callbacks
@@ -71,32 +67,28 @@ init(Req, HandlerState) ->
     %% Build ASGI scope
     Scope = hornbeam_request:build_asgi_scope(Req, HandlerState),
 
-    %% Create channels
-    {ok, ReqBodyCh} = py_byte_channel:new(),
-    {ok, RespBodyCh} = py_byte_channel:new(),
-
     %% Check if request has a body
     Method = cowboy_req:method(Req),
     ContentLength = get_content_length(Req),
     HasBody = has_request_body(Method, ContentLength),
 
-    %% Start async body reading if there's a body
-    BodyRef = case HasBody of
+    %% Create request body channel only if body exists (skip for GET/no-body)
+    {ReqBodyCh, BodyRef} = case HasBody of
         true ->
+            {ok, Ch} = py_byte_channel:new(),
             Ref = make_ref(),
             %% Start async body reading - Cowboy will send us messages
             cowboy_req:cast({read_body, self(), Ref, auto, infinity}, Req),
-            Ref;
+            {Ch, Ref};
         false ->
-            %% No body - close channel immediately
-            py_byte_channel:close(ReqBodyCh),
-            undefined
+            %% No body - pass empty marker, skip channel
+            {empty, undefined}
     end,
 
-    %% Create Python task
+    %% Create Python task (response sent via erlang.send, no channel needed)
     _TaskRef = py_event_loop_pool:create_task(
         <<"hornbeam_asgi_loop">>, <<"handle_asgi_loop">>,
-        [self(), AppModule, AppCallable, Scope, ReqBodyCh, RespBodyCh]),
+        [self(), AppModule, AppCallable, Scope, ReqBodyCh]),
 
     State = #state{
         req_info = ReqInfo1,
@@ -105,7 +97,6 @@ init(Req, HandlerState) ->
         timeout_ms = TimeoutMs,
         scope = Scope,
         req_body_ch = ReqBodyCh,
-        resp_body_ch = RespBodyCh,
         body_ref = BodyRef,
         has_body = HasBody,
         handler_state = HandlerState
@@ -136,9 +127,20 @@ info({<<"headers">>, StatusCode, Headers}, Req, State) ->
     SafeHeaders = filter_hop_by_hop(Headers),
     CowboyHeaders = convert_headers(SafeHeaders),
     Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-    %% Start draining response channel
-    self() ! drain_response,
     {ok, Req2, State#state{headers_sent = true}};
+
+%% Handle response body from Python (sent directly via erlang.send)
+info({<<"body">>, Body, MoreBody}, Req, #state{handler_state = HandlerState} = State) ->
+    BodyBin = to_binary(Body),
+    case MoreBody of
+        true ->
+            ok = cowboy_req:stream_body(BodyBin, nofin, Req),
+            {ok, Req, State};
+        false ->
+            ok = cowboy_req:stream_body(BodyBin, fin, Req),
+            maybe_close_channel(State#state.req_body_ch),
+            {stop, Req, HandlerState}
+    end;
 
 %% Handle early hints from Python
 info({<<"early_hints">>, Headers}, Req, State) ->
@@ -146,26 +148,9 @@ info({<<"early_hints">>, Headers}, Req, State) ->
     Req2 = cowboy_req:inform(103, HintHeaders, Req),
     {ok, Req2, State};
 
-%% Drain response body channel
-info(drain_response, Req, #state{resp_body_ch = RespBodyCh, handler_state = HandlerState} = State) ->
-    case drain_response_chunk(RespBodyCh) of
-        {ok, Data} ->
-            ok = cowboy_req:stream_body(Data, nofin, Req),
-            self() ! drain_response,
-            {ok, Req, State};
-        {error, closed} ->
-            ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {stop, Req, HandlerState};
-        {error, timeout} ->
-            %% No data yet, schedule retry
-            erlang:send_after(?CHUNK_COALESCE_TIMEOUT, self(), drain_response),
-            {ok, Req, State}
-    end;
-
 %% Handle error from Python
 info({<<"error">>, Reason}, Req, #state{req_info = ReqInfo, handler_state = HandlerState} = State) ->
     maybe_close_channel(State#state.req_body_ch),
-    maybe_close_channel(State#state.resp_body_ch),
     {StatusCode, Body} = hornbeam_http_hooks:run_on_error(Reason, ReqInfo),
     Req2 = cowboy_req:reply(StatusCode,
                             #{<<"content-type">> => <<"text/plain">>},
@@ -174,12 +159,10 @@ info({<<"error">>, Reason}, Req, #state{req_info = ReqInfo, handler_state = Hand
 
 %% Handle async task completion
 info({async_result, _Ref, {ok, _}}, Req, State) ->
-    %% Task completed, continue draining response
     {ok, Req, State};
 
 info({async_result, _Ref, {error, Reason}}, Req, #state{req_info = ReqInfo, handler_state = HandlerState} = State) ->
     maybe_close_channel(State#state.req_body_ch),
-    maybe_close_channel(State#state.resp_body_ch),
     {StatusCode, Body} = hornbeam_http_hooks:run_on_error(Reason, ReqInfo),
     Req2 = cowboy_req:reply(StatusCode,
                             #{<<"content-type">> => <<"text/plain">>},
@@ -189,7 +172,6 @@ info({async_result, _Ref, {error, Reason}}, Req, #state{req_info = ReqInfo, hand
 %% Handle timeout
 info(timeout, Req, #state{req_info = ReqInfo, handler_state = HandlerState} = State) ->
     maybe_close_channel(State#state.req_body_ch),
-    maybe_close_channel(State#state.resp_body_ch),
     {StatusCode, Body} = hornbeam_http_hooks:run_on_error(timeout, ReqInfo),
     Req2 = cowboy_req:reply(StatusCode,
                             #{<<"content-type">> => <<"text/plain">>},
@@ -218,10 +200,8 @@ push_to_channel(Channel, Data) ->
             ok
     end.
 
-drain_response_chunk(RespBodyCh) ->
-    py_byte_channel:recv(RespBodyCh, ?CHUNK_COALESCE_TIMEOUT).
-
 maybe_close_channel(undefined) -> ok;
+maybe_close_channel(empty) -> ok;
 maybe_close_channel(Channel) ->
     try
         case py_byte_channel:info(Channel) of
