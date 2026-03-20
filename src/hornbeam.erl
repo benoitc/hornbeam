@@ -641,9 +641,6 @@ maybe_run_lifespan_startup(asgi, Config) ->
         off -> ok;
         _ -> hornbeam_lifespan:startup(#{lifespan => LifespanMode})
     end;
-maybe_run_lifespan_startup(asgi_loop, Config) ->
-    %% asgi_loop uses same lifespan handling as asgi
-    maybe_run_lifespan_startup(asgi, Config);
 maybe_run_lifespan_startup(wsgi, _Config) ->
     %% WSGI doesn't support lifespan
     ok.

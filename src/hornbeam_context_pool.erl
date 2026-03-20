@@ -115,7 +115,7 @@ add_paths(Paths) when is_list(Paths) ->
 %% @doc Preload WSGI/ASGI application in all contexts.
 %%
 %% Imports the app module and caches the callable for fast access.
--spec preload_app(wsgi | asgi | asgi_loop, binary(), binary()) -> ok.
+-spec preload_app(wsgi | asgi, binary(), binary()) -> ok.
 preload_app(WorkerClass, AppModule, AppCallable) ->
     gen_server:call(?MODULE, {preload_app, WorkerClass, AppModule, AppCallable}).
 
@@ -162,8 +162,7 @@ handle_call({preload_app, WorkerClass, AppModule, AppCallable}, _From,
     %% Preload app in all contexts
     WorkerModule = case WorkerClass of
         wsgi -> <<"hornbeam_wsgi_worker">>;
-        asgi -> <<"hornbeam_asgi_worker">>;
-        asgi_loop -> <<"hornbeam_asgi_loop">>
+        asgi -> <<"hornbeam_asgi_worker">>
     end,
     maps:foreach(fun(_Id, Ref) ->
         case py_nif:context_call(Ref, WorkerModule, <<"preload_app">>,

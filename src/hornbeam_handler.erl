@@ -29,7 +29,7 @@
 -behaviour(cowboy_loop).
 
 -export([init/2]).
-%% Loop handler callback (for asgi_loop mode)
+%% Loop handler callback (for ASGI)
 -export([info/3]).
 %% WebSocket callbacks (delegate to hornbeam_websocket)
 -export([websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
@@ -77,15 +77,7 @@ handle_request(asgi, Req, State) ->
         true ->
             handle_websocket_upgrade(Req, State);
         false ->
-            handle_asgi(Req, State)
-    end;
-handle_request(asgi_loop, Req, State) ->
-    %% ASGI with loop handler (experimental push/pull pattern)
-    case is_websocket_upgrade(Req) of
-        true ->
-            handle_websocket_upgrade(Req, State);
-        false ->
-            hornbeam_asgi_loop:init(Req, State)
+            hornbeam_asgi:init(Req, State)
     end.
 
 %% @private
@@ -273,243 +265,6 @@ filter_hop_by_hop(Headers) ->
     end, Headers).
 
 %%% ============================================================================
-%%% ASGI Handler - uses py_event_loop for full async with byte channels
-%%% ============================================================================
-
--define(ASGI_BODY_CHUNK_SIZE, 65536).  %% 64KB chunks for request body
--define(ASGI_BODY_BUFFER_THRESHOLD, 65536).  %% 64KB - bodies smaller than this are passed directly
-
-%% Chunk coalescing for response body streaming
--define(CHUNK_COALESCE_SIZE, 4096).    %% 4KB threshold before flushing
--define(CHUNK_COALESCE_TIMEOUT, 1).    %% 1ms max wait for more chunks
-
-handle_asgi(Req, State) ->
-    ReqInfo = build_request_info(Req),
-    ReqInfo1 = hornbeam_http_hooks:run_on_request(ReqInfo),
-
-    try
-        AppModule = maps:get(app_module, State),
-        AppCallable = maps:get(app_callable, State),
-        TimeoutMs = maps:get(timeout, State, 30000),
-
-        %% Build ASGI scope (unified builder in hornbeam_request)
-        Scope = hornbeam_request:build_asgi_scope(Req, State),
-
-        %% Create response body channel
-        %% RespBodyCh: Python writes response body, Erlang reads
-        {ok, RespBodyCh} = py_byte_channel:new(),
-
-        %% Check if request has a body
-        Method = cowboy_req:method(Req),
-        ContentLength = get_content_length(Req),
-        HasBody = has_request_body(Method, ContentLength),
-
-        %% Determine body handling strategy based on size:
-        %% - No body: pass 'empty' atom
-        %% - Small body (<64KB with known length): read sync, pass {body, {bytes, Binary}}
-        %% - Large body or unknown length: use channel with pump process
-        %% Note: {bytes, Binary} ensures Python receives bytes, not str (see erlang_python)
-        {BodyRef, BodyPumpPid} = case HasBody of
-            false ->
-                %% No body - pass empty marker
-                {empty, undefined};
-            true when is_integer(ContentLength), ContentLength < ?ASGI_BODY_BUFFER_THRESHOLD ->
-                %% Small body - read synchronously, pass binary directly
-                %% Wrap in {bytes, _} to ensure Python receives bytes, not str
-                {ok, Body, _Req2} = cowboy_req:read_body(Req),
-                {{body, {bytes, Body}}, undefined};
-            true ->
-                %% Large body or unknown size - use channel with pump
-                {ok, ReqBodyCh} = py_byte_channel:new(),
-                Ref = make_ref(),
-                HandlerPid = self(),
-                Pid = spawn(fun() ->
-                    HandlerPid ! {pump_started, Ref},
-                    pump_request_body(Req, ReqBodyCh, ?ASGI_BODY_CHUNK_SIZE)
-                end),
-                ok = wait_pump(Ref),
-                {{channel, ReqBodyCh}, Pid}
-        end,
-
-        %% Create async task to run Python ASGI handler
-        %% Uses event loop pool with process affinity for better distribution
-        %% Python handler sends control messages via erlang.send()
-        %% and body data via byte channel (for large bodies)
-        _TaskRef = py_event_loop_pool:create_task(
-            <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-            [self(), AppModule, AppCallable, Scope, BodyRef, RespBodyCh]),
-
-        %% Receive response from async Python
-        Result = receive_asgi_response(Req, ReqInfo1, BodyRef, RespBodyCh, TimeoutMs, State),
-
-        % ensure to kill body pump
-        % at this point, channels must have been closed, otherwise gc will do its job.
-        _ = maybe_kill_body_pump(BodyPumpPid),
-
-        Result
-    catch
-        Class:Reason:Stack ->
-            error_logger:error_msg("ASGI handler error: ~p:~p~n~p~n",
-                                   [Class, Reason, Stack]),
-            handle_error(Req, {Class, Reason}, ReqInfo1, State)
-    end.
-
-wait_pump(Ref) ->
-    receive
-        {pump_started, Ref} -> ok
-    after 5000 ->
-        timeout
-    end.
-
-
-maybe_kill_body_pump(undefined) -> true;
-maybe_kill_body_pump(BodyPumpPid) when is_pid(BodyPumpPid) -> 
-  exit(BodyPumpPid, kill).
-
-
-%% @private
-%% Pump request body from Cowboy to byte channel
-%% Closes channel to signal EOF
-pump_request_body(Req, ReqBodyCh, ChunkSize) ->
-    try
-        case cowboy_req:read_body(Req, #{length => ChunkSize}) of
-            {ok, Chunk, _Req2} ->
-                write_to_channel_with_backpressure(ReqBodyCh, Chunk),
-                py_byte_channel:close(ReqBodyCh);
-            {more, Chunk, Req2} ->
-                %% More data available - write and continue
-                write_to_channel_with_backpressure(ReqBodyCh, Chunk),
-                pump_request_body(Req2, ReqBodyCh, ChunkSize);
-            _Else ->
-                py_byte_channel:close(ReqBodyCh)
-        end
-    catch
-        _:_ ->
-            py_byte_channel:close(ReqBodyCh)
-    end.
-
-%% @private
-%% Write to channel with backpressure handling
-write_to_channel_with_backpressure(Channel, Data) ->
-    case py_byte_channel:send(Channel, Data) of
-        ok -> ok;
-        busy ->
-            %% Channel full - wait a bit and retry
-            timer:sleep(1),
-            write_to_channel_with_backpressure(Channel, Data);
-        {error, closed} ->
-            %% Channel closed - stop writing
-            ok
-    end.
-
-%% @private
-%% Receive ASGI response from Python worker
-%% Control messages come via mailbox, response body via RespBodyCh
-%% BodyRef is one of: empty, {body, Binary}, {channel, ReqBodyCh}
-receive_asgi_response(Req, ReqInfo, BodyRef, RespBodyCh, TimeoutMs, State) ->
-    receive
-        {<<"headers">>, StatusCode, Headers} ->
-            %% Streaming path: headers first, then drain channel
-            ok = maybe_close_body_channel(BodyRef),
-            SafeHeaders = filter_hop_by_hop(Headers),
-            CowboyHeaders = convert_headers(SafeHeaders),
-            Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-            drain_response_channel(Req2, RespBodyCh, TimeoutMs, State);
-        {<<"early_hints">>, Headers} ->
-            %% Early hints (103)
-            HintHeaders = convert_headers(Headers),
-            Req2 = cowboy_req:inform(103, HintHeaders, Req),
-            receive_asgi_response(Req2, ReqInfo, BodyRef, RespBodyCh, TimeoutMs, State);
-        {<<"error">>, Reason} ->
-            handle_error(Req, Reason, ReqInfo, State);
-        {async_result, _Ref, {ok, _}} ->
-            %% Async task completion - continue receiving
-            receive_asgi_response(Req, ReqInfo, BodyRef, RespBodyCh, TimeoutMs, State);
-        {async_result, _Ref, {error, Reason}} ->
-            %% ensure to close channels there
-            ok = maybe_close_body_channel(BodyRef),
-            ok = maybe_close_channel(RespBodyCh),
-            handle_error(Req, Reason, ReqInfo, State)
-    after TimeoutMs ->
-        handle_error(Req, timeout, ReqInfo, State)
-    end.
-
-%% @private
-%% Close body channel if BodyRef contains one
-maybe_close_body_channel(empty) -> ok;
-maybe_close_body_channel({body, _}) -> ok;
-maybe_close_body_channel({channel, Ch}) -> maybe_close_channel(Ch).
-
-%% @private
-%% Maybe close a channel
-maybe_close_channel(Channel) ->
-  try 
-    case py_byte_channel:info(Channel) of
-      #{ closed := true } -> ok;
-      _ -> 
-        _ = catch py_byte_channel:close(Channel),
-        ok
-    end
-  catch
-    _:_ ->
-      ok
-  end.
-
-%% @private
-%% Drain response body from byte channel and stream to client.
-%% Coalesces small chunks to reduce syscall overhead.
-drain_response_channel(Req, RespBodyCh, TimeoutMs, State) ->
-    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []).
-
-%% @private
-%% Drain with buffer accumulation - coalesce small chunks
-drain_response_channel(Req, RespBodyCh, TimeoutMs, State, Buffer) ->
-    case py_byte_channel:recv(RespBodyCh, ?CHUNK_COALESCE_TIMEOUT) of
-        {ok, Chunk} ->
-            NewBuffer = [Chunk | Buffer],
-            BufferSize = iolist_size(NewBuffer),
-            if
-                BufferSize >= ?CHUNK_COALESCE_SIZE ->
-                    %% Flush buffer - threshold reached
-                    ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(NewBuffer)), nofin, Req),
-                    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []);
-                true ->
-                    %% Keep buffering
-                    drain_response_channel(Req, RespBodyCh, TimeoutMs, State, NewBuffer)
-            end;
-        {error, timeout} when Buffer =/= [] ->
-            %% Timeout with buffered data - flush and continue
-            ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(Buffer)), nofin, Req),
-            drain_response_channel(Req, RespBodyCh, TimeoutMs, State, []);
-        {error, timeout} ->
-            %% Timeout with no buffer - wait longer
-            drain_response_channel_wait(Req, RespBodyCh, TimeoutMs, State);
-        {error, closed} ->
-            %% EOF - flush remaining buffer
-            case Buffer of
-                [] -> ok;
-                _ -> ok = cowboy_req:stream_body(iolist_to_binary(lists:reverse(Buffer)), nofin, Req)
-            end,
-            ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State}
-    end.
-
-%% @private
-%% Wait for data with full timeout when buffer is empty
-drain_response_channel_wait(Req, RespBodyCh, TimeoutMs, State) ->
-    case py_byte_channel:recv(RespBodyCh, TimeoutMs) of
-        {ok, Chunk} ->
-            drain_response_channel(Req, RespBodyCh, TimeoutMs, State, [Chunk]);
-        {error, closed} ->
-            ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State};
-        {error, timeout} ->
-            py_byte_channel:close(RespBodyCh),
-            ok = cowboy_req:stream_body(<<>>, fin, Req),
-            {ok, Req, State}
-    end.
-
-%%% ============================================================================
 %%% Response sending
 %%% ============================================================================
 
@@ -603,13 +358,13 @@ to_lower_binary(V) when is_atom(V) -> string:lowercase(atom_to_binary(V, utf8));
 to_lower_binary(V) -> string:lowercase(to_binary(V)).
 
 %%% ============================================================================
-%%% Loop handler callback (for asgi_loop mode)
+%%% Loop handler callback (for ASGI)
 %%% ============================================================================
 
 %% @private
-%% Delegate to hornbeam_asgi_loop for loop handler messages
+%% Delegate to hornbeam_asgi for ASGI loop handler messages
 info(Msg, Req, State) ->
-    hornbeam_asgi_loop:info(Msg, Req, State).
+    hornbeam_asgi:info(Msg, Req, State).
 
 %%% ============================================================================
 %%% WebSocket callbacks (delegate to hornbeam_websocket)
