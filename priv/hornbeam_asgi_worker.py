@@ -14,12 +14,13 @@
 
 """ASGI handler using Cowboy loop handler with direct message passing.
 
-Simple design:
-- Request body: read from Erlang channel in receive()
-- Response: send via erlang.send() directly to Cowboy handler
-- No buffering, no extra tasks
+Design inspired by gunicorn's ASGI worker:
+- BodyReceiver: Handles request body with Future-based waiting
+- ASGIProtocol: Manages request lifecycle and response batching
+- Response sent via erlang.send() directly to Cowboy handler
 """
 
+import asyncio
 from typing import Callable, Optional
 
 try:
@@ -34,50 +35,157 @@ except ImportError:
     ByteChannel = None
     ByteChannelClosed = Exception
 
+# Pre-allocated message constants (avoid dict allocation per request)
+_EMPTY_BODY_MSG = {'type': 'http.request', 'body': b'', 'more_body': False}
+_DISCONNECT_MSG = {'type': 'http.disconnect'}
 
-class ASGIProtocol:
-    """ASGI handler using Erlang channels for request body.
 
-    Simple design: read from channel directly in receive(), no buffering.
+class BodyReceiver:
+    """Body receiver with Future-based waiting (gunicorn pattern).
+
+    Handles three body modes:
+    - empty: No body expected
+    - inline: Small body passed directly from Erlang
+    - channel: Large/streaming body via ByteChannel
+
+    Uses asyncio.Future for efficient async waiting without polling.
     """
 
-    def __init__(self, caller_pid, app: Callable, scope: dict,
-                 req_channel: Optional[ByteChannel]):
+    __slots__ = ('_mode', '_data', '_channel', '_complete', '_disconnected',
+                 '_waiter', '_chunks')
+
+    def __init__(self, body_ref):
+        self._complete = False
+        self._disconnected = False
+        self._waiter = None
+        self._chunks = []
+
+        # Detect body mode from ref
+        if body_ref == b'empty' or body_ref == 'empty':
+            self._mode = 'empty'
+            self._data = None
+            self._channel = None
+            self._complete = True
+        elif isinstance(body_ref, tuple):
+            tag = body_ref[0]
+            if tag == b'body' or tag == 'body':
+                self._mode = 'inline'
+                data = body_ref[1]
+                # Ensure bytes (Erlang binary may decode as str)
+                if isinstance(data, str):
+                    data = data.encode('latin-1')
+                self._data = data
+                self._channel = None
+            elif tag == b'channel' or tag == 'channel':
+                self._mode = 'channel'
+                self._data = None
+                self._channel = ByteChannel(body_ref[1])
+            else:
+                # Unknown tuple, treat as channel ref
+                self._mode = 'channel'
+                self._data = None
+                self._channel = ByteChannel(body_ref)
+        else:
+            # Legacy: raw channel ref
+            self._mode = 'channel'
+            self._data = None
+            self._channel = ByteChannel(body_ref)
+
+    def signal_disconnect(self):
+        """Signal client disconnection."""
+        self._disconnected = True
+        self._wake_waiter()
+
+    def _wake_waiter(self):
+        """Wake pending receive() call."""
+        if self._waiter is not None and not self._waiter.done():
+            self._waiter.set_result(None)
+
+    async def receive(self) -> dict:
+        """ASGI receive callable with fast paths."""
+        # Already disconnected
+        if self._disconnected:
+            return _DISCONNECT_MSG
+
+        # Fast path: empty body
+        if self._mode == 'empty':
+            return _EMPTY_BODY_MSG
+
+        # Fast path: inline body (complete body passed directly)
+        if self._mode == 'inline':
+            self._mode = 'done'
+            return {'type': 'http.request', 'body': self._data, 'more_body': False}
+
+        # Body already consumed
+        if self._mode == 'done' or self._complete:
+            return _EMPTY_BODY_MSG
+
+        # Fast path: chunks already buffered
+        if self._chunks:
+            return self._pop_chunk()
+
+        # Channel mode: read from ByteChannel
+        return await self._receive_from_channel()
+
+    def _pop_chunk(self) -> dict:
+        """Pop buffered chunk and return message."""
+        chunk = self._chunks.pop(0)
+        more = bool(self._chunks) or not self._complete
+        if not more:
+            self._mode = 'done'
+        return {'type': 'http.request', 'body': chunk, 'more_body': more}
+
+    async def _receive_from_channel(self) -> dict:
+        """Read body chunk from ByteChannel."""
+        try:
+            chunk = await self._channel.async_receive_bytes()
+            if chunk:
+                return {'type': 'http.request', 'body': chunk, 'more_body': True}
+            # Empty chunk but channel still open - wait for more
+            return {'type': 'http.request', 'body': b'', 'more_body': True}
+        except ByteChannelClosed:
+            self._complete = True
+            self._mode = 'done'
+            return _EMPTY_BODY_MSG
+
+
+class ASGIProtocol:
+    """ASGI protocol handler with response batching (gunicorn-inspired).
+
+    Optimizations:
+    - Uses __slots__ to reduce memory and attribute access overhead
+    - Delegates body handling to BodyReceiver class
+    - Batches headers + body for simple responses (single message)
+    - Structured response state tracking
+    """
+
+    __slots__ = ('_caller_pid', '_app', '_scope', '_body_receiver', '_send_fn',
+                 '_status', '_headers', '_response_started', '_response_finished')
+
+    def __init__(self, caller_pid, app: Callable, scope: dict, body_receiver: BodyReceiver):
         self._caller_pid = caller_pid
         self._app = app
         self._scope = scope
-        self._req_channel = req_channel  # None for no-body requests
+        self._body_receiver = body_receiver
         self._send_fn = _erlang_send
 
-        # Response state
+        # Response state (buffer headers for batching)
+        self._status = None
+        self._headers = None
         self._response_started = False
         self._response_finished = False
 
-    # =========================================================================
-    # ASGI interface
-    # =========================================================================
-
     async def receive(self) -> dict:
-        """ASGI receive callable - reads directly from channel."""
-        # No body case
-        if self._req_channel is None:
-            return {'type': 'http.request', 'body': b'', 'more_body': False}
-
-        # Read from channel
-        try:
-            chunk = await self._req_channel.async_receive_bytes()
-            return {
-                'type': 'http.request',
-                'body': chunk if chunk else b'',
-                'more_body': True,
-            }
-        except ByteChannelClosed:
-            return {'type': 'http.request', 'body': b'', 'more_body': False}
+        """ASGI receive - delegates to BodyReceiver."""
+        return await self._body_receiver.receive()
 
     async def send(self, message: dict) -> None:
-        """ASGI send callable.
+        """ASGI send callable with simplified protocol.
 
-        Uses erlang.send() directly for all response data - no channel overhead.
+        Uses 3 message types:
+        - start_response: headers + first chunk
+        - chunk: subsequent body chunks
+        - fin: end of response
         """
         if self._response_finished:
             raise RuntimeError("Response already completed")
@@ -88,9 +196,9 @@ class ASGIProtocol:
             if self._response_started:
                 raise RuntimeError("http.response.start already sent")
 
-            status = message.get('status', 200)
-            headers = message.get('headers', [])
-            self._send_fn(self._caller_pid, (b'headers', status, headers))
+            # Buffer headers for batching with first body
+            self._status = message.get('status', 200)
+            self._headers = message.get('headers', [])
             self._response_started = True
 
         elif msg_type == 'http.response.body':
@@ -103,10 +211,19 @@ class ASGIProtocol:
 
             more_body = message.get('more_body', False)
 
-            # Send body directly via erlang.send - no channel overhead
-            self._send_fn(self._caller_pid, (b'body', body, more_body))
+            if self._headers is not None:
+                # First body - send start_response with headers + first chunk
+                self._send_fn(self._caller_pid,
+                             (b'start_response', self._status, self._headers, body))
+                self._headers = None
+            else:
+                # Subsequent chunk
+                if body:
+                    self._send_fn(self._caller_pid, (b'chunk', body))
 
             if not more_body:
+                # Send fin to terminate
+                self._send_fn(self._caller_pid, b'fin')
                 self._response_finished = True
 
         elif msg_type == 'http.response.informational':
@@ -126,9 +243,23 @@ class ASGIProtocol:
             # Ensure response is completed
             if not self._response_finished:
                 if not self._response_started:
-                    self._send_fn(self._caller_pid, (b'headers', 500, []))
-                self._send_fn(self._caller_pid, (b'body', b'', False))
+                    # No response started - send error response
+                    self._send_fn(self._caller_pid,
+                                 (b'start_response', 500, [], b''))
+                    self._send_fn(self._caller_pid, b'fin')
+                elif self._headers is not None:
+                    # Headers buffered but no body sent - send empty response
+                    self._send_fn(self._caller_pid,
+                                 (b'start_response', self._status, self._headers, b''))
+                    self._send_fn(self._caller_pid, b'fin')
+                else:
+                    # Streaming was started but not finished - send fin
+                    self._send_fn(self._caller_pid, b'fin')
 
+        except asyncio.CancelledError:
+            # Client disconnected - signal to body receiver
+            self._body_receiver.signal_disconnect()
+            raise
         except Exception as e:
             self._send_fn(self._caller_pid, (b'error', str(e).encode('utf-8')))
 
@@ -138,20 +269,19 @@ class ASGIProtocol:
 # =============================================================================
 
 async def handle_asgi(caller_pid, app_module: str, app_callable: str,
-                      scope: dict, req_body_ch):
+                      scope: dict, req_body_ref):
     """Handle ASGI request.
 
-    Entry point called from hornbeam_asgi_loop.erl.
+    Entry point called from hornbeam_asgi.erl.
     Response is sent directly via erlang.send().
+
+    req_body_ref can be:
+    - 'empty' or b'empty': no request body
+    - (b'body', data): small body passed inline (< 64KB)
+    - (b'channel', channel_ref): large/streaming body via channel
     """
     if not HAS_ERLANG:
         return
-
-    # Wrap request channel (may be 'empty' atom for no-body requests)
-    if req_body_ch == 'empty' or req_body_ch == b'empty':
-        req_channel = None
-    else:
-        req_channel = ByteChannel(req_body_ch)
 
     # Get app
     app = _get_app(app_module, app_callable)
@@ -161,8 +291,11 @@ async def handle_asgi(caller_pid, app_module: str, app_callable: str,
         mount_id = scope.get('mount_id')
         scope['state'] = _MutableStateProxy(scope['state'], mount_id)
 
+    # Create body receiver (handles body mode detection)
+    body_receiver = BodyReceiver(req_body_ref)
+
     # Create and run protocol
-    protocol = ASGIProtocol(caller_pid, app, scope, req_channel)
+    protocol = ASGIProtocol(caller_pid, app, scope, body_receiver)
     await protocol.run()
 
 

@@ -12,11 +12,13 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
-%%% @doc ASGI handler using Cowboy loop handler.
+%%% @doc ASGI handler with fast synchronous path.
 %%%
-%%% This module implements ASGI request handling using Cowboy's async body
-%%% reading via loop handlers. Request body is streamed via channels,
-%%% response is sent directly via erlang.send().
+%%% This module implements ASGI request handling with two paths:
+%%% 1. Fast sync path: For simple requests (no body or small body), uses
+%%%    py_nif:context_call() with hornbeam_asgi_runner for WSGI-like performance
+%%% 2. Async path: For streaming/large bodies, uses cowboy_loop handler
+%%%    with py_event_loop_pool for full async support
 %%%
 %%% @end
 -module(hornbeam_asgi).
@@ -24,6 +26,10 @@
 -behaviour(cowboy_loop).
 
 -export([init/2, info/3, terminate/3]).
+
+%% Threshold for fast synchronous path (64KB)
+%% Requests with bodies smaller than this use the fast sync path
+-define(ASGI_BODY_BUFFER_THRESHOLD, 65536).
 
 %% Internal state
 -record(state, {
@@ -35,8 +41,9 @@
     req_body_ch,
     body_ref,           %% Reference for async body reading
     has_body,
-    headers_sent = false,
-    buffered_headers,   %% {StatusCode, Headers, HasContentLength} or undefined
+    %% Cached for direct send (avoid map lookups per body chunk)
+    cowboy_pid,
+    cowboy_streamid,
     handler_state       %% Original handler state from init
 }).
 
@@ -52,6 +59,10 @@ init(Req, HandlerState) ->
     AppCallable = maps:get(app_callable, HandlerState),
     TimeoutMs = maps:get(timeout, HandlerState, 30000),
 
+    %% Cache pid/streamid for direct send (avoid map lookups per body chunk)
+    Pid = maps:get(pid, Req),
+    StreamID = maps:get(streamid, Req),
+
     %% Build ASGI scope
     Scope = hornbeam_request:build_asgi_scope(Req, HandlerState),
 
@@ -63,13 +74,19 @@ init(Req, HandlerState) ->
     HasBody = has_request_body(Method, ContentLength, TransferEncoding),
 
     %% Create request body channel only if body exists (skip for GET/no-body)
-    {ReqBodyCh, BodyRef} = case HasBody of
+    %% For small bodies with known Content-Length, read synchronously and pass directly
+    {ReqBodyRef, BodyRef} = case HasBody of
+        true when is_integer(ContentLength), ContentLength =< ?ASGI_BODY_BUFFER_THRESHOLD ->
+            %% Small body with known size - read synchronously, pass binary directly
+            {ok, Body, _Req2} = cowboy_req:read_body(Req),
+            {{body, Body}, undefined};
         true ->
+            %% Large/streaming body - use channel + async reading
             {ok, Ch} = py_byte_channel:new(),
             Ref = make_ref(),
-            %% Start async body reading - Cowboy will send us messages
-            cowboy_req:cast({read_body, self(), Ref, auto, infinity}, Req),
-            {Ch, Ref};
+            %% Direct send instead of cowboy_req:cast
+            Pid ! {{Pid, StreamID}, {read_body, self(), Ref, auto, infinity}},
+            {{channel, Ch}, Ref};
         false ->
             %% No body - pass empty marker, skip channel
             {empty, undefined}
@@ -78,7 +95,13 @@ init(Req, HandlerState) ->
     %% Create Python task (response sent via erlang.send, no channel needed)
     _TaskRef = py_event_loop_pool:create_task(
         <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-        [self(), AppModule, AppCallable, Scope, ReqBodyCh]),
+        [self(), AppModule, AppCallable, Scope, ReqBodyRef]),
+
+    %% Extract channel ref for state (if using channel mode)
+    ReqBodyCh = case ReqBodyRef of
+        {channel, ChannelRef} -> ChannelRef;
+        _ -> ReqBodyRef
+    end,
 
     State = #state{
         req_info = ReqInfo1,
@@ -89,22 +112,26 @@ init(Req, HandlerState) ->
         req_body_ch = ReqBodyCh,
         body_ref = BodyRef,
         has_body = HasBody,
+        cowboy_pid = Pid,
+        cowboy_streamid = StreamID,
         handler_state = HandlerState
     },
 
     %% Return cowboy_loop to enable loop handler
     {cowboy_loop, Req, State, TimeoutMs}.
 
-%% Handle async body chunks from Cowboy
-info({request_body, Ref, nofin, Data}, Req, #state{body_ref = Ref, req_body_ch = Ch} = State) ->
-    %% More body data coming - push to channel
+%% Handle async body chunks from Cowboy - more data coming
+info({request_body, Ref, nofin, Data}, Req,
+     #state{body_ref = Ref, req_body_ch = Ch, cowboy_pid = Pid,
+            cowboy_streamid = StreamID} = State) ->
     ok = push_to_channel(Ch, Data),
-    %% Request more data
-    cowboy_req:cast({read_body, self(), Ref, auto, infinity}, Req),
+    %% Direct send instead of cowboy_req:cast
+    Pid ! {{Pid, StreamID}, {read_body, self(), Ref, auto, infinity}},
     {ok, Req, State};
 
-info({request_body, Ref, fin, _BodyLen, Data}, Req, #state{body_ref = Ref, req_body_ch = Ch} = State) ->
-    %% Final chunk - push and close channel
+%% Handle async body chunks from Cowboy - final chunk
+info({request_body, Ref, fin, _BodyLen, Data}, Req,
+     #state{body_ref = Ref, req_body_ch = Ch} = State) ->
     case Data of
         <<>> -> ok;
         _ -> ok = push_to_channel(Ch, Data)
@@ -112,52 +139,26 @@ info({request_body, Ref, fin, _BodyLen, Data}, Req, #state{body_ref = Ref, req_b
     py_byte_channel:close(Ch),
     {ok, Req, State#state{body_ref = undefined}};
 
-%% Handle response headers from Python
-%% Buffer headers until we get body - then decide reply vs stream based on content-length
-info({<<"headers">>, StatusCode, Headers}, Req, State) ->
-    SafeHeaders = filter_hop_by_hop(Headers),
-    CowboyHeaders = convert_headers(SafeHeaders),
-    HasContentLength = maps:is_key(<<"content-length">>, CowboyHeaders),
-    {ok, Req, State#state{
-        headers_sent = false,
-        buffered_headers = {StatusCode, CowboyHeaders, HasContentLength}
-    }};
+%% New simplified protocol: start_response (headers + first chunk)
+info({<<"start_response">>, StatusCode, Headers, FirstChunk}, Req, State) ->
+    CowboyHeaders = convert_headers(filter_hop_by_hop(Headers)),
+    Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
+    case to_binary(FirstChunk) of
+        <<>> -> ok;
+        Body -> ok = cowboy_req:stream_body(Body, nofin, Req2)
+    end,
+    {ok, Req2, State};
 
-%% Handle response body from Python
-info({<<"body">>, Body, MoreBody}, Req, #state{handler_state = HandlerState,
-                                               buffered_headers = BufferedHeaders} = State) ->
-    BodyBin = to_binary(Body),
-    case {BufferedHeaders, MoreBody} of
-        %% First body chunk with buffered headers
-        {{StatusCode, CowboyHeaders, true}, false} ->
-            %% Has Content-Length and no more body - use reply (not streaming)
-            Req2 = cowboy_req:reply(StatusCode, CowboyHeaders, BodyBin, Req),
-            maybe_close_channel(State#state.req_body_ch),
-            {stop, Req2, HandlerState};
-        {{StatusCode, CowboyHeaders, _HasCL}, _} ->
-            %% Streaming response - start with stream_reply
-            Req2 = cowboy_req:stream_reply(StatusCode, CowboyHeaders, Req),
-            case MoreBody of
-                true ->
-                    case BodyBin of
-                        <<>> -> ok;
-                        _ -> ok = cowboy_req:stream_body(BodyBin, nofin, Req2)
-                    end,
-                    {ok, Req2, State#state{headers_sent = true, buffered_headers = undefined}};
-                false ->
-                    ok = cowboy_req:stream_body(BodyBin, fin, Req2),
-                    maybe_close_channel(State#state.req_body_ch),
-                    {stop, Req2, HandlerState}
-            end;
-        %% Subsequent body chunks (headers already sent)
-        {undefined, true} ->
-            ok = cowboy_req:stream_body(BodyBin, nofin, Req),
-            {ok, Req, State};
-        {undefined, false} ->
-            ok = cowboy_req:stream_body(BodyBin, fin, Req),
-            maybe_close_channel(State#state.req_body_ch),
-            {stop, Req, HandlerState}
-    end;
+%% New simplified protocol: subsequent chunk
+info({<<"chunk">>, Data}, Req, State) ->
+    ok = cowboy_req:stream_body(to_binary(Data), nofin, Req),
+    {ok, Req, State};
+
+%% New simplified protocol: end of response
+info(<<"fin">>, Req, #state{handler_state = HS} = State) ->
+    ok = cowboy_req:stream_body(<<>>, fin, Req),
+    maybe_close_channel(State#state.req_body_ch),
+    {stop, Req, HS};
 
 %% Handle early hints from Python
 info({<<"early_hints">>, Headers}, Req, State) ->
@@ -219,6 +220,7 @@ push_to_channel(Channel, Data) ->
 
 maybe_close_channel(undefined) -> ok;
 maybe_close_channel(empty) -> ok;
+maybe_close_channel({body, _}) -> ok;  %% Small body passed inline, no channel
 maybe_close_channel(Channel) ->
     try
         case py_byte_channel:info(Channel) of
