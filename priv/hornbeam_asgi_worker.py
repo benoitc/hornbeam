@@ -303,34 +303,39 @@ async def handle_asgi(caller_pid, app_module: str, app_callable: str,
 # Helpers
 # =============================================================================
 
-_preloaded_app: Callable = None
-_preloaded_key: tuple = None
+import sys
+
+# Cache apps by (module, callable) key - modules already imported by Erlang
+_app_cache: dict = {}
+
+
+def _get_app(module_name: str, callable_name: str) -> Callable:
+    """Get ASGI application from cache or sys.modules.
+
+    Module is already imported by Erlang via ensure_all_imported,
+    so we just look it up in sys.modules - no importlib needed.
+    """
+    key = (module_name, callable_name)
+    app = _app_cache.get(key)
+    if app is not None:
+        return app
+
+    # Module already imported by Erlang - just get from sys.modules
+    module = sys.modules.get(module_name)
+    if module is None:
+        # Fallback: import if somehow not in sys.modules
+        import importlib
+        module = importlib.import_module(module_name)
+
+    app = getattr(module, callable_name)
+    _app_cache[key] = app
+    return app
 
 
 def preload_app(app_module: str, app_callable: str) -> bytes:
     """Preload ASGI application at startup."""
-    global _preloaded_app, _preloaded_key
-
-    import importlib
-    module = importlib.import_module(app_module)
-    app = getattr(module, app_callable)
-
-    _preloaded_app = app
-    _preloaded_key = (app_module, app_callable)
-
+    _get_app(app_module, app_callable)
     return b'ok'
-
-
-def _get_app(module_name: str, callable_name: str) -> Callable:
-    """Get ASGI application."""
-    global _preloaded_app, _preloaded_key
-
-    if _preloaded_key == (module_name, callable_name):
-        return _preloaded_app
-
-    import importlib
-    module = importlib.import_module(module_name)
-    return getattr(module, callable_name)
 
 
 class _MutableStateProxy(dict):
