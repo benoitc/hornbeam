@@ -92,10 +92,12 @@ init(Req, HandlerState) ->
             {empty, undefined}
     end,
 
-    %% Create Python task (response sent via erlang.send, no channel needed)
-    _TaskRef = py_event_loop_pool:create_task(
+    %% Submit task directly to main event loop
+    {ok, LoopRef} = py_event_loop:get_loop(),
+    TaskRef = make_ref(),
+    ok = py_nif:submit_task(LoopRef, self(), TaskRef,
         <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-        [self(), AppModule, AppCallable, Scope, ReqBodyRef]),
+        [self(), AppModule, AppCallable, Scope, ReqBodyRef], #{}),
 
     %% Extract channel ref for state (if using channel mode)
     ReqBodyCh = case ReqBodyRef of
