@@ -22,9 +22,9 @@
 %%% %% Register mounts
 %%% hornbeam_mounts:register([
 %%%     #{prefix => <<"/api">>, app_module => <<"api">>, app_callable => <<"app">>,
-%%%       worker_class => asgi, workers => 4, timeout => 30000},
+%%%       worker_class => asgi, timeout => 30000},
 %%%     #{prefix => <<"/">>, app_module => <<"frontend">>, app_callable => <<"app">>,
-%%%       worker_class => wsgi, workers => 2, timeout => 30000}
+%%%       worker_class => wsgi, timeout => 30000}
 %%% ]).
 %%%
 %%% %% Lookup a path
@@ -55,10 +55,9 @@
     app_module := binary(),
     app_callable := binary(),
     worker_class := wsgi | asgi,
-    workers := pos_integer(),
     timeout := pos_integer(),
-    mount_id => binary(),           %% 6-char random ID for pool routing
-    pool_enabled => boolean()       %% Enable persistent worker pool
+    mount_id => binary(),           %% 6-char random ID for routing
+    pythonpath => [binary()]        %% Additional Python paths for this mount
 }.
 
 -export_type([mount/0]).

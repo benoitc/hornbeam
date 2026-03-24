@@ -12,13 +12,11 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
-%%% @doc Context pool using py_context_router with cached NIF refs.
+%%% @doc Cached NIF refs for the default py_context_router pool.
 %%%
-%%% Uses py_context_router for context lifecycle management and caches
-%%% NIF references in persistent_term for O(1) lookup without message passing.
-%%%
-%%% Each context is a sub-interpreter (Python 3.12+) or worker thread.
-%%% With free-threading Python (3.13+), contexts execute truly in parallel.
+%%% Caches NIF references from py_context_router in persistent_term
+%%% for O(1) lookup without message passing. Does not create contexts -
+%%% uses the default pool started by erlang_python.
 %%%
 %%% @end
 -module(hornbeam_context_pool).
@@ -42,32 +40,22 @@
 
 -record(state, {
     pool_size :: pos_integer(),
-    context_mode :: worker | owngil,
-    contexts :: [pid()],          %% Context pids from py_context_router
     nif_refs :: #{pos_integer() => reference()}  %% Cached NIF refs
 }).
-
--define(DEFAULT_POOL_SIZE, erlang:system_info(schedulers)).
 
 %% ============================================================================
 %% API
 %% ============================================================================
 
-%% @doc Start the context pool with default size (one per scheduler).
+%% @doc Start the context pool cache.
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     start_link(#{}).
 
-%% @doc Start the context pool with options.
-%%
-%% Options:
-%% - pool_size: Number of contexts (default: number of schedulers)
-%% - context_mode: worker | owngil (default: worker)
-%%   - worker: Standard sub-interpreter mode
-%%   - owngil: Per-interpreter GIL mode (Python 3.12+, true parallelism)
+%% @doc Start the context pool cache.
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
-start_link(Opts) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
+start_link(_Opts) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc Get a context using scheduler affinity.
 %%
@@ -124,41 +112,30 @@ preload_app(WorkerClass, AppModule, AppCallable) ->
 %% gen_server callbacks
 %% ============================================================================
 
-init(Opts) ->
+init([]) ->
     process_flag(trap_exit, true),
 
-    PoolSize = maps:get(pool_size, Opts,
-        application:get_env(hornbeam, context_pool_size, ?DEFAULT_POOL_SIZE)),
-    ContextMode = maps:get(context_mode, Opts,
-        application:get_env(hornbeam, context_mode, worker)),
+    %% Wait for py_context_router to be ready
+    wait_for_context_router(),
 
-    %% Create atomic counter for round-robin
-    Counter = atomics:new(1, [{signed, false}]),
-    persistent_term:put(hornbeam_context_counter, Counter),
-
-    %% Start py_context_router if not already started
-    case py_context_router:is_started() of
-        true -> ok;
-        false ->
-            {ok, _} = py_context_router:start(#{contexts => PoolSize, mode => ContextMode})
-    end,
-
-    %% Get contexts from py_context_router and cache NIF refs
+    %% Get pool size and contexts from default py_context_router pool
+    PoolSize = py_context_router:num_contexts(),
     Contexts = py_context_router:contexts(),
     NifRefs = cache_nif_refs(Contexts),
 
     %% Setup hornbeam-specific modules in each context
     setup_contexts(NifRefs),
 
+    %% Create atomic counter for round-robin
+    Counter = atomics:new(1, [{signed, false}]),
+    persistent_term:put(hornbeam_context_counter, Counter),
     persistent_term:put(hornbeam_context_pool_size, PoolSize),
 
-    {ok, #state{pool_size = PoolSize, context_mode = ContextMode,
-                contexts = Contexts, nif_refs = NifRefs}}.
+    {ok, #state{pool_size = PoolSize, nif_refs = NifRefs}}.
 
-handle_call(stats, _From, #state{pool_size = PoolSize, context_mode = ContextMode} = State) ->
+handle_call(stats, _From, #state{pool_size = PoolSize} = State) ->
     Stats = #{
         pool_size => PoolSize,
-        context_mode => ContextMode,
         execution_mode => py_nif:execution_mode()
     },
     {reply, Stats, State};
@@ -264,3 +241,18 @@ add_paths_to_context(Ref, Paths) ->
                 error_logger:warning_msg("Failed to add path ~s to context: ~p~n", [AbsPath, Err])
         end
     end, Paths).
+
+%% @private
+%% Wait for py_context_router to be started with contexts
+wait_for_context_router() ->
+    wait_for_context_router(50).  %% 50 * 100ms = 5s max
+
+wait_for_context_router(0) ->
+    error(py_context_router_not_ready);
+wait_for_context_router(Retries) ->
+    case py_context_router:is_started() andalso py_context_router:num_contexts() > 0 of
+        true -> ok;
+        false ->
+            timer:sleep(100),
+            wait_for_context_router(Retries - 1)
+    end.
