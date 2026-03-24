@@ -241,6 +241,9 @@ init(Opts) ->
         {started, false}
     ]),
 
+    %% Register state callbacks for direct Python access (no whereis needed)
+    register_state_callbacks(),
+
     {ok, #state{
         lifespan_mode = LifespanMode,
         lifespan_state = #{},
@@ -573,3 +576,40 @@ handle_shutdown_response(Response) ->
             %% Accept any response during shutdown
             ok
     end.
+
+%% @private
+%% Register callbacks for direct Python state access via erlang.call()
+%% This avoids erlang.whereis() on every request
+register_state_callbacks() ->
+    py:register_function(lifespan_state_get, fun state_get_callback/1),
+    py:register_function(lifespan_state_set, fun state_set_callback/1),
+    ok.
+
+%% @private
+%% Callback: get state value
+%% Args: [] -> full state, [Key] -> single value, [MountId, Key] -> per-mount value
+state_get_callback([]) ->
+    get_state();
+state_get_callback([Key]) ->
+    State = get_state(),
+    maps:get(Key, State, undefined);
+state_get_callback([MountId, Key]) when is_binary(MountId) ->
+    State = get_state(MountId),
+    maps:get(Key, State, undefined);
+state_get_callback([MountId, _Key]) when MountId =:= undefined; MountId =:= none ->
+    %% No mount_id, fall back to single-app mode
+    get_state().
+
+%% @private
+%% Callback: set state value
+%% Args: [Key, Value] -> single-app mode, [MountId, Key, Value] -> per-mount
+state_set_callback([Key, Value]) ->
+    update_state(Key, Value),
+    ok;
+state_set_callback([MountId, Key, Value]) when is_binary(MountId) ->
+    update_state(MountId, Key, Value),
+    ok;
+state_set_callback([MountId, Key, Value]) when MountId =:= undefined; MountId =:= none ->
+    %% No mount_id, fall back to single-app mode
+    update_state(Key, Value),
+    ok.

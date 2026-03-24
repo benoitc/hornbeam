@@ -96,13 +96,9 @@ build_asgi_scope(Req, State) ->
     %% Get mount_id for per-mount state isolation (multi-app mode)
     MountId = maps:get(mount_id, State, undefined),
 
-    %% Get fresh lifespan state from ETS on each request (supports mutable state)
-    LifespanState = case MountId of
-        undefined -> hornbeam_lifespan:get_state();
-        _ -> hornbeam_lifespan:get_state(MountId)
-    end,
-
     %% Build scope map with all fields
+    %% Note: state is NOT included here - Python fetches lazily via callback
+    %% This avoids copying state dict on every request
     BaseScope = #{
         type => <<"http">>,
         asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>},
@@ -116,7 +112,6 @@ build_asgi_scope(Req, State) ->
         headers => HeaderList,
         server => {cowboy_req:host(Req), cowboy_req:port(Req)},
         client => {format_ip(ClientIp), ClientPort},
-        state => LifespanState,
         extensions => build_extensions(Version)
     },
 
