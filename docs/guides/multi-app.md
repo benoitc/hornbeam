@@ -24,7 +24,7 @@ Each mount is a tuple of `{Prefix, AppSpec, Options}`:
 
 - **Prefix** - URL path prefix (must start with `/`)
 - **AppSpec** - Python module:callable (e.g., `"myapp:application"`)
-- **Options** - Per-mount options (worker_class, workers, timeout)
+- **Options** - Per-mount options (worker_class, timeout)
 
 ## Routing Behavior
 
@@ -93,24 +93,21 @@ Each mount can have its own configuration:
 ```erlang
 hornbeam:start(#{
     mounts => [
-        %% High-performance async API with more workers
+        %% High-performance async API
         {"/api", "api:app", #{
             worker_class => asgi,
-            workers => 8,
             timeout => 60000
         }},
 
-        %% Admin panel - fewer workers needed
+        %% Admin panel
         {"/admin", "admin:app", #{
             worker_class => wsgi,
-            workers => 2,
             timeout => 30000
         }},
 
         %% Static frontend
         {"/", "frontend:app", #{
-            worker_class => wsgi,
-            workers => 4
+            worker_class => wsgi
         }}
     ],
     bind => "0.0.0.0:8000"
@@ -122,8 +119,9 @@ hornbeam:start(#{
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
-| `workers` | integer | `4` | Number of Python workers |
 | `timeout` | integer | `30000` | Request timeout in ms |
+
+> **Note:** All mounts share the global `py_context_router` pool. Configure pool size at the application level rather than per-mount.
 
 ## Global Options
 
@@ -184,20 +182,17 @@ hornbeam:start(#{
     mounts => [
         %% FastAPI for real-time API
         {"/api/v2", "api_v2:app", #{
-            worker_class => asgi,
-            workers => 8
+            worker_class => asgi
         }},
 
         %% Legacy Flask API
         {"/api/v1", "api_v1:app", #{
-            worker_class => wsgi,
-            workers => 4
+            worker_class => wsgi
         }},
 
         %% Django admin
         {"/admin", "myproject.wsgi:application", #{
-            worker_class => wsgi,
-            workers => 2
+            worker_class => wsgi
         }},
 
         %% React frontend (served by Flask)

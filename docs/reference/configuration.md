@@ -50,8 +50,9 @@ Each mount is a tuple: `{Prefix, AppSpec, Options}`
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `worker_class` | atom | `wsgi` | Protocol: `wsgi` or `asgi` |
-| `workers` | integer | `4` | Number of Python workers for this mount |
 | `timeout` | integer | `30000` | Request timeout in ms |
+
+> **Note:** All mounts share the global `py_context_router` pool. Configure pool size at the application level.
 
 ### Multi-App Example
 
@@ -60,12 +61,10 @@ hornbeam:start(#{
     mounts => [
         {"/api/v2", "api_v2:app", #{
             worker_class => asgi,
-            workers => 8,
             timeout => 60000
         }},
         {"/api/v1", "api_v1:app", #{
-            worker_class => wsgi,
-            workers => 4
+            worker_class => wsgi
         }},
         {"/", "frontend:app", #{worker_class => wsgi}}
     ],
