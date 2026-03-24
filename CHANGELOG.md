@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Shared Context Pool**: All mounts now share the default `py_context_router` pool
+  - Removed per-mount `workers` option (use global pool size instead)
+  - Better resource utilization across multiple mounted apps
+  - Simplified architecture with cached NIF refs
+
+- **ASGI Performance Optimizations**:
+  - Event loop pool for parallel ASGI task distribution
+  - Cached state proxies per mount_id (avoid allocation per request)
+  - Preloaded app modules via `py_import:ensure_imported`
+  - Lazy state proxy with ETS-backed callbacks
+
+### Performance
+
+- ASGI now outperforms WSGI by 11-16% across test scenarios:
+  - Simple requests (100 conc): ~70k req/s (+13%)
+  - High concurrency (500 conc): ~64k req/s (+16%)
+  - Sustained load (200 conc): ~71k req/s (+14%)
+
+### Removed
+
+- `workers` option from per-mount configuration (use shared pool)
+
 ## [1.4.1] - 2026-02-25
 
 ### Fixed

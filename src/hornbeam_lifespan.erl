@@ -53,10 +53,17 @@
     start_link/1,
     startup/0,
     startup/1,
+    startup/2,
     shutdown/0,
+    shutdown/1,
     get_state/0,
+    get_state/1,
+    set_state/2,
+    update_state/2,
+    update_state/3,
     get_context/0,
-    is_running/0
+    is_running/0,
+    is_running/1
 ]).
 
 -export([
@@ -72,6 +79,15 @@
 -define(DEFAULT_TIMEOUT, 30000).
 -define(CACHE_TABLE, hornbeam_lifespan_cache).
 
+%% Per-mount lifespan tracking
+-record(mount_lifespan, {
+    mount_id :: binary(),
+    app_module :: binary(),
+    app_callable :: binary(),
+    started = false :: boolean(),
+    supported = unknown :: boolean() | unknown
+}).
+
 -record(state, {
     app_module :: binary() | undefined,
     app_callable :: binary() | undefined,
@@ -79,7 +95,9 @@
     lifespan_state :: map(),
     py_context :: term() | undefined,  %% Python context for affinity
     started = false :: boolean(),
-    supported = unknown :: boolean() | unknown
+    supported = unknown :: boolean() | unknown,
+    %% Per-mount tracking for multi-app mode
+    mounts = #{} :: #{binary() => #mount_lifespan{}}
 }).
 
 %%% ============================================================================
@@ -107,12 +125,23 @@ startup() ->
 startup(Opts) ->
     gen_server:call(?SERVER, {startup, Opts}, infinity).
 
+%% @doc Run lifespan startup for a specific mount.
+%% Used in multi-app mode to run lifespan per mounted app.
+-spec startup(binary(), map()) -> ok | {error, term()}.
+startup(MountId, Opts) when is_binary(MountId) ->
+    gen_server:call(?SERVER, {startup_mount, MountId, Opts}, infinity).
+
 %% @doc Run lifespan shutdown protocol.
 -spec shutdown() -> ok | {error, term()}.
 shutdown() ->
     gen_server:call(?SERVER, shutdown, infinity).
 
-%% @doc Get the lifespan state (shared across requests).
+%% @doc Run lifespan shutdown for a specific mount.
+-spec shutdown(binary()) -> ok | {error, term()}.
+shutdown(MountId) when is_binary(MountId) ->
+    gen_server:call(?SERVER, {shutdown_mount, MountId}, infinity).
+
+%% @doc Get the lifespan state for single-app mode (backward compat).
 %% Uses ETS cache for fast concurrent reads.
 -spec get_state() -> map().
 get_state() ->
@@ -121,11 +150,52 @@ get_state() ->
         [] -> #{}
     end.
 
-%% @doc Check if lifespan is running.
+%% @doc Get the lifespan state for a specific mount.
+%% Used in multi-app mode to get per-mount state.
+-spec get_state(binary()) -> map().
+get_state(MountId) when is_binary(MountId) ->
+    case ets:lookup(?CACHE_TABLE, {lifespan_state, MountId}) of
+        [{{lifespan_state, MountId}, State}] -> State;
+        [] -> #{}
+    end.
+
+%% @doc Set the lifespan state for a specific mount.
+%% Used after startup to store per-mount state in ETS.
+-spec set_state(binary(), map()) -> ok.
+set_state(MountId, State) when is_binary(MountId), is_map(State) ->
+    ets:insert(?CACHE_TABLE, {{lifespan_state, MountId}, State}),
+    ok.
+
+%% @doc Update a single key in the lifespan state (single-app mode).
+%% This is called from Python to persist state changes.
+-spec update_state(binary(), term()) -> ok.
+update_state(Key, Value) ->
+    CurrentState = get_state(),
+    NewState = CurrentState#{Key => Value},
+    ets:insert(?CACHE_TABLE, {lifespan_state, NewState}),
+    ok.
+
+%% @doc Update a single key in the lifespan state for a specific mount.
+-spec update_state(binary(), binary(), term()) -> ok.
+update_state(MountId, Key, Value) when is_binary(MountId) ->
+    CurrentState = get_state(MountId),
+    NewState = CurrentState#{Key => Value},
+    ets:insert(?CACHE_TABLE, {{lifespan_state, MountId}, NewState}),
+    ok.
+
+%% @doc Check if lifespan is running (single-app mode).
 -spec is_running() -> boolean().
 is_running() ->
     case ets:lookup(?CACHE_TABLE, started) of
         [{started, Started}] -> Started;
+        [] -> false
+    end.
+
+%% @doc Check if lifespan is running for a specific mount.
+-spec is_running(binary()) -> boolean().
+is_running(MountId) when is_binary(MountId) ->
+    case ets:lookup(?CACHE_TABLE, {started, MountId}) of
+        [{{started, MountId}, Started}] -> Started;
         [] -> false
     end.
 
@@ -155,11 +225,13 @@ init(Opts) ->
         {read_concurrency, true}
     ]),
 
-    %% Create a dedicated Python context for ASGI affinity
+    %% Get a Python context from hornbeam_context_pool for ASGI affinity
     %% This ensures module-level state persists across requests
-    PyContext = case py:bind(new) of
-        {ok, Ctx} -> Ctx;
-        _ -> undefined
+    %% Using hornbeam_context_pool ensures priv/ is in sys.path
+    PyContext = try
+        hornbeam_context_pool:get_context_ref()
+    catch
+        _:_ -> undefined
     end,
 
     %% Cache initial values
@@ -168,6 +240,9 @@ init(Opts) ->
         {lifespan_state, #{}},
         {started, false}
     ]),
+
+    %% Register state callbacks for direct Python access (no whereis needed)
+    register_state_callbacks(),
 
     {ok, #state{
         lifespan_mode = LifespanMode,
@@ -221,6 +296,81 @@ handle_call({startup, Opts}, _From, #state{py_context = PyContext} = State) ->
             end
     end;
 
+%% Per-mount startup handler
+handle_call({startup_mount, MountId, Opts}, _From, #state{py_context = PyContext, mounts = Mounts} = State) ->
+    AppModule = maps:get(app_module, Opts),
+    AppCallable = maps:get(app_callable, Opts),
+    LifespanMode = maps:get(lifespan, Opts, auto),
+
+    case LifespanMode of
+        off ->
+            %% Update ETS cache for this mount
+            ets:insert(?CACHE_TABLE, {{started, MountId}, true}),
+            MountLifespan = #mount_lifespan{
+                mount_id = MountId,
+                app_module = AppModule,
+                app_callable = AppCallable,
+                started = true,
+                supported = false
+            },
+            {reply, ok, State#state{mounts = Mounts#{MountId => MountLifespan}}};
+        _ ->
+            %% Try to run lifespan startup with mount_id
+            case run_startup_mount(MountId, AppModule, AppCallable, PyContext) of
+                {ok, LifespanState} ->
+                    %% Update ETS cache for this mount
+                    ets:insert(?CACHE_TABLE, [
+                        {{lifespan_state, MountId}, LifespanState},
+                        {{started, MountId}, true}
+                    ]),
+                    MountLifespan = #mount_lifespan{
+                        mount_id = MountId,
+                        app_module = AppModule,
+                        app_callable = AppCallable,
+                        started = true,
+                        supported = true
+                    },
+                    {reply, ok, State#state{mounts = Mounts#{MountId => MountLifespan}}};
+                {error, not_supported} when LifespanMode =:= auto ->
+                    %% Lifespan not supported, but that's OK in auto mode
+                    ets:insert(?CACHE_TABLE, {{started, MountId}, true}),
+                    MountLifespan = #mount_lifespan{
+                        mount_id = MountId,
+                        app_module = AppModule,
+                        app_callable = AppCallable,
+                        started = true,
+                        supported = false
+                    },
+                    {reply, ok, State#state{mounts = Mounts#{MountId => MountLifespan}}};
+                {error, not_supported} when LifespanMode =:= on ->
+                    {reply, {error, lifespan_not_supported}, State};
+                {error, Reason} ->
+                    {reply, {error, Reason}, State}
+            end
+    end;
+
+%% Per-mount shutdown handler
+handle_call({shutdown_mount, MountId}, _From, #state{py_context = PyContext, mounts = Mounts} = State) ->
+    case maps:get(MountId, Mounts, undefined) of
+        undefined ->
+            {reply, ok, State};
+        #mount_lifespan{started = false} ->
+            {reply, ok, State};
+        #mount_lifespan{supported = false} = ML ->
+            ets:insert(?CACHE_TABLE, [
+                {{started, MountId}, false},
+                {{lifespan_state, MountId}, #{}}
+            ]),
+            {reply, ok, State#state{mounts = Mounts#{MountId => ML#mount_lifespan{started = false}}}};
+        #mount_lifespan{app_module = AppModule, app_callable = AppCallable} = ML ->
+            Result = run_shutdown_mount(MountId, AppModule, AppCallable, PyContext),
+            ets:insert(?CACHE_TABLE, [
+                {{started, MountId}, false},
+                {{lifespan_state, MountId}, #{}}
+            ]),
+            {reply, Result, State#state{mounts = Mounts#{MountId => ML#mount_lifespan{started = false}}}}
+    end;
+
 handle_call(shutdown, _From, #state{started = false} = State) ->
     {reply, ok, State};
 
@@ -252,6 +402,18 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Request, State) ->
     {noreply, State}.
 
+%% Handle state update messages from Python (via erlang.send)
+%% Python sends binaries, so we match on <<"update_state">>
+handle_info({<<"update_state">>, Key, Value}, State) ->
+    %% Single-app mode state update
+    update_state(Key, Value),
+    {noreply, State};
+
+handle_info({<<"update_state">>, MountId, Key, Value}, State) ->
+    %% Multi-app mode state update
+    update_state(MountId, Key, Value),
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -261,12 +423,8 @@ terminate(_Reason, #state{started = true, supported = true,
                           py_context = PyContext}) ->
     %% Run shutdown on terminate
     _ = run_shutdown(AppModule, AppCallable, PyContext),
-    %% Unbind the context
-    catch py:unbind(PyContext),
     ok;
-terminate(_Reason, #state{py_context = PyContext}) ->
-    %% Just unbind context if lifespan not started
-    catch py:unbind(PyContext),
+terminate(_Reason, _State) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -293,10 +451,10 @@ run_startup(AppModule, AppCallable, PyContext) ->
         Result = case PyContext of
             undefined ->
                 py:call(hornbeam_lifespan_runner, startup,
-                       [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, startup,
-                           [AppModule, AppCallable, TimeoutMs], #{}, TimeoutMs + 5000)
+                       [AppModule, AppCallable, TimeoutMs], #{});
+            CtxRef ->
+                py_nif:context_call(CtxRef, <<"hornbeam_lifespan_runner">>, <<"startup">>,
+                                   [AppModule, AppCallable, TimeoutMs], #{})
         end,
         case Result of
             {ok, Response} ->
@@ -326,21 +484,15 @@ handle_startup_response(Response) ->
     end.
 
 run_shutdown(AppModule, AppCallable, PyContext) ->
-    Timeout = hornbeam_config:get_config(timeout),
-    TimeoutMs = case Timeout of
-        undefined -> ?DEFAULT_TIMEOUT;
-        T -> min(T, 10000)  % Cap shutdown timeout
-    end,
-
     try
         %% Use context-aware call for affinity
         Result = case PyContext of
             undefined ->
                 py:call(hornbeam_lifespan_runner, shutdown,
-                       [AppModule, AppCallable], #{}, TimeoutMs);
-            Ctx ->
-                py:ctx_call(Ctx, hornbeam_lifespan_runner, shutdown,
-                           [AppModule, AppCallable], #{}, TimeoutMs)
+                       [AppModule, AppCallable], #{});
+            CtxRef ->
+                py_nif:context_call(CtxRef, <<"hornbeam_lifespan_runner">>, <<"shutdown">>,
+                                   [AppModule, AppCallable], #{})
         end,
         case Result of
             {ok, Response} ->
@@ -355,6 +507,67 @@ run_shutdown(AppModule, AppCallable, PyContext) ->
             {error, {Class, CatchReason}}
     end.
 
+%% @private
+%% Run lifespan startup for a specific mount (multi-app mode)
+run_startup_mount(MountId, AppModule, AppCallable, PyContext) ->
+    TimeoutMs = case hornbeam_config:get_config(lifespan_timeout) of
+        undefined ->
+            case hornbeam_config:get_config(timeout) of
+                undefined -> ?DEFAULT_TIMEOUT;
+                T -> T
+            end;
+        LT -> LT
+    end,
+
+    try
+        %% Pass mount_id to Python so it can store state per mount
+        Result = case PyContext of
+            undefined ->
+                py:call(hornbeam_lifespan_runner, startup_mount,
+                       [MountId, AppModule, AppCallable, TimeoutMs], #{});
+            CtxRef ->
+                py_nif:context_call(CtxRef, <<"hornbeam_lifespan_runner">>, <<"startup_mount">>,
+                                   [MountId, AppModule, AppCallable, TimeoutMs], #{})
+        end,
+        case Result of
+            {ok, Response} ->
+                handle_startup_response(Response);
+            {error, StartupError} ->
+                {error, StartupError}
+        end
+    catch
+        Class:CatchReason ->
+            error_logger:error_msg("Lifespan mount startup error (~s): ~p:~p~n",
+                                   [MountId, Class, CatchReason]),
+            {error, {Class, CatchReason}}
+    end.
+
+%% @private
+%% Run lifespan shutdown for a specific mount (multi-app mode)
+run_shutdown_mount(MountId, AppModule, AppCallable, PyContext) ->
+    try
+        %% Pass mount_id to Python for per-mount cleanup
+        Result = case PyContext of
+            undefined ->
+                py:call(hornbeam_lifespan_runner, shutdown_mount,
+                       [MountId, AppModule, AppCallable], #{});
+            CtxRef ->
+                py_nif:context_call(CtxRef, <<"hornbeam_lifespan_runner">>, <<"shutdown_mount">>,
+                                   [MountId, AppModule, AppCallable], #{})
+        end,
+        case Result of
+            {ok, Response} ->
+                handle_shutdown_response(Response);
+            {error, ShutdownError} ->
+                {error, ShutdownError}
+        end
+    catch
+        Class:CatchReason ->
+            error_logger:error_msg("Lifespan mount shutdown error (~s): ~p:~p~n",
+                                   [MountId, Class, CatchReason]),
+            {error, {Class, CatchReason}}
+    end.
+
 handle_shutdown_response(Response) ->
     case maps:get(<<"type">>, Response, undefined) of
         <<"lifespan.shutdown.complete">> ->
@@ -363,3 +576,40 @@ handle_shutdown_response(Response) ->
             %% Accept any response during shutdown
             ok
     end.
+
+%% @private
+%% Register callbacks for direct Python state access via erlang.call()
+%% This avoids erlang.whereis() on every request
+register_state_callbacks() ->
+    py:register_function(lifespan_state_get, fun state_get_callback/1),
+    py:register_function(lifespan_state_set, fun state_set_callback/1),
+    ok.
+
+%% @private
+%% Callback: get state value
+%% Args: [] -> full state, [Key] -> single value, [MountId, Key] -> per-mount value
+state_get_callback([]) ->
+    get_state();
+state_get_callback([Key]) ->
+    State = get_state(),
+    maps:get(Key, State, undefined);
+state_get_callback([MountId, Key]) when is_binary(MountId) ->
+    State = get_state(MountId),
+    maps:get(Key, State, undefined);
+state_get_callback([MountId, _Key]) when MountId =:= undefined; MountId =:= none ->
+    %% No mount_id, fall back to single-app mode
+    get_state().
+
+%% @private
+%% Callback: set state value
+%% Args: [Key, Value] -> single-app mode, [MountId, Key, Value] -> per-mount
+state_set_callback([Key, Value]) ->
+    update_state(Key, Value),
+    ok;
+state_set_callback([MountId, Key, Value]) when is_binary(MountId) ->
+    update_state(MountId, Key, Value),
+    ok;
+state_set_callback([MountId, Key, Value]) when MountId =:= undefined; MountId =:= none ->
+    %% No mount_id, fall back to single-app mode
+    update_state(Key, Value),
+    ok.

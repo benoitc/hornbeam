@@ -337,6 +337,12 @@ def reload_app(module_name: str, callable_name: str):
         return app
 
 
+# Response object pool for reuse
+_RESPONSE_POOL = []
+_RESPONSE_POOL_SIZE = 100
+_RESPONSE_POOL_LOCK = threading.Lock()
+
+
 class ASGIResponse:
     """Collects ASGI response messages.
 
@@ -350,6 +356,16 @@ class ASGIResponse:
                  'informational', 'trailers', 'early_hints')
 
     def __init__(self):
+        self.status = None
+        self.headers = []
+        self.body_parts = []
+        self.more_body = False
+        self.informational = []
+        self.trailers = []
+        self.early_hints = []
+
+    def reset(self):
+        """Reset response for reuse from pool."""
         self.status = None
         self.headers = []
         self.body_parts = []
@@ -408,6 +424,23 @@ class ASGIResponse:
             result['trailers'] = self.trailers
 
         return result
+
+
+def _get_response() -> ASGIResponse:
+    """Get an ASGIResponse from pool or create new."""
+    with _RESPONSE_POOL_LOCK:
+        if _RESPONSE_POOL:
+            resp = _RESPONSE_POOL.pop()
+            resp.reset()
+            return resp
+    return ASGIResponse()
+
+
+def _return_response(resp: ASGIResponse) -> None:
+    """Return an ASGIResponse to the pool."""
+    with _RESPONSE_POOL_LOCK:
+        if len(_RESPONSE_POOL) < _RESPONSE_POOL_SIZE:
+            _RESPONSE_POOL.append(resp)
 
 
 async def _run_asgi_async(module_name: str, callable_name: str,
@@ -561,220 +594,3 @@ def _run_asgi_sync(module_name: str, callable_name: str,
         result.get('headers', []),
         result.get('body', b'')
     )
-
-
-# Streaming support for real-time responses
-
-# Thread-safe streaming session storage
-_streaming_sessions: Dict[str, 'StreamingASGIRunner'] = {}
-_streaming_sessions_lock = threading.Lock()
-
-
-class StreamingASGIRunner:
-    """Runner for streaming ASGI responses.
-
-    This class supports:
-    - Server-Sent Events (SSE)
-    - Chunked transfer encoding
-    - Real-time response streaming
-    """
-
-    def __init__(self, module_name: str, callable_name: str, scope: dict):
-        self.module_name = module_name
-        self.callable_name = callable_name
-        self.scope = scope
-        self.app = None
-        self.status = None
-        self.headers = []
-        self.body_queue: asyncio.Queue = None
-        self.finished = False
-        self.loop = None
-        self._response_started_event: asyncio.Event = None
-        self._error: Optional[Exception] = None
-
-    def start(self, body: bytes, timeout_ms: int = 5000) -> dict:
-        """Start the streaming response.
-
-        Args:
-            body: Request body bytes
-            timeout_ms: Max time to wait for response headers (default 5s)
-
-        Returns the initial response headers.
-        """
-        self.app = load_app(self.module_name, self.callable_name)
-
-        # Inject lifespan state if available
-        if _get_lifespan_state is not None:
-            self.scope['state'] = _get_lifespan_state()
-
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        self.body_queue = asyncio.Queue()
-        self._response_started_event = asyncio.Event()
-
-        # Create receive/send callables
-        body_sent = False
-
-        async def receive():
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {
-                    'type': 'http.request',
-                    'body': body,
-                    'more_body': False
-                }
-            return _DISCONNECT_MSG
-
-        async def send(message):
-            msg_type = message.get('type', '')
-            if msg_type == 'http.response.start':
-                self.status = message.get('status', 200)
-                self.headers = message.get('headers', [])
-                self._response_started_event.set()
-            elif msg_type == 'http.response.body':
-                body_part = message.get('body', b'')
-                more_body = message.get('more_body', False)
-                await self.body_queue.put((body_part, more_body))
-                if not more_body:
-                    self.finished = True
-
-        # Start app in background
-        async def run_app():
-            try:
-                await self.app(self.scope, receive, send)
-            except Exception as e:
-                self._error = e
-                self._response_started_event.set()  # Unblock waiter on error
-                await self.body_queue.put((b'', False))
-                self.finished = True
-
-        self.loop.create_task(run_app())
-
-        # Wait for response to start using event (not polling)
-        async def wait_for_start():
-            await asyncio.wait_for(
-                self._response_started_event.wait(),
-                timeout=timeout_ms / 1000.0
-            )
-
-        try:
-            self.loop.run_until_complete(wait_for_start())
-        except asyncio.TimeoutError:
-            # Timeout waiting for response headers
-            self.finished = True
-            return {'status': 504, 'headers': [], 'error': 'timeout'}
-
-        if self._error is not None:
-            return {
-                'status': 500,
-                'headers': [],
-                'error': str(self._error)
-            }
-
-        return {
-            'status': self.status or 500,
-            'headers': self.headers
-        }
-
-    def next_chunk(self, timeout_ms: int = 30000) -> tuple:
-        """Get the next body chunk.
-
-        Returns (chunk_bytes, more_body_bool)
-        """
-        if self.finished or self.loop is None:
-            return (b'', False)
-
-        try:
-            timeout_sec = timeout_ms / 1000.0
-            future = asyncio.wait_for(
-                self.body_queue.get(),
-                timeout=timeout_sec
-            )
-            chunk, more_body = self.loop.run_until_complete(future)
-            return (chunk, more_body)
-        except asyncio.TimeoutError:
-            return (b'', True)  # Timeout, but may have more
-        except Exception:
-            return (b'', False)
-
-    def close(self):
-        """Clean up resources."""
-        if self.loop:
-            try:
-                self.loop.close()
-            except Exception:
-                pass
-            self.loop = None
-
-
-def start_streaming(session_id: str, module_name: str, callable_name: str,
-                    scope: dict, body: bytes, timeout_ms: int = 5000) -> dict:
-    """Start a streaming ASGI response session.
-
-    Args:
-        session_id: Unique identifier for this streaming session
-        module_name: Python module containing the ASGI app
-        callable_name: Name of the ASGI callable
-        scope: ASGI scope dict
-        body: Request body bytes
-        timeout_ms: Max time to wait for response headers
-
-    Returns initial response headers.
-    """
-    runner = StreamingASGIRunner(module_name, callable_name, scope)
-
-    with _streaming_sessions_lock:
-        _streaming_sessions[session_id] = runner
-
-    if body.__class__ is str:
-        body = body.encode('utf-8')
-    elif body.__class__ is not bytes:
-        body = b''
-
-    return runner.start(body, timeout_ms)
-
-
-def get_streaming_chunk(session_id: str, timeout_ms: int = 30000) -> dict:
-    """Get the next chunk from a streaming session.
-
-    Returns {'chunk': bytes, 'more_body': bool}
-    """
-    with _streaming_sessions_lock:
-        runner = _streaming_sessions.get(session_id)
-
-    if runner is None:
-        return {'chunk': b'', 'more_body': False, 'error': 'session_not_found'}
-
-    chunk, more_body = runner.next_chunk(timeout_ms)
-    return {'chunk': chunk, 'more_body': more_body}
-
-
-def end_streaming(session_id: str) -> None:
-    """End a streaming session and clean up resources."""
-    with _streaming_sessions_lock:
-        runner = _streaming_sessions.pop(session_id, None)
-
-    if runner:
-        runner.close()
-
-
-def cleanup_streaming_sessions() -> int:
-    """Clean up finished streaming sessions.
-
-    Call this periodically to prevent memory leaks from abandoned sessions.
-
-    Returns the number of sessions cleaned up.
-    """
-    cleaned = 0
-    with _streaming_sessions_lock:
-        finished_ids = [
-            sid for sid, runner in _streaming_sessions.items()
-            if runner.finished or runner.loop is None
-        ]
-        for sid in finished_ids:
-            runner = _streaming_sessions.pop(sid, None)
-            if runner:
-                runner.close()
-                cleaned += 1
-    return cleaned

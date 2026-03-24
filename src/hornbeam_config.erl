@@ -29,12 +29,12 @@
 %%% - worker_class: wsgi or asgi (default: wsgi)
 %%% - http_version: List of supported HTTP versions (default: ['HTTP/1.1', 'HTTP/2'])
 %%%
-%%% === Workers ===
-%%% - workers: Number of Python workers (default: 4)
+%%% === Contexts ===
+%%% - num_contexts: Number of Python contexts (default: schedulers)
 %%% - timeout: Request timeout in ms (default: 30000)
 %%% - keepalive: Keep-alive timeout in seconds (default: 2)
-%%% - max_requests: Max requests per worker before restart (default: 1000)
-%%% - preload_app: Preload app before forking workers (default: false)
+%%% - max_requests: Max requests per context before restart (default: 1000)
+%%% - preload_app: Preload app in all contexts at startup (default: true)
 %%%
 %%% === Request Limits ===
 %%% - max_request_line_size: Max request line size (default: 4094)
@@ -138,12 +138,12 @@ defaults() ->
         %% Protocol
         worker_class => wsgi,
 
-        %% Workers
-        workers => 4,
+        %% Contexts
+        %% num_contexts defaults to schedulers in hornbeam.erl
         timeout => 30000,
         keepalive => 2,
         max_requests => 1000,
-        preload_app => false,
+        preload_app => true,
 
         %% Request limits
         max_request_line_size => 4094,
@@ -228,8 +228,8 @@ load_app_env() ->
         bind, ssl, certfile, keyfile, cacertfile,
         %% Protocol
         worker_class,
-        %% Workers
-        workers, timeout, keepalive, max_requests, preload_app,
+        %% Contexts
+        num_contexts, timeout, keepalive, max_requests, preload_app,
         %% Request limits
         max_request_line_size, max_header_size, max_headers,
         %% ASGI

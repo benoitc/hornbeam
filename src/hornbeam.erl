@@ -26,7 +26,7 @@
 %%% %% Start with options
 %%% hornbeam:start("myapp:application", #{
 %%%     bind => "0.0.0.0:8000",
-%%%     workers => 4
+%%%     num_contexts => 4
 %%% }).
 %%%
 %%% %% Start ASGI app with lifespan
@@ -38,7 +38,7 @@
 %%% %% Multi-app mode - mount different apps at different prefixes
 %%% hornbeam:start(#{
 %%%     mounts => [
-%%%         {"/api", "api:app", #{worker_class => asgi, workers => 4}},
+%%%         {"/api", "api:app", #{worker_class => asgi, num_contexts => 4}},
 %%%         {"/admin", "admin:app", #{worker_class => wsgi}},
 %%%         {"/", "frontend:app", #{worker_class => wsgi}}
 %%%     ],
@@ -66,9 +66,10 @@
 -type mount_spec() :: {Prefix :: string() | binary(), AppSpec :: app_spec(), Opts :: map()}.
 -type options() :: #{
     bind => string() | binary(),
-    workers => pos_integer(),
+    num_contexts => pos_integer(),
     num_acceptors => pos_integer(),
     worker_class => wsgi | asgi,
+    context_mode => worker | owngil,
     timeout => pos_integer(),
     keepalive => pos_integer(),
     max_requests => pos_integer(),
@@ -133,14 +134,14 @@ start(AppSpec) when is_list(AppSpec); is_binary(AppSpec) ->
 %% Options:
 %% <ul>
 %%   <li>`bind' - Address to bind to (default: "127.0.0.1:8000")</li>
-%%   <li>`workers' - Number of Python workers (default: 4)</li>
+%%   <li>`num_contexts' - Number of Python contexts (default: schedulers)</li>
 %%   <li>`num_acceptors' - Number of Cowboy acceptor processes (default: 100)</li>
 %%   <li>`worker_class' - wsgi or asgi (default: wsgi)</li>
 %%   <li>`timeout' - Request timeout in ms (default: 30000)</li>
 %%   <li>`keepalive' - Keep-alive timeout in seconds (default: 2)</li>
 %%   <li>`max_requests' - Max requests per worker before restart (default: 1000)</li>
 %%   <li>`max_concurrent' - Max concurrent requests queued (default: 10000)</li>
-%%   <li>`preload_app' - Preload app before forking workers (default: false)</li>
+%%   <li>`preload_app' - Preload app in all contexts at startup (default: true)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
 %%   <li>`venv' - Virtual environment path (default: undefined)</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
@@ -167,7 +168,7 @@ start(AppSpec, Options) ->
             hornbeam_http_hooks:set_hooks(Hooks),
 
             %% Ensure Python runtime matches requested worker count.
-            %% This may restart erlang_python when workers changed.
+            %% This may restart erlang_python when num_contexts changed.
             case ensure_python_runtime(Config1) of
                 ok ->
                     %% Register hornbeam functions for Python callbacks
@@ -180,8 +181,13 @@ start(AppSpec, Options) ->
                     %% Setup Python paths
                     setup_python_paths(Config1),
 
-                    %% Run lifespan startup for ASGI apps
+                    %% Preload app in all contexts for fast access
                     WorkerClass = maps:get(worker_class, Config1),
+                    AppModule = maps:get(app_module, Config1),
+                    AppCallable = maps:get(app_callable, Config1),
+                    hornbeam_context_pool:preload_app(WorkerClass, AppModule, AppCallable),
+
+                    %% Run lifespan startup for ASGI apps
                     case maybe_run_lifespan_startup(WorkerClass, Config1) of
                         ok ->
                             %% Start the HTTP listener
@@ -255,13 +261,13 @@ start_multi(Config) ->
             Hooks = maps:get(hooks, GlobalConfig, #{}),
             hornbeam_http_hooks:set_hooks(Hooks),
 
-            %% Calculate max workers needed (max across all mounts)
-            MaxWorkers = lists:foldl(fun(Mount, Max) ->
-                max(Max, maps:get(workers, Mount, 4))
+            %% Calculate max contexts needed (max across all mounts)
+            MaxContexts = lists:foldl(fun(Mount, Max) ->
+                max(Max, maps:get(num_contexts, Mount, 4))
             end, 4, NormalizedMounts),
 
-            %% Ensure Python runtime with max workers
-            case ensure_python_runtime(GlobalConfig#{workers => MaxWorkers}) of
+            %% Ensure Python runtime with max contexts
+            case ensure_python_runtime(GlobalConfig#{num_contexts => MaxContexts}) of
                 ok ->
                     %% Register hornbeam functions for Python callbacks
                     register_python_callbacks(),
@@ -360,7 +366,7 @@ validate_mount({Prefix, AppSpec, Opts}, GlobalConfig) ->
             %% Merge global defaults with mount-specific opts
             DefaultOpts = #{
                 worker_class => wsgi,
-                workers => maps:get(workers, GlobalConfig, 4),
+                num_contexts => maps:get(num_contexts, GlobalConfig, 4),
                 timeout => maps:get(timeout, GlobalConfig, 30000)
             },
             MountOpts = maps:merge(DefaultOpts, Opts),
@@ -372,7 +378,7 @@ validate_mount({Prefix, AppSpec, Opts}, GlobalConfig) ->
                 app_module => Module,
                 app_callable => Callable,
                 worker_class => maps:get(worker_class, MountOpts),
-                workers => maps:get(workers, MountOpts),
+                num_contexts => maps:get(num_contexts, MountOpts),
                 timeout => maps:get(timeout, MountOpts),
                 pythonpath => MountPythonpath
             };
@@ -448,12 +454,14 @@ maybe_run_multi_lifespan_startup(Mounts, Config) ->
 run_lifespan_for_mounts([], _Opts) ->
     ok;
 run_lifespan_for_mounts([Mount | Rest], Opts) ->
-    %% Store mount info in config temporarily for lifespan
-    hornbeam_config:set_config(#{
+    %% Get mount_id for per-mount state isolation
+    MountId = maps:get(mount_id, Mount),
+    %% Build mount-specific options for lifespan startup
+    MountOpts = Opts#{
         app_module => maps:get(app_module, Mount),
         app_callable => maps:get(app_callable, Mount)
-    }),
-    case hornbeam_lifespan:startup(Opts) of
+    },
+    case hornbeam_lifespan:startup(MountId, MountOpts) of
         ok -> run_lifespan_for_mounts(Rest, Opts);
         {error, _} = Error -> Error
     end.
@@ -468,8 +476,10 @@ start_listener_multi(Config) ->
     CustomRoutes = maps:get(routes, Config, []),
 
     %% Multi-app handler state - lookups mount per request
+    %% Lifespan state cached at startup (shared across mounts)
     HandlerState = #{
-        multi_app => true
+        multi_app => true,
+        lifespan_state => hornbeam_lifespan:get_state()
     },
 
     %% Default catchall route for Python apps (routes to mounts)
@@ -509,14 +519,14 @@ start_listener_multi(Config) ->
 default_config() ->
     #{
         bind => <<"127.0.0.1:8000">>,
-        workers => 4,
+        %% num_contexts defaults to erlang:system_info(schedulers) in ensure_python_runtime
         num_acceptors => 100,
         worker_class => wsgi,
         timeout => 30000,
         keepalive => 2,
         max_requests => 1000,
         max_concurrent => 10000,  % High limit for concurrent requests queued
-        preload_app => false,
+        preload_app => true,
         pythonpath => [<<".">>, <<"examples">>],
         venv => undefined,
         lifespan => auto,
@@ -537,69 +547,41 @@ parse_app_spec(AppSpec) when is_binary(AppSpec) ->
     end.
 
 ensure_python_runtime(Config) ->
-    Workers = maps:get(workers, Config, 4),
-    ok = application:set_env(erlang_python, num_workers, Workers),
-    case current_python_workers() of
-        {ok, Workers} ->
+    NumContexts = maps:get(num_contexts, Config, erlang:system_info(schedulers)),
+    ContextMode = maps:get(context_mode, Config, worker),
+    ok = application:set_env(hornbeam, context_pool_size, NumContexts),
+    ok = application:set_env(hornbeam, context_mode, ContextMode),
+    case current_context_count() of
+        {ok, NumContexts} ->
             ok;
         _ ->
-            restart_python_runtime()
+            restart_context_pool()
     end.
 
-current_python_workers() ->
-    try py_pool:get_stats() of
-        #{num_workers := NumWorkers} when is_integer(NumWorkers), NumWorkers > 0 ->
-            {ok, NumWorkers};
+restart_context_pool() ->
+    %% Restart context pool with new size
+    case supervisor:terminate_child(hornbeam_sup, hornbeam_context_pool) of
+        ok ->
+            case supervisor:restart_child(hornbeam_sup, hornbeam_context_pool) of
+                {ok, _} -> ok;
+                {ok, _, _} -> ok;
+                {error, Reason} -> {error, {context_pool_restart_failed, Reason}}
+            end;
+        {error, not_found} ->
+            ok;
+        {error, Reason} ->
+            {error, {context_pool_terminate_failed, Reason}}
+    end.
+
+current_context_count() ->
+    try hornbeam_context_pool:pool_size() of
+        N when is_integer(N), N > 0 ->
+            {ok, N};
         _ ->
             {error, unknown}
     catch
         _:_ ->
             {error, unavailable}
-    end.
-
-restart_python_runtime() ->
-    case application:stop(erlang_python) of
-        ok ->
-            start_python_runtime();
-        {error, {not_started, erlang_python}} ->
-            start_python_runtime();
-        {error, Reason} ->
-            {error, {python_stop_failed, Reason}}
-    end.
-
-start_python_runtime() ->
-    case application:start(erlang_python) of
-        ok ->
-            refresh_lifespan_manager();
-        {error, {already_started, erlang_python}} ->
-            refresh_lifespan_manager();
-        {error, Reason} ->
-            {error, {python_start_failed, Reason}}
-    end.
-
-refresh_lifespan_manager() ->
-    case whereis(hornbeam_lifespan) of
-        undefined ->
-            ok;
-        _ ->
-            case supervisor:terminate_child(hornbeam_sup, hornbeam_lifespan) of
-                ok ->
-                    restart_lifespan_manager();
-                {error, not_found} ->
-                    ok;
-                {error, Reason} ->
-                    {error, {lifespan_terminate_failed, Reason}}
-            end
-    end.
-
-restart_lifespan_manager() ->
-    case supervisor:restart_child(hornbeam_sup, hornbeam_lifespan) of
-        {ok, _Pid} ->
-            ok;
-        {ok, _Pid, _Info} ->
-            ok;
-        {error, Reason} ->
-            {error, {lifespan_restart_failed, Reason}}
     end.
 
 setup_python_paths(Config) ->
@@ -647,7 +629,11 @@ setup_python_paths(Config) ->
             "import sys; sys.path.insert(0, '~s') if '~s' not in sys.path else None",
             [AbsPath, AbsPath]),
         py:exec(Code)
-    end, AbsPaths).
+    end, AbsPaths),
+
+    %% Also add paths to all contexts in the pool
+    %% This is needed because context_call uses separate Python contexts
+    hornbeam_context_pool:add_paths(AbsPaths).
 
 maybe_run_lifespan_startup(asgi, Config) ->
     LifespanMode = maps:get(lifespan, Config, auto),
@@ -669,11 +655,13 @@ start_listener(Config) ->
 
     %% Cache frequently accessed config values in handler state to avoid
     %% repeated ETS lookups per request
+    %% Lifespan state is fetched once here since it doesn't change after startup
     HandlerState = #{
         worker_class => WorkerClass,
         app_module => maps:get(app_module, Config),
         app_callable => maps:get(app_callable, Config),
-        timeout => maps:get(timeout, Config, 30000)
+        timeout => maps:get(timeout, Config, 30000),
+        lifespan_state => hornbeam_lifespan:get_state()
     },
 
     %% Default catchall route for Python app

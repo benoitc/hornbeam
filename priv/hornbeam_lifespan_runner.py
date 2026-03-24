@@ -48,7 +48,13 @@ def _install_erlang_loop() -> bool:
 _install_erlang_loop()
 
 
-# Global lifespan state shared across requests
+# Per-mount lifespan state for multi-app mode
+_lifespan_states: Dict[str, Dict[str, Any]] = {}
+
+# Per-mount lifespan tracking for multi-app mode
+_mount_lifespans: Dict[str, dict] = {}
+
+# Global lifespan state for single-app mode (backward compat)
 _lifespan_state: Dict[str, Any] = {}
 _lifespan_app = None
 _lifespan_task = None
@@ -239,6 +245,214 @@ def shutdown(app_module: str, app_callable: str) -> dict:
         _cleanup()
 
 
+def startup_mount(mount_id: str, app_module: str, app_callable: str,
+                  timeout_ms: int = 30000) -> dict:
+    """Run lifespan startup protocol for a specific mount.
+
+    This is used in multi-app mode to run lifespan per mounted app.
+    Each mount gets its own isolated state dict.
+
+    Args:
+        mount_id: Unique identifier for this mount
+        app_module: Python module containing the ASGI app
+        app_callable: Name of the ASGI callable
+        timeout_ms: Timeout for startup in milliseconds (default: 30000)
+
+    Returns:
+        Response dict with type and optional state
+    """
+    global _lifespan_states, _mount_lifespans
+
+    # erlang_python converts binaries to str in C - no decode needed
+
+    # Load the app
+    try:
+        app = load_app(app_module, app_callable)
+    except Exception as e:
+        return {'type': 'lifespan.startup.failed', 'message': str(e)}
+
+    # Create per-mount event loop and queues
+    loop = asyncio.new_event_loop()
+    receive_queue = asyncio.Queue()
+    send_queue = asyncio.Queue()
+
+    # Initialize state dict for this mount
+    mount_state: Dict[str, Any] = {}
+    _lifespan_states[mount_id] = mount_state
+
+    # Build lifespan scope with per-mount state
+    scope = {
+        'type': 'lifespan',
+        'asgi': {
+            'version': '3.0',
+            'spec_version': '2.4'
+        },
+        'state': mount_state
+    }
+
+    # Create lifespan runner for this mount
+    async def run_mount_lifespan():
+        async def receive():
+            return await receive_queue.get()
+        async def send(message):
+            await send_queue.put(message)
+        try:
+            await app(scope, receive, send)
+        except Exception as e:
+            await send_queue.put({
+                'type': 'lifespan.startup.failed',
+                'message': str(e)
+            })
+
+    # Start the lifespan task
+    task = loop.create_task(run_mount_lifespan())
+
+    # Store mount lifespan tracking
+    _mount_lifespans[mount_id] = {
+        'app': app,
+        'task': task,
+        'loop': loop,
+        'receive_queue': receive_queue,
+        'send_queue': send_queue
+    }
+
+    # Send startup event
+    loop.run_until_complete(receive_queue.put({'type': 'lifespan.startup'}))
+
+    # Wait for response
+    async def wait_for_response():
+        await asyncio.sleep(0.01)
+        if task.done():
+            return None
+        total_timeout = timeout_ms / 1000.0
+        check_interval = 0.5
+        elapsed = 0.0
+        while elapsed < total_timeout:
+            try:
+                response = await asyncio.wait_for(
+                    send_queue.get(),
+                    timeout=check_interval
+                )
+                return response
+            except asyncio.TimeoutError:
+                if task.done():
+                    return None
+                elapsed += check_interval
+        raise asyncio.TimeoutError()
+
+    try:
+        response = loop.run_until_complete(wait_for_response())
+        if response is None:
+            _cleanup_mount(mount_id)
+            return {'type': 'lifespan.not_supported'}
+    except asyncio.TimeoutError:
+        return {'type': 'lifespan.startup.failed',
+                'message': 'Startup timeout'}
+    except Exception as e:
+        return {'type': 'lifespan.startup.failed', 'message': str(e)}
+
+    msg_type = response.get('type', '')
+
+    if msg_type == 'lifespan.startup.complete':
+        # Store state for access by requests
+        _lifespan_states[mount_id] = scope.get('state', {})
+        return {
+            'type': 'lifespan.startup.complete',
+            'state': _lifespan_states[mount_id]
+        }
+    elif msg_type == 'lifespan.startup.failed':
+        _cleanup_mount(mount_id)
+        return response
+    else:
+        _cleanup_mount(mount_id)
+        return {'type': 'lifespan.not_supported'}
+
+
+def shutdown_mount(mount_id: str, app_module: str, app_callable: str) -> dict:
+    """Run lifespan shutdown protocol for a specific mount.
+
+    Args:
+        mount_id: Unique identifier for this mount
+        app_module: Python module (for reference)
+        app_callable: ASGI callable name (for reference)
+
+    Returns:
+        Response dict with shutdown status
+    """
+    global _mount_lifespans, _lifespan_states
+
+    # erlang_python converts binaries to str in C - no decode needed
+
+    if mount_id not in _mount_lifespans:
+        return {'type': 'lifespan.shutdown.complete'}
+
+    mount = _mount_lifespans[mount_id]
+    task = mount['task']
+    loop = mount['loop']
+    receive_queue = mount['receive_queue']
+    send_queue = mount['send_queue']
+
+    try:
+        # Send shutdown event
+        loop.run_until_complete(
+            receive_queue.put({'type': 'lifespan.shutdown'})
+        )
+
+        # Wait for response
+        try:
+            response = loop.run_until_complete(
+                asyncio.wait_for(send_queue.get(), timeout=10.0)
+            )
+        except asyncio.TimeoutError:
+            response = {'type': 'lifespan.shutdown.complete'}
+
+        # Wait for task to finish
+        try:
+            loop.run_until_complete(
+                asyncio.wait_for(task, timeout=5.0)
+            )
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                pass
+
+        return response
+
+    except Exception as e:
+        return {'type': 'lifespan.shutdown.complete',
+                'error': str(e)}
+    finally:
+        _cleanup_mount(mount_id)
+
+
+def _cleanup_mount(mount_id: str):
+    """Clean up lifespan state for a specific mount."""
+    global _mount_lifespans, _lifespan_states
+
+    if mount_id in _mount_lifespans:
+        mount = _mount_lifespans[mount_id]
+        task = mount.get('task')
+        loop = mount.get('loop')
+
+        if task and not task.done():
+            task.cancel()
+            if loop:
+                try:
+                    loop.run_until_complete(task)
+                except asyncio.CancelledError:
+                    pass
+
+        if loop:
+            loop.close()
+
+        del _mount_lifespans[mount_id]
+
+    if mount_id in _lifespan_states:
+        del _lifespan_states[mount_id]
+
+
 def _cleanup():
     """Clean up lifespan state."""
     global _lifespan_app, _lifespan_task, _receive_queue, _send_queue, _loop
@@ -261,13 +475,24 @@ def _cleanup():
     _loop = None
 
 
-def get_state() -> dict:
+def get_state(mount_id: Optional[str] = None) -> dict:
     """Get the lifespan state dict.
 
     This returns the actual dict (not a copy) so that modifications
     by request handlers persist across requests - as per ASGI spec.
+
+    Args:
+        mount_id: Optional mount identifier for multi-app mode.
+                  If None, returns single-app mode state.
+
+    Returns:
+        The lifespan state dict for the specified mount (or global state).
     """
-    return _lifespan_state
+    if mount_id is None:
+        return _lifespan_state
+
+    # erlang_python converts binaries to str in C - no decode needed
+    return _lifespan_states.get(mount_id, {})
 
 
 def set_state(key: str, value: Any) -> None:

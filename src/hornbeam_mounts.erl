@@ -22,9 +22,9 @@
 %%% %% Register mounts
 %%% hornbeam_mounts:register([
 %%%     #{prefix => <<"/api">>, app_module => <<"api">>, app_callable => <<"app">>,
-%%%       worker_class => asgi, workers => 4, timeout => 30000},
+%%%       worker_class => asgi, timeout => 30000},
 %%%     #{prefix => <<"/">>, app_module => <<"frontend">>, app_callable => <<"app">>,
-%%%       worker_class => wsgi, workers => 2, timeout => 30000}
+%%%       worker_class => wsgi, timeout => 30000}
 %%% ]).
 %%%
 %%% %% Lookup a path
@@ -55,8 +55,9 @@
     app_module := binary(),
     app_callable := binary(),
     worker_class := wsgi | asgi,
-    workers := pos_integer(),
-    timeout := pos_integer()
+    timeout := pos_integer(),
+    mount_id => binary(),           %% 6-char random ID for routing
+    pythonpath => [binary()]        %% Additional Python paths for this mount
 }.
 
 -export_type([mount/0]).
@@ -111,14 +112,30 @@ init([]) ->
     {ok, #{}}.
 
 handle_call({register, Mounts}, _From, State) ->
+    %% Generate mount_id for each mount and sort by prefix length
+    MountsWithIds = lists:map(fun(Mount) ->
+        MountId = case maps:get(mount_id, Mount, undefined) of
+            undefined -> generate_mount_id();
+            Existing -> Existing
+        end,
+        Mount#{mount_id => MountId}
+    end, Mounts),
+
+    %% Setup pythonpath and preload apps at registration time (not per-request)
+    lists:foreach(fun(Mount) ->
+        setup_mount_pythonpath(Mount),
+        setup_mount_imports(Mount)
+    end, MountsWithIds),
+
     %% Sort mounts by prefix length descending (longest first)
     SortedMounts = lists:sort(
         fun(#{prefix := P1}, #{prefix := P2}) ->
             byte_size(P1) >= byte_size(P2)
         end,
-        Mounts
+        MountsWithIds
     ),
     ets:insert(?TABLE, {sorted_mounts, SortedMounts}),
+
     {reply, ok, State};
 
 handle_call(clear, _From, State) ->
@@ -203,3 +220,37 @@ strip_prefix(Path, Prefix) ->
                     end
             end
     end.
+
+%% @private
+%% Generate a 6-character URL-safe random ID for mount routing.
+%% Uses 3 random bytes encoded as URL-safe base64 (no padding).
+generate_mount_id() ->
+    Bytes = crypto:strong_rand_bytes(3),
+    %% URL-safe base64 encoding (replaces + with - and / with _)
+    B64 = base64:encode(Bytes),
+    %% Replace unsafe characters and remove padding
+    binary:replace(binary:replace(B64, <<"+">>, <<"-">>), <<"/">>, <<"_">>).
+
+%% @private
+%% Setup mount's pythonpath at registration time (called once, not per-request).
+setup_mount_pythonpath(Mount) ->
+    case maps:get(pythonpath, Mount, []) of
+        [] ->
+            ok;
+        Paths when is_list(Paths) ->
+            lists:foreach(fun(Path) ->
+                PathBin = if
+                    is_binary(Path) -> Path;
+                    is_list(Path) -> list_to_binary(Path);
+                    true -> Path
+                end,
+                py_import:add_path(PathBin)
+            end, Paths)
+    end.
+
+%% @private
+%% Preload app module at registration time for both WSGI and ASGI.
+setup_mount_imports(Mount) ->
+    AppModule = maps:get(app_module, Mount),
+    AppCallable = maps:get(app_callable, Mount),
+    py_import:ensure_imported(AppModule, AppCallable).
