@@ -26,8 +26,7 @@ Architecture:
 """
 
 import io
-import threading
-from typing import Callable, Dict, Tuple
+from typing import Callable, Tuple
 
 try:
     import erlang
@@ -160,23 +159,6 @@ def _parse_status(status_str) -> int:
         return 500
 
 
-def _process_environ(environ_map: dict) -> dict:
-    """Convert all binary keys/values to strings."""
-    environ = _ENVIRON_TEMPLATE.copy()
-
-    for key, value in environ_map.items():
-        str_key = key.decode('utf-8') if isinstance(key, bytes) else str(key)
-        if isinstance(value, bytes):
-            str_value = value.decode('utf-8', errors='replace')
-        elif value is None or (hasattr(value, '__class__') and value.__class__.__name__ == 'Atom'):
-            str_value = ''
-        else:
-            str_value = str(value) if not isinstance(value, str) else value
-        environ[str_key] = str_value
-
-    return environ
-
-
 # ============================================================================
 # Response class
 # ============================================================================
@@ -210,53 +192,6 @@ class _Response:
         if not self.status:
             raise RuntimeError("write() called before start_response()")
         self._write_buffer.append(data)
-
-
-# ============================================================================
-# Entry point - setup and call app
-# ============================================================================
-
-def handle_request(caller_pid, buffer, app_module: bytes, app_callable: bytes, environ_map: dict):
-    """Entry point - use py_buffer as wsgi.input, call app.
-
-    Args:
-        caller_pid: Erlang PID to send response to
-        buffer: py_buffer for request body, or 'empty' atom for bodyless requests
-        app_module: Python module containing WSGI app (bytes)
-        app_callable: Name of WSGI callable in module (bytes)
-        environ_map: Pre-built environ dict from Erlang
-
-    Returns:
-        'done' on success, or schedule_inline marker for continuation
-    """
-    if not HAS_ERLANG:
-        return b'error'
-
-    try:
-        # Convert bytes to strings
-        # erlang_python converts binaries to str in C
-        module_name = app_module
-        callable_name = app_callable
-
-        # Process environ (convert bytes to strings)
-        environ = _process_environ(environ_map)
-
-        # Use buffer as wsgi.input, or empty BytesIO for bodyless requests
-        if buffer == b'empty' or (hasattr(buffer, '__class__') and buffer.__class__.__name__ == 'Atom'):
-            environ['wsgi.input'] = io.BytesIO()
-        else:
-            environ['wsgi.input'] = buffer
-        environ['wsgi.errors'] = _SHARED_ERRORS
-
-        # Call app directly (faster than schedule_inline for simple requests)
-        return _call_app(caller_pid, module_name, callable_name, environ)
-
-    except Exception as e:
-        try:
-            erlang.send(caller_pid, (b'error', str(e).encode('utf-8')))
-        except Exception:
-            pass
-        return b'error'
 
 
 def _call_app(caller_pid, module_name: str, callable_name: str, environ: dict):

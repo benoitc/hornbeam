@@ -22,7 +22,7 @@
 %%% - hornbeam_callbacks: Erlang callback registry
 %%% - hornbeam_pubsub: Pub/sub messaging
 %%% - hornbeam_lifespan: ASGI lifespan management
-%%% - hornbeam_pool: Python context pool
+%%% - hornbeam_context_pool: Python context pool
 %%% - hornbeam_hooks: Hooks-style execution API
 %%% - hornbeam_channel_registry: Channel topic pattern matching
 %%% - hornbeam_presence: Distributed presence tracking (CRDT)

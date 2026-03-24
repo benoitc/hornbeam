@@ -28,9 +28,7 @@
     start_link/1,
     get_context/0,
     get_context_ref/0,
-    get_context_rr/0,
     pool_size/0,
-    stats/0,
     add_paths/1,
     preload_app/3
 ]).
@@ -73,25 +71,10 @@ get_context_ref() ->
     {Ref, _InterpId} = get_context(),
     Ref.
 
-%% @doc Get a context using round-robin selection.
-%%
-%% Uses an atomic counter for fair distribution across all contexts.
--spec get_context_rr() -> {reference(), non_neg_integer()}.
-get_context_rr() ->
-    N = persistent_term:get(hornbeam_context_pool_size),
-    Counter = atomics:add_get(persistent_term:get(hornbeam_context_counter), 1, 1),
-    Id = (Counter - 1) rem N,
-    persistent_term:get({hornbeam_context, Id}).
-
 %% @doc Get the pool size.
 -spec pool_size() -> pos_integer().
 pool_size() ->
     persistent_term:get(hornbeam_context_pool_size).
-
-%% @doc Get pool statistics.
--spec stats() -> map().
-stats() ->
-    gen_server:call(?MODULE, stats).
 
 %% @doc Add paths to sys.path in all contexts.
 %%
@@ -132,13 +115,6 @@ init([]) ->
     persistent_term:put(hornbeam_context_pool_size, PoolSize),
 
     {ok, #state{pool_size = PoolSize, nif_refs = NifRefs}}.
-
-handle_call(stats, _From, #state{pool_size = PoolSize} = State) ->
-    Stats = #{
-        pool_size => PoolSize,
-        execution_mode => py_nif:execution_mode()
-    },
-    {reply, Stats, State};
 
 handle_call({add_paths, Paths}, _From, #state{nif_refs = NifRefs} = State) ->
     %% Add paths to all contexts
