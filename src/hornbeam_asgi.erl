@@ -92,8 +92,8 @@ init(Req, HandlerState) ->
             {empty, undefined}
     end,
 
-    %% Submit task directly to main event loop
-    {ok, LoopRef} = py_event_loop:get_loop(),
+    %% Submit task to event loop pool for parallel distribution
+    {ok, LoopRef} = py_event_loop_pool:get_loop(),
     TaskRef = make_ref(),
     ok = py_nif:submit_task(LoopRef, self(), TaskRef,
         <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
