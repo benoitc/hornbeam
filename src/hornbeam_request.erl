@@ -122,7 +122,7 @@ build_asgi_scope(Req, State) ->
     end.
 
 %% @doc Convert header name to WSGI HTTP_* format.
-%% "accept-encoding" -> <<"HTTP_ACCEPT_ENCODING">>
+%% Example: "accept-encoding" becomes "HTTP_ACCEPT_ENCODING"
 -spec to_wsgi_header_key(binary()) -> binary().
 to_wsgi_header_key(Name) ->
     Upper = to_upper_underscore(Name),
@@ -168,7 +168,7 @@ convert_headers_wsgi(Headers) ->
 
 %% @private
 %% Convert lowercase header to uppercase with underscores.
-%% "accept-encoding" -> <<"ACCEPT_ENCODING">>
+%% Example: "accept-encoding" becomes "ACCEPT_ENCODING"
 to_upper_underscore(Bin) ->
     << <<(upper_char(C))>> || <<C>> <= Bin >>.
 
