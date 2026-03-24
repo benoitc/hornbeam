@@ -286,9 +286,9 @@ async def handle_asgi(caller_pid, app_module: str, app_callable: str,
     # Get app (cached)
     app = _get_app(app_module, app_callable)
 
-    # Use lazy state proxy (no whereis, lazy ETS access via callback)
+    # Use cached state proxy (shared per mount_id)
     mount_id = scope.get('mount_id')
-    scope['state'] = _LazyStateProxy(mount_id)
+    scope['state'] = _get_state_proxy(mount_id)
 
     # Create body receiver (handles body mode detection)
     body_receiver = BodyReceiver(req_body_ref)
@@ -306,6 +306,9 @@ import sys
 
 # Cache apps by (module, callable) key - modules already imported by Erlang
 _app_cache: dict = {}
+
+# Cache state proxies by mount_id - shared across requests for same mount
+_state_cache: dict = {}
 
 
 def _get_app(module_name: str, callable_name: str) -> Callable:
@@ -335,6 +338,17 @@ def preload_app(app_module: str, app_callable: str) -> bytes:
     """Preload ASGI application at startup."""
     _get_app(app_module, app_callable)
     return b'ok'
+
+
+def _get_state_proxy(mount_id):
+    """Get cached state proxy for mount_id, creating if needed."""
+    if mount_id is None:
+        return _LazyStateProxy(None)
+    proxy = _state_cache.get(mount_id)
+    if proxy is None:
+        proxy = _LazyStateProxy(mount_id)
+        _state_cache[mount_id] = proxy
+    return proxy
 
 
 class _LazyStateProxy(dict):

@@ -122,9 +122,10 @@ handle_call({register, Mounts}, _From, State) ->
         Mount#{mount_id => MountId}
     end, Mounts),
 
-    %% Setup pythonpath for each mount at registration time (not per-request)
+    %% Setup pythonpath and preload apps at registration time (not per-request)
     lists:foreach(fun(Mount) ->
-        setup_mount_pythonpath(Mount)
+        setup_mount_pythonpath(Mount),
+        setup_mount_imports(Mount)
     end, MountsWithIds),
 
     %% Sort mounts by prefix length descending (longest first)
@@ -244,7 +245,13 @@ setup_mount_pythonpath(Mount) ->
                     is_list(Path) -> list_to_binary(Path);
                     true -> Path
                 end,
-                py:eval(<<"__import__('sys').path.insert(0, p) if p not in __import__('sys').path else None">>,
-                        #{p => PathBin})
+                py_import:add_path(PathBin)
             end, Paths)
     end.
+
+%% @private
+%% Preload app module at registration time for both WSGI and ASGI.
+setup_mount_imports(Mount) ->
+    AppModule = maps:get(app_module, Mount),
+    AppCallable = maps:get(app_callable, Mount),
+    py_import:ensure_imported(AppModule, AppCallable).

@@ -12,10 +12,10 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
-%%% @doc Context pool using persistent_term for zero-copy access.
+%%% @doc Context pool using py_context_router with cached NIF refs.
 %%%
-%%% Stores Python context references in persistent_term for O(1) lookup
-%%% with no message passing or copying overhead.
+%%% Uses py_context_router for context lifecycle management and caches
+%%% NIF references in persistent_term for O(1) lookup without message passing.
 %%%
 %%% Each context is a sub-interpreter (Python 3.12+) or worker thread.
 %%% With free-threading Python (3.13+), contexts execute truly in parallel.
@@ -43,7 +43,8 @@
 -record(state, {
     pool_size :: pos_integer(),
     context_mode :: worker | owngil,
-    contexts :: #{pos_integer() => reference()}
+    contexts :: [pid()],          %% Context pids from py_context_router
+    nif_refs :: #{pos_integer() => reference()}  %% Cached NIF refs
 }).
 
 -define(DEFAULT_POOL_SIZE, erlang:system_info(schedulers)).
@@ -135,12 +136,24 @@ init(Opts) ->
     Counter = atomics:new(1, [{signed, false}]),
     persistent_term:put(hornbeam_context_counter, Counter),
 
-    %% Create contexts and store in persistent_term
-    Contexts = create_contexts(PoolSize, ContextMode),
+    %% Start py_context_router if not already started
+    case py_context_router:is_started() of
+        true -> ok;
+        false ->
+            {ok, _} = py_context_router:start(#{contexts => PoolSize, mode => ContextMode})
+    end,
+
+    %% Get contexts from py_context_router and cache NIF refs
+    Contexts = py_context_router:contexts(),
+    NifRefs = cache_nif_refs(Contexts),
+
+    %% Setup hornbeam-specific modules in each context
+    setup_contexts(NifRefs),
 
     persistent_term:put(hornbeam_context_pool_size, PoolSize),
 
-    {ok, #state{pool_size = PoolSize, context_mode = ContextMode, contexts = Contexts}}.
+    {ok, #state{pool_size = PoolSize, context_mode = ContextMode,
+                contexts = Contexts, nif_refs = NifRefs}}.
 
 handle_call(stats, _From, #state{pool_size = PoolSize, context_mode = ContextMode} = State) ->
     Stats = #{
@@ -150,15 +163,15 @@ handle_call(stats, _From, #state{pool_size = PoolSize, context_mode = ContextMod
     },
     {reply, Stats, State};
 
-handle_call({add_paths, Paths}, _From, #state{contexts = Contexts} = State) ->
+handle_call({add_paths, Paths}, _From, #state{nif_refs = NifRefs} = State) ->
     %% Add paths to all contexts
     maps:foreach(fun(_Id, Ref) ->
         add_paths_to_context(Ref, Paths)
-    end, Contexts),
+    end, NifRefs),
     {reply, ok, State};
 
 handle_call({preload_app, WorkerClass, AppModule, AppCallable}, _From,
-            #state{contexts = Contexts} = State) ->
+            #state{nif_refs = NifRefs} = State) ->
     %% Preload app in all contexts
     WorkerModule = case WorkerClass of
         wsgi -> <<"hornbeam_wsgi_worker">>;
@@ -172,7 +185,7 @@ handle_call({preload_app, WorkerClass, AppModule, AppCallable}, _From,
                 error_logger:warning_msg(
                     "hornbeam: failed to preload app in context: ~p~n", [Err])
         end
-    end, Contexts),
+    end, NifRefs),
     {reply, ok, State};
 
 handle_call(_Request, _From, State) ->
@@ -184,13 +197,8 @@ handle_cast(_Request, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{pool_size = PoolSize, contexts = Contexts}) ->
-    %% Destroy contexts
-    maps:foreach(fun(_Id, Ref) ->
-        catch py_nif:context_destroy(Ref)
-    end, Contexts),
-
-    %% Clean up persistent_term entries
+terminate(_Reason, #state{pool_size = PoolSize}) ->
+    %% py_context_router manages context lifecycle, just clean up our cached refs
     lists:foreach(fun(Id) ->
         catch persistent_term:erase({hornbeam_context, Id})
     end, lists:seq(0, PoolSize - 1)),
@@ -202,15 +210,42 @@ terminate(_Reason, #state{pool_size = PoolSize, contexts = Contexts}) ->
 %% Internal functions
 %% ============================================================================
 
-create_contexts(PoolSize, ContextMode) ->
+%% @private
+%% Cache NIF refs from py_context_router contexts in persistent_term
+cache_nif_refs(Contexts) ->
+    {NifRefs, _} = lists:foldl(fun(Ctx, {Acc, Id}) ->
+        Ref = py_context:get_nif_ref(Ctx),
+        InterpId = case py_context:get_interp_id(Ctx) of
+            {ok, IId} -> IId;
+            _ -> Id
+        end,
+        persistent_term:put({hornbeam_context, Id}, {Ref, InterpId}),
+        {maps:put(Id, Ref, Acc), Id + 1}
+    end, {#{}, 0}, Contexts),
+    NifRefs.
+
+%% @private
+%% Setup hornbeam-specific modules in each context
+setup_contexts(NifRefs) ->
     PrivDir = code:priv_dir(hornbeam),
     PrivDirBin = list_to_binary(PrivDir),
-
-    lists:foldl(fun(Id, Acc) ->
-        {Ref, InterpId} = create_context(Id, PrivDirBin, ContextMode),
-        persistent_term:put({hornbeam_context, Id}, {Ref, InterpId}),
-        maps:put(Id, Ref, Acc)
-    end, #{}, lists:seq(0, PoolSize - 1)).
+    SetupCode = <<"
+import sys
+priv_dir = '", PrivDirBin/binary, "'
+if priv_dir not in sys.path:
+    sys.path.insert(0, priv_dir)
+import hornbeam_wsgi_worker
+import hornbeam_asgi_worker
+">>,
+    maps:foreach(fun(Id, Ref) ->
+        case py_nif:context_exec(Ref, SetupCode) of
+            ok -> ok;
+            {error, SetupError} ->
+                error_logger:warning_msg(
+                    "hornbeam_context_pool: context ~p setup warning: ~p~n",
+                    [Id, SetupError])
+        end
+    end, NifRefs).
 
 %% @private
 %% Add paths to a context's sys.path
@@ -229,35 +264,3 @@ add_paths_to_context(Ref, Paths) ->
                 error_logger:warning_msg("Failed to add path ~s to context: ~p~n", [AbsPath, Err])
         end
     end, Paths).
-
-create_context(Id, PrivDir, ContextMode) ->
-    case py_nif:context_create(ContextMode) of
-        {ok, Ref, InterpId} ->
-            %% Set up callback handler (for erlang.call from Python)
-            py_nif:context_set_callback_handler(Ref, self()),
-
-            %% Extend erlang module first (must happen before importing workers)
-            %% This makes erlang.send, erlang.call, erlang.schedule_inline available
-            py_context:extend_erlang_module_in_context(Ref),
-
-            %% Add priv dir to sys.path and preload worker modules
-            SetupCode = <<"
-import sys
-priv_dir = '", PrivDir/binary, "'
-if priv_dir not in sys.path:
-    sys.path.insert(0, priv_dir)
-import hornbeam_wsgi_worker
-import hornbeam_asgi_worker
-">>,
-            case py_nif:context_exec(Ref, SetupCode) of
-                ok -> ok;
-                {error, SetupError} ->
-                    error_logger:warning_msg(
-                        "hornbeam_context_pool: context ~p setup warning: ~p~n",
-                        [Id, SetupError])
-            end,
-
-            {Ref, InterpId};
-        {error, Reason} ->
-            error({context_create_failed, Id, Reason})
-    end.
