@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **erlang_python v3.0**: Track the simplified execution model
+  - Switched dep to `feature/simplify-execution-model` (worker / owngil modes only)
+  - `config/sys.config`: replaced obsolete `num_workers` key with `num_contexts`
+  - Python runners (`asgi`, `lifespan`, `websocket`): import `erlang` instead of
+    the removed `erlang_loop` shim and skip `asyncio.set_event_loop_policy` on
+    Python 3.14+ (deprecated in 3.14, removed in 3.16)
+
 - **Shared Context Pool**: All mounts now share the default `py_context_router` pool
   - Removed per-mount `workers` option (use global pool size instead)
   - Better resource utilization across multiple mounted apps

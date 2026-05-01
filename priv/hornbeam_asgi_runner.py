@@ -28,9 +28,13 @@ from typing import List, Dict, Any, Optional
 # Install erlang event loop as the default event loop policy (once per interpreter)
 def _install_erlang_loop() -> bool:
     """Install erlang event loop as the default asyncio event loop policy."""
+    if sys.version_info >= (3, 14):
+        # asyncio.set_event_loop_policy is deprecated in 3.14 / removed in 3.16.
+        # erlang.run() and asyncio.Runner(loop_factory=...) provide the loop directly.
+        return False
     try:
-        from erlang_loop import get_event_loop_policy
-        asyncio.set_event_loop_policy(get_event_loop_policy())
+        import erlang
+        asyncio.set_event_loop_policy(erlang.get_event_loop_policy())
         return True
     except (ImportError, AttributeError, RuntimeError):
         return False
