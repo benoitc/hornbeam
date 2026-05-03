@@ -58,6 +58,21 @@ def _call_erlang(name: str, *args) -> Any:
     return erl.call(name, *args)
 
 
+def _is_atom(val: Any, name: str) -> bool:
+    """Compare a value to an Erlang atom name. erlang_python may surface
+    atoms as ``erlang.Atom``, ``bytes``, or ``str`` depending on the
+    path; normalise so callers don't have to."""
+    if isinstance(val, str):
+        return val == name
+    if isinstance(val, bytes):
+        return val == name.encode()
+    # erlang.Atom: rely on str() since rich-compare against str returns
+    # NotImplemented (atoms only compare equal to other atoms).
+    if HAS_ERLANG and isinstance(val, getattr(erl, 'Atom', tuple())):
+        return str(val) == name
+    return False
+
+
 # =============================================================================
 # Hook Registration API
 # =============================================================================
@@ -139,9 +154,9 @@ def execute(app_path: str, action: str, *args, **kwargs) -> Any:
     result = _call_erlang('hornbeam_hooks_execute',
                           app_path, action, list(args), kwargs)
     if isinstance(result, tuple):
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             return result[1]
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"Execute failed: {result[1]}")
     return result
 
@@ -168,9 +183,9 @@ def execute_async(app_path: str, action: str, *args, **kwargs) -> str:
     result = _call_erlang('hornbeam_hooks_execute_async',
                           app_path, action, list(args), kwargs)
     if isinstance(result, tuple):
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             return result[1]
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"Execute async failed: {result[1]}")
     return result
 
@@ -190,9 +205,9 @@ def await_result(task_id: str, timeout_ms: int = 30000) -> Any:
     """
     result = _call_erlang('hornbeam_hooks_await_result', task_id, timeout_ms)
     if isinstance(result, tuple):
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             return result[1]
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"Await failed: {result[1]}")
     return result
 
@@ -219,9 +234,9 @@ def stream(app_path: str, action: str, *args, **kwargs) -> Generator[Any, None, 
                           [app_path, action, list(args), kwargs])
 
     if isinstance(result, tuple):
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"Stream failed: {result[1]}")
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             # result[1] is a reference to Erlang generator function
             gen_ref = result[1]
             while True:
@@ -229,9 +244,9 @@ def stream(app_path: str, action: str, *args, **kwargs) -> Generator[Any, None, 
                 if chunk == 'done':
                     break
                 if isinstance(chunk, tuple):
-                    if chunk[0] == 'value':
+                    if _is_atom(chunk[0], 'value'):
                         yield chunk[1]
-                    elif chunk[0] == 'error':
+                    elif _is_atom(chunk[0], 'error'):
                         raise RuntimeError(f"Stream error: {chunk[1]}")
 
 
@@ -327,9 +342,9 @@ def rpc_call(node: str, module: str, function: str, args: list,
     result = _call_erlang('hornbeam_dist', 'rpc_call',
                           [node, module, function, args, timeout_ms])
     if isinstance(result, tuple):
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             return result[1]
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"RPC failed: {result[1]}")
     return result
 
@@ -366,9 +381,9 @@ def call(name: str, *args) -> ErlValue:
     """Call registered Erlang function."""
     result = _call_erlang('hornbeam_callbacks', 'call', [name, list(args)])
     if isinstance(result, tuple):
-        if result[0] == 'ok':
+        if _is_atom(result[0], 'ok'):
             return result[1]
-        if result[0] == 'error':
+        if _is_atom(result[0], 'error'):
             raise RuntimeError(f"Call failed: {result[1]}")
     return result
 

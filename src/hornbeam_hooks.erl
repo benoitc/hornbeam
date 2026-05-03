@@ -51,6 +51,7 @@
     execute_async/4,
     await_result/2,
     stream/4,
+    stream_ref/4,
     stream_next_ref/1,
     find/1,
     all/0
@@ -171,10 +172,58 @@ stream(AppPath, Action, Args, Kwargs) when is_binary(AppPath), is_binary(Action)
             stream_python_registered(AppPath, Action, Args, Kwargs)
     end.
 
+%% Generator storage: ETS so callers can drive next/cleanup without
+%% serialising through the hooks gen_server (which itself wants to call
+%% back into Python and would otherwise deadlock with the caller's
+%% context).
+-define(GEN_TABLE, hornbeam_hooks_generators).
+
 %% @doc Call next on a stored generator ref.
 -spec stream_next_ref(GenRef :: reference()) -> {value, term()} | done | {error, term()}.
 stream_next_ref(GenRef) ->
-    gen_server:call(?SERVER, {stream_next_ref, GenRef}, infinity).
+    case ets:lookup(?GEN_TABLE, GenRef) of
+        [{_, GenFun}] ->
+            case GenFun() of
+                done ->
+                    ets:delete(?GEN_TABLE, GenRef),
+                    done;
+                {value, _} = V ->
+                    V;
+                {error, Reason} ->
+                    ets:delete(?GEN_TABLE, GenRef),
+                    {error, Reason}
+            end;
+        [] ->
+            {error, generator_not_found}
+    end.
+
+%% @doc Start a stream and store the generator under an opaque ref so
+%% the Python side (which can't carry an Erlang fun across the bridge)
+%% has something it can hand back to {@link stream_next_ref/1}.
+-spec stream_ref(AppPath :: binary(), Action :: binary(),
+                 Args :: list(), Kwargs :: map()) ->
+    {ok, reference()} | {error, term()}.
+stream_ref(AppPath, Action, Args, Kwargs) ->
+    case stream(AppPath, Action, Args, Kwargs) of
+        {ok, GenFun} when is_function(GenFun, 0) ->
+            ensure_gen_table(),
+            GenRef = make_ref(),
+            ets:insert(?GEN_TABLE, {GenRef, GenFun}),
+            {ok, GenRef};
+        {error, _} = Err ->
+            Err
+    end.
+
+ensure_gen_table() ->
+    case ets:info(?GEN_TABLE) of
+        undefined ->
+            try ets:new(?GEN_TABLE, [named_table, public, set,
+                                     {read_concurrency, true},
+                                     {write_concurrency, true}])
+            catch error:badarg -> ok  % racing creator already won
+            end;
+        _ -> ok
+    end.
 
 %%% ============================================================================
 %%% gen_server callbacks
@@ -230,20 +279,10 @@ handle_call({await_result, TaskRef, Timeout}, From, #state{tasks = Tasks} = Stat
             {noreply, State#state{tasks = NewTasks}}
     end;
 
-handle_call({stream_next_ref, GenRef}, _From, #state{generators = Gens} = State) ->
-    case maps:get(GenRef, Gens, undefined) of
-        undefined ->
-            {reply, {error, generator_not_found}, State};
-        GenFun ->
-            case GenFun() of
-                done ->
-                    {reply, done, State#state{generators = maps:remove(GenRef, Gens)}};
-                {value, Value} ->
-                    {reply, {value, Value}, State};
-                {error, Reason} ->
-                    {reply, {error, Reason}, State#state{generators = maps:remove(GenRef, Gens)}}
-            end
-    end;
+    %% stream_store / stream_next_ref are handled directly via ETS in
+    %% stream_ref/4 and stream_next_ref/1 (avoids deadlocking the hooks
+    %% gen_server when the generator's body has to call back into
+    %% Python).
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -316,8 +355,14 @@ execute_python(AppPath, Action, Args, Kwargs) ->
 
 execute_python_registered(AppPath, Action, Args, Kwargs) ->
     try
-        Result = py:call(hornbeam_hooks_runner, execute_registered, [AppPath, Action, Args, Kwargs]),
-        {ok, Result}
+        %% py:call already returns {ok, _} | {error, _}; pass through
+        %% directly so we don't double-wrap the handler's value.
+        case py:call(hornbeam_hooks_runner, execute_registered,
+                     [AppPath, Action, Args, Kwargs]) of
+            {ok, _} = Ok -> Ok;
+            {error, _} = Err -> Err;
+            Other -> {ok, Other}
+        end
     catch
         throw:Reason -> {error, Reason};
         error:Reason -> {error, Reason};
