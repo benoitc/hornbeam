@@ -10,11 +10,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **erlang_python v3.0**: Track the simplified execution model
-  - Switched dep to `feature/simplify-execution-model` (worker / owngil modes only)
+  - Switched dep to erlang_python `main` (worker / owngil modes only)
   - `config/sys.config`: replaced obsolete `num_workers` key with `num_contexts`
   - Python runners (`asgi`, `lifespan`, `websocket`): import `erlang` instead of
     the removed `erlang_loop` shim and skip `asyncio.set_event_loop_policy` on
     Python 3.14+ (deprecated in 3.14, removed in 3.16)
+
+### Fixed
+
+- **`hornbeam_erlang.call/cast` from Python**: registered the
+  `hornbeam_callbacks` Python-callable dispatcher so the documented
+  `from hornbeam_erlang import call` path actually reaches
+  `hornbeam_callbacks:call/2`.
+- **`hornbeam_erlang.publish` from Python**: registered a
+  `hornbeam_pubsub` Python-callable dispatcher so `publish(topic, msg)`
+  reaches `hornbeam_pubsub:publish/2` and returns the subscriber count.
+- **`state_get_multi` / `state_keys` from Python**: registered a
+  `hornbeam_state` Python-callable dispatcher.
+- **`stream` / `stream_next_ref` from Python**: routed
+  `hornbeam_hooks:stream/4` and `stream_next_ref/1` through the same
+  `hornbeam_hooks` dispatcher used for `reg_python` / `unreg`.
+- **`state_get_multi` semantics**: missing keys now map to `undefined`
+  (rendered as Python `None`) so the documented return shape
+  `{'user:3': None}` matches runtime.
+
+### Added
+
+- `test/hornbeam_examples_smoke_SUITE.erl` — HTTP smoke test for seven
+  example apps (`async_chat`, `channels_chat`, `demo/realtime_chat`,
+  `erlang_integration`, `fastapi_app`, `hooks_lifespan`,
+  `websocket_chat`). FastAPI-dependent cases auto-skip if the package is
+  missing.
+- `test/hornbeam_doc_python_api_SUITE.erl` — runs every runnable code
+  block from `docs/reference/python-api.md` verbatim. 16 snippets pass;
+  8 hook-related snippets are skipped pending a follow-up to fix nested
+  `py:exec` → `register_hook` callback synchronisation.
+- `scripts/docker_smoke.sh` + `make docker-smoke` target — builds every
+  Dockerfile in the repo (root, channels-chat, demo/distributed_rpc,
+  demo/multi_app; ml_caching gated on `DOCKER_SMOKE_HEAVY=1`).
 
 - **Shared Context Pool**: All mounts now share the default `py_context_router` pool
   - Removed per-mount `workers` option (use global pool size instead)
