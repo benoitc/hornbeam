@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Atom comparison in `hornbeam_erlang`**: result-tuple unwrap helpers
+  (`execute`, `execute_async`, `await_result`, `stream`) now recognise
+  Erlang atoms whether they surface as `erlang.Atom`, `bytes`, or `str`,
+  so `{ok, Value}` correctly returns `Value` instead of the raw tuple.
+- **Hook function-handler signature**: `hornbeam_hooks_runner` now
+  spreads `*args, **kwargs` into the documented
+  `def handler(action, *args, **kwargs)` signature instead of passing
+  the args list as a single positional.
+- **`hornbeam_hooks:execute_python_registered`**: pass through `{ok, _}`
+  / `{error, _}` from `py:call` instead of wrapping again, so
+  `execute(...)` returns the handler's value (was a `{ok, Inner}` shell).
+- **Stream generator storage**: `hornbeam_hooks:stream_ref/4` parks the
+  Erlang generator in an ETS table and returns the ref to Python (the
+  doc claimed Python could pass an Erlang `fun()` as a "ref"; nothing
+  ever populated the storage map).
 - **`hornbeam_erlang.call/cast` from Python**: registered the
   `hornbeam_callbacks` Python-callable dispatcher so the documented
   `from hornbeam_erlang import call` path actually reaches

@@ -881,8 +881,11 @@ dispatch_hooks_action(<<"reg_python">>, [AppPath]) ->
 dispatch_hooks_action(<<"unreg">>, [AppPath]) ->
     hornbeam_hooks:unreg(ensure_binary(AppPath));
 dispatch_hooks_action(<<"stream">>, [AppPath, Action, Args, Kwargs]) ->
-    hornbeam_hooks:stream(ensure_binary(AppPath),
-                          ensure_binary(Action), Args, Kwargs);
+    %% Python can't keep a reference to an Erlang fun, so route through
+    %% stream_ref/4 which stores the generator inside the gen_server and
+    %% returns an opaque reference.
+    hornbeam_hooks:stream_ref(ensure_binary(AppPath),
+                              ensure_binary(Action), Args, Kwargs);
 dispatch_hooks_action(<<"stream_next_ref">>, [GenRef]) ->
     hornbeam_hooks:stream_next_ref(GenRef);
 dispatch_hooks_action(Action, Args) ->
