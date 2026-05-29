@@ -108,7 +108,7 @@ decr(Key, Delta) ->
 
 %% @doc Get multiple keys at once.
 %% Returns a map of key => value for every requested key. Missing keys
-%% map to `undefined` (rendered as `None` on the Python side).
+%% map to undefined (rendered as None on the Python side).
 -spec get_multi(Keys :: [term()]) -> map().
 get_multi(Keys) ->
     lists:foldl(fun(Key, Acc) ->
