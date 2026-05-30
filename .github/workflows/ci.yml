@@ -66,7 +66,7 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28.0'
+          otp-version: '29'
           rebar3-version: '3.24'
 
       - name: Build ex_doc
