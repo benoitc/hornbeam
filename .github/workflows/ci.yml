@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ['27.0', '27.1', '28.0']
+        otp: ['28.0', '29']
         python: ['3.12', '3.13', '3.14']
 
     steps:
@@ -24,7 +24,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
-          rebar3-version: '3.24'
+          rebar3-version: '3.27.0'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -67,7 +67,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: '29'
-          rebar3-version: '3.24'
+          rebar3-version: '3.27.0'
 
       - name: Build ex_doc
         run: rebar3 ex_doc
@@ -83,7 +83,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: '28.0'
-          rebar3-version: '3.24'
+          rebar3-version: '3.27.0'
 
       - name: Compile
         run: rebar3 compile
