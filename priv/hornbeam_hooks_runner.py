@@ -248,9 +248,10 @@ def execute_registered(app_path: str, action: str, args: List[Any], kwargs: Dict
         method = getattr(handler, action)
         return method(*args, **kwargs)
 
-    # If handler is callable (function), call it with action
+    # If handler is callable (function), spread args/kwargs to match the
+    # documented signature `def handler(action, *args, **kwargs)`.
     elif callable(handler):
-        return handler(action, args, kwargs)
+        return handler(action, *args, **kwargs)
 
     else:
         raise TypeError(f"Handler for {app_path} is not callable")

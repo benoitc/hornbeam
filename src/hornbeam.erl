@@ -806,11 +806,54 @@ register_python_callbacks() ->
     py:register_function(hornbeam_state_decr, fun([Key, Delta]) ->
         hornbeam_state:decr(Key, Delta)
     end),
+    %% Multi-arg state ops (get_multi, keys). Python routes here for both.
+    py:register_function(hornbeam_state, fun([Action, Args]) ->
+        dispatch_state_action(Action, Args)
+    end),
     %% Distributed Erlang functions
     py:register_function(hornbeam_dist, fun([Func, Args]) ->
         dispatch_dist_action(Func, Args)
     end),
+    %% User-registered callbacks (hornbeam_callbacks). Routes
+    %% hornbeam_erlang.call/cast from Python through the gen_server.
+    py:register_function(hornbeam_callbacks, fun([Action, Payload]) ->
+        dispatch_callbacks_action(Action, Payload)
+    end),
+    %% Pub/Sub. hornbeam_erlang.publish() routes here.
+    py:register_function(hornbeam_pubsub, fun([Action, Payload]) ->
+        dispatch_pubsub_action(Action, Payload)
+    end),
     ok.
+
+%% Dispatch hornbeam_callbacks actions from Python
+dispatch_callbacks_action(<<"call">>, [Name, Args]) ->
+    hornbeam_callbacks:call(to_callback_name(Name), Args);
+dispatch_callbacks_action(<<"cast">>, [Name, Args]) ->
+    hornbeam_callbacks:cast(to_callback_name(Name), Args);
+dispatch_callbacks_action(Action, _Payload) ->
+    {error, {unknown_callbacks_action, Action}}.
+
+to_callback_name(N) when is_atom(N) -> N;
+to_callback_name(N) when is_binary(N) ->
+    try binary_to_existing_atom(N, utf8)
+    catch error:badarg -> N
+    end.
+
+%% Dispatch pub/sub actions from Python
+dispatch_pubsub_action(<<"publish">>, [Topic, Message]) ->
+    hornbeam_pubsub:publish(Topic, Message);
+dispatch_pubsub_action(Action, _Payload) ->
+    {error, {unknown_pubsub_action, Action}}.
+
+%% Dispatch multi-key state ops from Python
+dispatch_state_action(<<"get_multi">>, [Keys]) ->
+    hornbeam_state:get_multi(Keys);
+dispatch_state_action(<<"keys">>, []) ->
+    hornbeam_state:keys();
+dispatch_state_action(<<"keys">>, [Prefix]) ->
+    hornbeam_state:keys(Prefix);
+dispatch_state_action(Action, _Args) ->
+    {error, {unknown_state_action, Action}}.
 
 %% Dispatch distributed Erlang actions from Python
 dispatch_dist_action(<<"rpc_call">>, [Node, Module, Function, Args, Timeout]) ->
@@ -837,5 +880,13 @@ dispatch_hooks_action(<<"reg_python">>, [AppPath]) ->
     hornbeam_hooks:reg_python(ensure_binary(AppPath));
 dispatch_hooks_action(<<"unreg">>, [AppPath]) ->
     hornbeam_hooks:unreg(ensure_binary(AppPath));
+dispatch_hooks_action(<<"stream">>, [AppPath, Action, Args, Kwargs]) ->
+    %% Python can't keep a reference to an Erlang fun, so route through
+    %% stream_ref/4 which stores the generator inside the gen_server and
+    %% returns an opaque reference.
+    hornbeam_hooks:stream_ref(ensure_binary(AppPath),
+                              ensure_binary(Action), Args, Kwargs);
+dispatch_hooks_action(<<"stream_next_ref">>, [GenRef]) ->
+    hornbeam_hooks:stream_next_ref(GenRef);
 dispatch_hooks_action(Action, Args) ->
     {error, {unknown_hooks_action, Action, Args}}.
