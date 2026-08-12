@@ -494,9 +494,11 @@ async def handle_unicode(scope, receive, send):
 
 async def handle_early_hints(scope, receive, send):
     """Test 103 Early Hints response."""
-    # Send 103 Early Hints (informational response)
+    # Send 103 Early Hints ahead of the final response. Interim
+    # responses go through http.response.informational, not
+    # http.response.start, which is reserved for the final head.
     await send({
-        'type': 'http.response.start',
+        'type': 'http.response.informational',
         'status': 103,
         'headers': [
             [b'link', b'</style.css>; rel=preload; as=style'],

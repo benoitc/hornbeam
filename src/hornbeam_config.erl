@@ -27,7 +27,8 @@
 %%%
 %%% === Protocol ===
 %%% - worker_class: wsgi or asgi (default: wsgi)
-%%% - http_version: List of supported HTTP versions (default: ['HTTP/1.1', 'HTTP/2'])
+%%% - http_version: HTTP versions to serve (default: ['HTTP/1.1']).
+%%%   'HTTP/2' and 'HTTP/3' require ssl.
 %%%
 %%% === Contexts ===
 %%% - num_contexts: Number of Python contexts (default: schedulers)
@@ -134,9 +135,12 @@ defaults() ->
         certfile => undefined,
         keyfile => undefined,
         cacertfile => undefined,
+        %% HTTP/3 UDP port; undefined means the `bind' port
+        http3_port => undefined,
 
         %% Protocol
         worker_class => wsgi,
+        http_version => ['HTTP/1.1'],
 
         %% Contexts
         %% num_contexts defaults to schedulers in hornbeam.erl
@@ -225,9 +229,9 @@ code_change(_OldVsn, State, _Extra) ->
 load_app_env() ->
     Keys = [
         %% Server
-        bind, ssl, certfile, keyfile, cacertfile,
+        bind, ssl, certfile, keyfile, cacertfile, http3_port,
         %% Protocol
-        worker_class,
+        worker_class, http_version,
         %% Contexts
         num_contexts, timeout, keepalive, max_requests, preload_app,
         %% Request limits
