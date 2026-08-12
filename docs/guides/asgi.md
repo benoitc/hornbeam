@@ -39,7 +39,7 @@ The scope dict contains request information:
 |-----|------|-------------|
 | `type` | str | `"http"` |
 | `asgi` | dict | `{"version": "3.0"}` |
-| `http_version` | str | `"1.1"` or `"2"` |
+| `http_version` | str | `"1.1"`, `"2"` or `"3"` |
 | `method` | str | HTTP method |
 | `scheme` | str | `"http"` or `"https"` |
 | `path` | str | URL path (stripped of mount prefix in [multi-app mode](/docs/guides/multi-app)) |
@@ -367,8 +367,8 @@ hornbeam:start("app:app", #{
     workers => 4,
     timeout => 30000,
 
-    %% HTTP
-    http_version => ['HTTP/1.1', 'HTTP/2']
+    %% HTTP; 'HTTP/2' and 'HTTP/3' require ssl => true
+    http_version => ['HTTP/1.1']
 }).
 ```
 

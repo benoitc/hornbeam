@@ -99,7 +99,7 @@ python_dep_skip(_) ->
 
 end_per_testcase(_TestCase, _Config) ->
     catch hornbeam:stop(),
-    %% Wait for the cowboy listener to actually release its socket and for
+    %% Wait for the listener to actually release its socket and for
     %% any in-flight lifespan task to drain. Without this, the next test's
     %% start can race the prior listener's shutdown.
     timer:sleep(800),

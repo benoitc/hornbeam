@@ -333,9 +333,12 @@ def distributed_inference(texts):
     return results
 ```
 
-## Custom Cowboy Routes
+## Custom Erlang Routes
 
-Add custom routes alongside your Python app:
+Add custom routes alongside your Python app. A route is
+`{Method | '_', Pattern, Handler}` where Handler is a `fun/1` or
+`{Module, Function}` taking a livery request and returning a livery
+response:
 
 ```erlang
 %% Start with custom routes
@@ -344,13 +347,13 @@ hornbeam:start("app:app", #{
     pythonpath => ["priv/python"],
     routes => [
         %% Health check - pure Erlang, no Python
-        {"/health", health_handler, []},
+        {<<"GET">>, <<"/health">>, fun health_handler:handle/1},
 
         %% Metrics endpoint
-        {"/metrics", metrics_handler, []},
+        {<<"GET">>, <<"/metrics">>, {metrics_handler, handle}},
 
         %% WebSocket with custom handler
-        {"/ws/[...]", my_websocket_handler, []}
+        {'_', <<"/ws/*rest">>, fun my_websocket_handler:handle/1}
     ]
 }).
 ```
@@ -358,15 +361,19 @@ hornbeam:start("app:app", #{
 ```erlang
 %% health_handler.erl
 -module(health_handler).
--export([init/2]).
+-export([handle/1]).
 
-init(Req, State) ->
-    Reply = cowboy_req:reply(200,
-        #{<<"content-type">> => <<"application/json">>},
-        <<"{\"status\":\"ok\"}">>,
-        Req
-    ),
-    {ok, Reply, State}.
+handle(_Req) ->
+    livery_resp:json(200, <<"{\"status\":\"ok\"}">>).
+```
+
+A WebSocket route upgrades from inside its handler with a module
+implementing the `ws_handler` behaviour:
+
+```erlang
+%% my_websocket_handler.erl
+handle(Req) ->
+    livery_ws:upgrade(Req, my_ws_session, #{idle_timeout => 60000}).
 ```
 
 ## Configuration

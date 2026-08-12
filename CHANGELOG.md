@@ -7,7 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`http_version` selects the protocols to serve** (default
+  `['HTTP/1.1']`). The option was documented but read by nothing; it now
+  drives which listeners bind. `'HTTP/2'` and `'HTTP/3'` exist only over
+  TLS and are refused with
+  `{error, {http_version_requires_ssl, Version}}` when `ssl` is off,
+  rather than quietly serving HTTP/1.1.
+  - `['HTTP/1.1', 'HTTP/2']` serves both from one TLS port, chosen per
+    connection by ALPN, so a client that cannot speak HTTP/2 is still
+    served rather than refused. This restores what cowboy's `start_tls`
+    did before the livery move.
+  - `'HTTP/3'` adds a QUIC listener, on the `bind` port number by
+    default or on the new `http3_port`, and advertises it to HTTP/1.1
+    and HTTP/2 clients through `Alt-Svc`. Its certificate and key are
+    converted from the configured PEM files to the DER shapes quic
+    expects.
+- `hornbeam:info/0` reports every bound protocol. Following livery
+  0.8.0, `listeners` maps each protocol to a **list** of ports, because
+  one port can serve two protocols and one protocol can be on several
+  ports.
+- **`max_request_line_size`, `max_header_size` and `max_headers` are
+  enforced.** They were accepted and documented but reached nothing. A
+  breach is now answered `414` or `431` instead of being ignored.
+
+### Fixed
+
+- **A HEAD response over HTTP/2 or HTTP/3 crashed the handler.** The
+  ASGI and WSGI producers only handled `{error, closed}` from a stream
+  write, and h2/h3 answer `{error, invalid_stream_state}` when a body is
+  written to a stream that must not carry one, where HTTP/1.1 silently
+  drops it.
+
 ### Changed
+
+- **HTTP server moved from cowboy to livery**: hornbeam now serves HTTP
+  through [livery](https://github.com/benoitc/livery) instead of cowboy.
+  - The listener is owned by a new supervised `hornbeam_listener`
+    process; `hornbeam:info/0` and `hornbeam:is_running/0` replace ranch
+    introspection.
+  - `hornbeam_handler` is a livery handler; WSGI and ASGI responses
+    resolve through `livery_resp:stream_deferred/1` in the per-request
+    process (one mailbox for request-body chunks and Python events).
+  - WebSocket runs on the `ws_handler` behaviour (new
+    `hornbeam_ws_handler`); `hornbeam_websocket` keeps the upgrade
+    entry point, scope building, and the session registry.
+  - Duplicate request headers are preserved in the ASGI scope and
+    joined with `", "` in WSGI `HTTP_*` keys.
+  - New `max_body` option (default `infinity`) caps the request body at
+    the listener.
+  - Requires livery 0.8.0: 103 Early Hints go out through
+    `livery_req:inform/3`, WSGI `REMOTE_ADDR` and the ASGI `client` /
+    WebSocket scope carry the real peer, `websocket_max_frame_size` and
+    `websocket_compress` are forwarded to `livery_ws:upgrade/3`, and
+    ASGI `websocket.disconnect` reports the peer's own close code
+    (1005 when it closed without one).
+- **HTTP client moved from hackney to livery_client**: the test suites
+  call `livery_client` directly and match its response map; hackney is no
+  longer a direct dependency, and the shim that kept hackney's
+  `request/5` shape is gone.
+
+### Removed (breaking)
+
+- **`routes` option shape changed**: routes are livery router entries
+  `{Method | '_', Pattern, HandlerFun | {Mod, Fun}}` (optionally with a
+  meta map) instead of cowboy `{Path, HandlerModule, Opts}` tuples.
+  Cowboy handler modules are rejected with `{error, {invalid_route, _}}`.
+- **`hornbeam_wsgi` module removed**: the classic `build_environ/1,2`
+  path was dead code (the live path is
+  `hornbeam_request:build_wsgi_tuple/2`).
+
+### Known limitations
+
+- 103 Early Hints are sent on HTTP/1.1 and HTTP/2 but not HTTP/3, which
+  has no interim responses in livery yet; the
+  `http.response.early_hints` ASGI extension is advertised accordingly.
 
 - **erlang_python v3.0**: Track the simplified execution model
   - Switched dep to erlang_python `main` (worker / owngil modes only)
