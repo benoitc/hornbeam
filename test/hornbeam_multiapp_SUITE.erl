@@ -63,11 +63,11 @@ groups() ->
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(hornbeam),
-    {ok, _} = application:ensure_all_started(hackney),
+    {ok, _} = application:ensure_all_started(livery),
     Config.
 
 end_per_suite(_Config) ->
-    application:stop(hackney),
+    ok,
     application:stop(hornbeam),
     ok.
 
@@ -104,8 +104,7 @@ test_multi_app_start(_Config) ->
     }),
 
     %% Verify listener is running
-    Listeners = ranch:info(),
-    ?assert(lists:keymember(hornbeam_http, 1, Listeners)),
+    ?assert(hornbeam:is_running()),
 
     %% Verify mounts are registered
     Mounts = hornbeam_mounts:list(),
@@ -116,7 +115,7 @@ test_routing_to_api_mount(_Config) ->
     ok = start_multi_app_server(),
 
     %% Request to /api should route to api_app
-    {ok, 200, _Headers, Body} = hackney:request(get, "http://127.0.0.1:18080/api", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/api", #{}),
 
     %% Parse JSON response
     Response = jsx:decode(Body, [return_maps]),
@@ -129,7 +128,7 @@ test_routing_to_admin_mount(_Config) ->
     ok = start_multi_app_server(),
 
     %% Request to /admin/users should route to admin_app
-    {ok, 200, _Headers, Body} = hackney:request(get, "http://127.0.0.1:18080/admin/users", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/admin/users", #{}),
 
     %% Parse JSON response
     Response = jsx:decode(Body, [return_maps]),
@@ -142,7 +141,7 @@ test_routing_to_root_mount(_Config) ->
     ok = start_multi_app_server(),
 
     %% Request to /other should route to frontend_app (root mount)
-    {ok, 200, _Headers, Body} = hackney:request(get, "http://127.0.0.1:18080/other/page", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/other/page", #{}),
 
     %% Parse JSON response
     Response = jsx:decode(Body, [return_maps]),
@@ -164,14 +163,14 @@ test_longest_prefix_matching(_Config) ->
     }),
 
     %% /api/v2/users should match /api/v2 (longer prefix), not /api
-    {ok, 200, _Headers1, Body1} = hackney:request(get, "http://127.0.0.1:18080/api/v2/users", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body1}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/api/v2/users", #{}),
     Response1 = jsx:decode(Body1, [return_maps]),
     ?assertEqual(<<"admin">>, maps:get(<<"app">>, Response1)),
     ?assertEqual(<<"/users">>, maps:get(<<"path_info">>, Response1)),
     ?assertEqual(<<"/api/v2">>, maps:get(<<"script_name">>, Response1)),
 
     %% /api/v1/users should match /api
-    {ok, 200, _Headers2, Body2} = hackney:request(get, "http://127.0.0.1:18080/api/v1/users", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body2}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/api/v1/users", #{}),
     Response2 = jsx:decode(Body2, [return_maps]),
     ?assertEqual(<<"api">>, maps:get(<<"app">>, Response2)),
     ?assertEqual(<<"/v1/users">>, maps:get(<<"path_info">>, Response2)),
@@ -191,7 +190,7 @@ test_script_name_path_info(_Config) ->
 
     lists:foreach(fun({Path, ExpectedScript, ExpectedPath}) ->
         Url = "http://127.0.0.1:18080" ++ Path,
-        {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+        {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
         Response = jsx:decode(Body, [return_maps]),
         ?assertEqual(ExpectedScript, maps:get(<<"script_name">>, Response),
                      {path, Path, expected_script, ExpectedScript}),
@@ -211,7 +210,7 @@ test_no_match_returns_404(_Config) ->
     }),
 
     %% Request to unmatched path should return 404
-    {ok, 404, _Headers, _Body} = hackney:request(get, "http://127.0.0.1:18080/other", [], <<>>, []).
+    {ok, #{status := 404}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/other", #{}).
 
 test_backward_compat_single_app(_Config) ->
     %% Test that single-app mode still works
@@ -220,7 +219,7 @@ test_backward_compat_single_app(_Config) ->
     }),
 
     %% Should work as before
-    {ok, 200, _Headers, Body} = hackney:request(get, "http://127.0.0.1:18080/", [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, "http://127.0.0.1:18080/", #{}),
     ?assertEqual(<<"Hello from Hornbeam WSGI!\n">>, Body).
 
 test_validation_invalid_prefix(_Config) ->

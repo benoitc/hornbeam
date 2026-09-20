@@ -93,15 +93,13 @@ test_start_stop(_Config) ->
     ok = hornbeam:start("hello_wsgi.app:application"),
 
     %% Verify listener is running
-    Listeners = ranch:info(),
-    ?assert(lists:keymember(hornbeam_http, 1, Listeners)),
+    ?assert(hornbeam:is_running()),
 
     %% Test stopping
     ok = hornbeam:stop(),
 
     %% Verify listener is stopped
-    Listeners2 = ranch:info(),
-    ?assertNot(lists:keymember(hornbeam_http, 1, Listeners2)).
+    ?assertNot(hornbeam:is_running()).
 
 test_config(_Config) ->
     %% Test config management

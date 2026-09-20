@@ -47,6 +47,14 @@ init([]) ->
 
     Children = [
         #{
+            id => hornbeam_listener,
+            start => {hornbeam_listener, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hornbeam_listener]
+        },
+        #{
             id => hornbeam_mounts,
             start => {hornbeam_mounts, start_link, []},
             restart => permanent,

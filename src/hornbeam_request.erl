@@ -27,6 +27,7 @@
 
 -export([build_wsgi_tuple/2, build_asgi_scope/2]).
 -export([to_wsgi_header_key/1, format_ip/1, format_http_version/1]).
+-export([server_info/2, peer_info/1, scheme/1]).
 
 %% @doc Build a pre-parsed WSGI request tuple for Python.
 %%
@@ -35,17 +36,15 @@
 %%  ContentType, ContentLength, Body, Server, Client, Scheme, Protocol, State}
 %%
 %% WsgiHeaders is a map with HTTP_* keys already formatted.
--spec build_wsgi_tuple(cowboy_req:req(), map()) -> tuple().
+-spec build_wsgi_tuple(livery_req:req(), map()) -> tuple().
 build_wsgi_tuple(Req, State) ->
-    Method = cowboy_req:method(Req),
-    Path = cowboy_req:path(Req),
-    Qs = cowboy_req:qs(Req),
-    Headers = cowboy_req:headers(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    Scheme = cowboy_req:scheme(Req),
-    Version = cowboy_req:version(Req),
-    {ClientIp, ClientPort} = cowboy_req:peer(Req),
+    Method = livery_req:method(Req),
+    Path = livery_req:path(Req),
+    Qs = livery_req:query(Req),
+    Headers = livery_req:headers(Req),
+    Scheme = scheme(State),
+    {Host, Port} = server_info(Req, State),
+    {ClientIp, ClientPort} = peer_info(Req),
 
     %% Get SCRIPT_NAME and PATH_INFO from state (multi-app) or defaults
     ScriptName = maps:get(script_name, State, <<>>),
@@ -67,9 +66,9 @@ build_wsgi_tuple(Req, State) ->
         ContentLength,                       % CONTENT_LENGTH (or undefined)
         undefined,                           % Body placeholder (passed via buffer)
         {Host, Port},                        % SERVER_NAME, SERVER_PORT
-        {format_ip(ClientIp), ClientPort},   % REMOTE_ADDR, REMOTE_PORT
+        {ClientIp, ClientPort},              % REMOTE_ADDR, REMOTE_PORT
         Scheme,                              % wsgi.url_scheme
-        format_protocol(Version),            % SERVER_PROTOCOL
+        format_protocol(livery_req:protocol(Req)), % SERVER_PROTOCOL
         LifespanState                        % Lifespan state
     }.
 
@@ -78,23 +77,24 @@ build_wsgi_tuple(Req, State) ->
 %% Headers are pre-formatted as [[name, value], ...] list.
 %% All binary conversions done in Erlang.
 %% Handles mount_id and per-mount lifespan state for multi-app mode.
--spec build_asgi_scope(cowboy_req:req(), map()) -> map().
+-spec build_asgi_scope(livery_req:req(), map()) -> map().
 build_asgi_scope(Req, State) ->
-    Path = cowboy_req:path(Req),
-    Version = cowboy_req:version(Req),
-    {ClientIp, ClientPort} = cowboy_req:peer(Req),
+    Path = livery_req:path(Req),
+    Protocol = livery_req:protocol(Req),
+    {Host, Port} = server_info(Req, State),
 
     %% Get root_path and path from state (multi-app) or defaults
     RootPath = maps:get(script_name, State, <<>>),
     ScopePath = maps:get(path_info, State, Path),
 
-    %% Convert headers to ASGI format [[name, value], ...]
-    HeaderList = maps:fold(fun(Name, Value, Acc) ->
-        [[Name, Value] | Acc]
-    end, [], cowboy_req:headers(Req)),
+    %% Convert headers to ASGI format [[name, value], ...] preserving
+    %% duplicates and wire order
+    HeaderList = [[Name, Value] || {Name, Value} <- livery_req:headers(Req)],
 
     %% Get mount_id for per-mount state isolation (multi-app mode)
     MountId = maps:get(mount_id, State, undefined),
+
+    Client = peer_info(Req),
 
     %% Build scope map with all fields
     %% Note: state is NOT included here - Python fetches lazily via callback
@@ -102,23 +102,66 @@ build_asgi_scope(Req, State) ->
     BaseScope = #{
         type => <<"http">>,
         asgi => #{<<"version">> => <<"3.0">>, <<"spec_version">> => <<"2.4">>},
-        http_version => format_http_version(Version),
-        method => cowboy_req:method(Req),
-        scheme => cowboy_req:scheme(Req),
+        http_version => format_http_version(Protocol),
+        method => livery_req:method(Req),
+        scheme => scheme(State),
         path => ScopePath,
         raw_path => ScopePath,
-        query_string => cowboy_req:qs(Req),
+        query_string => livery_req:query(Req),
         root_path => RootPath,
         headers => HeaderList,
-        server => {cowboy_req:host(Req), cowboy_req:port(Req)},
-        client => {format_ip(ClientIp), ClientPort},
-        extensions => build_extensions(Version)
+        server => {Host, Port},
+        client => Client,
+        extensions => build_extensions(Protocol)
     },
 
     %% Add mount_id to scope if in multi-app mode (used by Python to get correct state)
     case MountId of
         undefined -> BaseScope;
         _ -> BaseScope#{mount_id => MountId}
+    end.
+
+%% @doc URL scheme for the listener that accepted the request.
+%%
+%% On HTTP/1.1 `livery_req:scheme/1' is always `<<"http">>' even under
+%% TLS, so the listener transport recorded in the handler state is
+%% authoritative.
+-spec scheme(map()) -> binary().
+scheme(State) ->
+    maps:get(server_scheme, State, <<"http">>).
+
+%% @doc Server host and port, from the host header (h1) or the
+%% `:authority' pseudo-header (h2/h3), falling back to the bind port
+%% recorded in the handler state.
+-spec server_info(livery_req:req(), map()) -> {binary(), inet:port_number()}.
+server_info(Req, State) ->
+    Authority = case livery_req:header(<<"host">>, Req) of
+        undefined ->
+            case livery_req:authority(Req) of
+                <<>> -> undefined;
+                A -> A
+            end;
+        HostHeader ->
+            HostHeader
+    end,
+    DefaultPort = maps:get(server_port, State, default_port(scheme(State))),
+    case Authority of
+        undefined ->
+            {<<"localhost">>, DefaultPort};
+        _ ->
+            parse_authority(Authority, DefaultPort)
+    end.
+
+%% @doc Client address as `{IpBinary, Port}'.
+%%
+%% `livery_req:peer/1' is set on every adapter, but a synthetic request
+%% (test adapter) may still carry none; degrade to an empty address so
+%% the WSGI/ASGI shape stays stable.
+-spec peer_info(livery_req:req()) -> {binary(), inet:port_number()}.
+peer_info(Req) ->
+    case livery_req:peer(Req) of
+        undefined -> {<<>>, 0};
+        {Ip, Port} -> {format_ip(Ip), Port}
     end.
 
 %% @doc Convert header name to WSGI HTTP_* format.
@@ -141,10 +184,10 @@ format_ip(Addr = {_, _, _, _, _, _, _, _}) ->
     list_to_binary(inet:ntoa(Addr)).
 
 %% @doc Format HTTP version for ASGI.
--spec format_http_version(atom()) -> binary().
-format_http_version('HTTP/1.0') -> <<"1.0">>;
-format_http_version('HTTP/1.1') -> <<"1.1">>;
-format_http_version('HTTP/2') -> <<"2">>.
+-spec format_http_version(h1 | h2 | h3) -> binary().
+format_http_version(h1) -> <<"1.1">>;
+format_http_version(h2) -> <<"2">>;
+format_http_version(h3) -> <<"3">>.
 
 %%% ============================================================================
 %%% Internal functions
@@ -152,9 +195,10 @@ format_http_version('HTTP/2') -> <<"2">>.
 
 %% @private
 %% Convert headers to WSGI format, extracting Content-Type and Content-Length.
+%% Duplicate headers are joined with ", " per RFC 9110.
 %% Returns {WsgiHeadersMap, ContentType, ContentLength}
 convert_headers_wsgi(Headers) ->
-    maps:fold(fun(Name, Value, {Acc, CT, CL}) ->
+    lists:foldl(fun({Name, Value}, {Acc, CT, CL}) ->
         case Name of
             <<"content-type">> ->
                 {Acc, Value, CL};
@@ -162,13 +206,42 @@ convert_headers_wsgi(Headers) ->
                 {Acc, CT, Value};
             _ ->
                 Key = to_wsgi_header_key(Name),
-                {Acc#{Key => Value}, CT, CL}
+                Acc1 = case Acc of
+                    #{Key := Prev} -> Acc#{Key := <<Prev/binary, ", ", Value/binary>>};
+                    _ -> Acc#{Key => Value}
+                end,
+                {Acc1, CT, CL}
         end
     end, {#{}, undefined, undefined}, Headers).
 
 %% @private
-%% Convert lowercase header to uppercase with underscores.
-%% Example: "accept-encoding" becomes "ACCEPT_ENCODING"
+%% Parse "Host[:Port]" including bracketed IPv6 "[::1]:8000".
+parse_authority(<<"[", Rest/binary>> = Authority, DefaultPort) ->
+    case binary:split(Rest, <<"]">>) of
+        [Host, <<":", PortBin/binary>>] ->
+            {<<"[", Host/binary, "]">>, to_port(PortBin, DefaultPort)};
+        [Host, _] ->
+            {<<"[", Host/binary, "]">>, DefaultPort};
+        _ ->
+            {Authority, DefaultPort}
+    end;
+parse_authority(Authority, DefaultPort) ->
+    case binary:split(Authority, <<":">>) of
+        [Host, PortBin] -> {Host, to_port(PortBin, DefaultPort)};
+        [Host] -> {Host, DefaultPort}
+    end.
+
+%% @private
+to_port(Bin, Default) ->
+    try binary_to_integer(Bin)
+    catch _:_ -> Default
+    end.
+
+%% @private
+default_port(<<"https">>) -> 443;
+default_port(_) -> 80.
+
+%% @private
 to_upper_underscore(Bin) ->
     << <<(upper_char(C))>> || <<C>> <= Bin >>.
 
@@ -177,17 +250,17 @@ upper_char($-) -> $_;
 upper_char(C) -> C.
 
 %% @private
-format_protocol('HTTP/1.0') -> <<"HTTP/1.0">>;
-format_protocol('HTTP/1.1') -> <<"HTTP/1.1">>;
-format_protocol('HTTP/2') -> <<"HTTP/2">>.
+format_protocol(h1) -> <<"HTTP/1.1">>;
+format_protocol(h2) -> <<"HTTP/2">>;
+format_protocol(h3) -> <<"HTTP/3">>.
 
 %% @private
-build_extensions('HTTP/2') ->
-    #{
-        <<"http.response.trailers">> => #{},
-        <<"http.response.early_hints">> => #{}
-    };
-build_extensions(_) ->
-    #{
-        <<"http.response.early_hints">> => #{}
-    }.
+%% Trailers are an h2/h3 feature. Early hints ride on livery's interim
+%% responses, which h1 and h2 send and h3 does not (livery 0.7.0).
+build_extensions(h1) ->
+    #{<<"http.response.early_hints">> => #{}};
+build_extensions(h2) ->
+    #{<<"http.response.trailers">> => #{},
+      <<"http.response.early_hints">> => #{}};
+build_extensions(h3) ->
+    #{<<"http.response.trailers">> => #{}}.

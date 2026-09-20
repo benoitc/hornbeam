@@ -12,19 +12,23 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
-%%% @doc WebSocket echo handler using cowboy_websocket.
+%%% @doc WebSocket echo handler using the ws_handler behaviour.
 %%%
 %%% Pure Erlang WebSocket handler that echoes messages.
 %%% Demonstrates handling WebSocket in Erlang while HTTP is Python/FastAPI.
+%%% Mounted through hornbeam's `routes' option; the route handler
+%%% upgrades the request via livery_ws:upgrade/3.
 -module(embedding_chat_ws).
 
--behaviour(cowboy_websocket).
+-behaviour(ws_handler).
 
+%% Route handler (HTTP side)
+-export([handle/1]).
+%% ws_handler callbacks
 -export([init/2]).
--export([websocket_init/1]).
--export([websocket_handle/2]).
--export([websocket_info/2]).
--export([terminate/3]).
+-export([handle_in/2]).
+-export([handle_info/2]).
+-export([terminate/2]).
 
 -record(state, {
     count = 0 :: non_neg_integer(),
@@ -32,21 +36,22 @@
 }).
 
 %%% ============================================================================
-%%% Cowboy WebSocket callbacks
+%%% Route handler
 %%% ============================================================================
 
-init(Req, Opts) ->
-    {cowboy_websocket, Req, Opts, #{
-        idle_timeout => 60000,
-        max_frame_size => 65536
-    }}.
+handle(Req) ->
+    livery_ws:upgrade(Req, ?MODULE, #{idle_timeout => 60000}).
 
-websocket_init(_Opts) ->
+%%% ============================================================================
+%%% ws_handler callbacks
+%%% ============================================================================
+
+init(_Req, _Opts) ->
     State = #state{connected_at = os:timestamp()},
     Welcome = <<"Connected to Erlang WebSocket echo server!">>,
-    {[{text, Welcome}], State}.
+    {reply, {text, Welcome}, State}.
 
-websocket_handle({text, Text}, #state{count = Count} = State) ->
+handle_in({text, Text}, #state{count = Count} = State) ->
     NewCount = Count + 1,
     Reply = iolist_to_binary([
         <<"[Erlang echo #">>,
@@ -54,30 +59,31 @@ websocket_handle({text, Text}, #state{count = Count} = State) ->
         <<"] ">>,
         Text
     ]),
-    {[{text, Reply}], State#state{count = NewCount}};
+    {reply, {text, Reply}, State#state{count = NewCount}};
 
-websocket_handle({binary, Data}, #state{count = Count} = State) ->
+handle_in({binary, Data}, #state{count = Count} = State) ->
     NewCount = Count + 1,
-    {[{binary, Data}], State#state{count = NewCount}};
+    {reply, {binary, Data}, State#state{count = NewCount}};
 
-websocket_handle({ping, Data}, State) ->
-    {[{pong, Data}], State};
+handle_in({ping, _Data}, State) ->
+    %% ws auto-replies to pings before this callback
+    {ok, State};
 
-websocket_handle(_Frame, State) ->
+handle_in(_Frame, State) ->
     {ok, State}.
 
-websocket_info({send, Text}, State) when is_binary(Text) ->
-    {[{text, Text}], State};
+handle_info({send, Text}, State) when is_binary(Text) ->
+    {reply, {text, Text}, State};
 
-websocket_info(close, State) ->
-    {[{close, 1000, <<"Server closing">>}], State};
+handle_info(close, State) ->
+    {reply, {close, 1000, <<"Server closing">>}, State};
 
-websocket_info(_Info, State) ->
+handle_info(_Info, State) ->
     {ok, State}.
 
-terminate(_Reason, _Req, #state{count = Count, connected_at = ConnectedAt}) ->
+terminate(_Reason, #state{count = Count, connected_at = ConnectedAt}) ->
     Duration = timer:now_diff(os:timestamp(), ConnectedAt) div 1000000,
     io:format("WebSocket closed: ~p messages in ~p seconds~n", [Count, Duration]),
     ok;
-terminate(_Reason, _Req, _State) ->
+terminate(_Reason, _State) ->
     ok.
