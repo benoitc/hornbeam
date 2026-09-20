@@ -142,11 +142,11 @@ groups() ->
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(hornbeam),
-    {ok, _} = application:ensure_all_started(hackney),
+    {ok, _} = application:ensure_all_started(livery),
     Config.
 
 end_per_suite(_Config) ->
-    application:stop(hackney),
+    ok,
     application:stop(hornbeam),
     ok.
 
@@ -221,20 +221,20 @@ make_url(Config, Path) ->
 
 test_hello_world(Config) ->
     Url = make_url(Config, <<"/">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(<<"Hello from WSGI Test App!\n">>, Body).
 
 test_not_found(Config) ->
     Url = make_url(Config, <<"/nonexistent">>),
-    {ok, 404, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 404, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(<<"Not Found\n">>, Body).
 
 test_request_info(Config) ->
     Url = make_url(Config, <<"/info?foo=bar&baz=qux">>),
-    {ok, 200, Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}} = Resp} = hornbeam_test_http:request(get, Url, #{}),
 
     %% Should be JSON
-    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    ContentType = livery_client:header(<<"content-type">>, Resp),
     ?assertEqual(<<"application/json">>, ContentType),
 
     %% Parse JSON and check fields
@@ -247,11 +247,11 @@ test_post_echo(Config) ->
     Url = make_url(Config, <<"/echo">>),
     ReqBody = <<"Hello, Echo!">>,
     Headers = [{<<"Content-Type">>, <<"text/plain">>}],
-    {ok, 200, RespHeaders, RespBody} = hackney:request(post, Url, Headers, ReqBody, []),
+    {ok, #{status := 200, body := {full, RespBody}} = Resp} = hornbeam_test_http:request(post, Url, #{headers => Headers, body => ReqBody}),
 
     ?assertEqual(ReqBody, RespBody),
     %% Check echo length header
-    EchoLength = proplists:get_value(<<"x-echo-length">>, RespHeaders),
+    EchoLength = livery_client:header(<<"x-echo-length">>, Resp),
     ?assertEqual(<<"12">>, EchoLength).
 
 %%% ============================================================================
@@ -260,41 +260,41 @@ test_post_echo(Config) ->
 
 test_method_get(Config) ->
     Url = make_url(Config, <<"/methods/GET">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assert(binary:match(Body, <<"Method GET OK">>) =/= nomatch).
 
 test_method_post(Config) ->
     Url = make_url(Config, <<"/methods/POST">>),
-    {ok, 200, _Headers, Body} = hackney:request(post, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(post, Url, #{}),
     ?assert(binary:match(Body, <<"Method POST OK">>) =/= nomatch).
 
 test_method_put(Config) ->
     Url = make_url(Config, <<"/methods/PUT">>),
-    {ok, 200, _Headers, Body} = hackney:request(put, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(put, Url, #{}),
     ?assert(binary:match(Body, <<"Method PUT OK">>) =/= nomatch).
 
 test_method_delete(Config) ->
     Url = make_url(Config, <<"/methods/DELETE">>),
-    {ok, 200, _Headers, Body} = hackney:request(delete, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(delete, Url, #{}),
     ?assert(binary:match(Body, <<"Method DELETE OK">>) =/= nomatch).
 
 test_method_patch(Config) ->
     Url = make_url(Config, <<"/methods/PATCH">>),
-    {ok, 200, _Headers, Body} = hackney:request(patch, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(patch, Url, #{}),
     ?assert(binary:match(Body, <<"Method PATCH OK">>) =/= nomatch).
 
 test_method_head(Config) ->
     Url = make_url(Config, <<"/methods/HEAD">>),
-    %% HEAD request returns no body, hackney returns 3-tuple
-    {ok, 200, Headers} = hackney:request(head, Url, [], <<>>, []),
+    %% HEAD request returns no body, client returns 3-tuple
+    {ok, #{status := 200} = Resp} = hornbeam_test_http:request(head, Url, #{}),
     %% Verify headers are present
-    ?assert(proplists:get_value(<<"content-type">>, Headers) =/= undefined),
-    ?assert(proplists:get_value(<<"content-length">>, Headers) =/= undefined).
+    ?assert(livery_client:header(<<"content-type">>, Resp) =/= undefined),
+    ?assert(livery_client:header(<<"content-length">>, Resp) =/= undefined).
 
 test_method_options(Config) ->
     Url = make_url(Config, <<"/methods/OPTIONS">>),
-    {ok, 200, Headers, _Body} = hackney:request(options, Url, [], <<>>, []),
-    Allow = proplists:get_value(<<"allow">>, Headers),
+    {ok, #{status := 200} = Resp} = hornbeam_test_http:request(options, Url, #{}),
+    Allow = livery_client:header(<<"allow">>, Resp),
     ?assert(Allow =/= undefined),
     ?assert(binary:match(Allow, <<"GET">>) =/= nomatch).
 
@@ -304,41 +304,41 @@ test_method_options(Config) ->
 
 test_status_200(Config) ->
     Url = make_url(Config, <<"/status?code=200">>),
-    {ok, 200, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 200}} = hornbeam_test_http:request(get, Url, #{}).
 
 test_status_201(Config) ->
     Url = make_url(Config, <<"/status?code=201">>),
-    {ok, 201, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 201}} = hornbeam_test_http:request(get, Url, #{}).
 
 test_status_204(Config) ->
     Url = make_url(Config, <<"/status?code=204">>),
-    {ok, 204, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 204, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(<<>>, Body).
 
 test_status_301(Config) ->
     Url = make_url(Config, <<"/status?code=301&location=/redirected">>),
     %% Don't follow redirects
-    {ok, 301, Headers, _Body} = hackney:request(get, Url, [], <<>>, [{follow_redirect, false}]),
-    Location = proplists:get_value(<<"location">>, Headers),
+    {ok, #{status := 301} = Resp} = hornbeam_test_http:request(get, Url, #{}),
+    Location = livery_client:header(<<"location">>, Resp),
     ?assertEqual(<<"/redirected">>, Location).
 
 test_status_302(Config) ->
     Url = make_url(Config, <<"/status?code=302&location=/found">>),
-    {ok, 302, Headers, _Body} = hackney:request(get, Url, [], <<>>, [{follow_redirect, false}]),
-    Location = proplists:get_value(<<"location">>, Headers),
+    {ok, #{status := 302} = Resp} = hornbeam_test_http:request(get, Url, #{}),
+    Location = livery_client:header(<<"location">>, Resp),
     ?assertEqual(<<"/found">>, Location).
 
 test_status_400(Config) ->
     Url = make_url(Config, <<"/status?code=400">>),
-    {ok, 400, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 400}} = hornbeam_test_http:request(get, Url, #{}).
 
 test_status_404(Config) ->
     Url = make_url(Config, <<"/status?code=404">>),
-    {ok, 404, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 404}} = hornbeam_test_http:request(get, Url, #{}).
 
 test_status_500(Config) ->
     Url = make_url(Config, <<"/status?code=500">>),
-    {ok, 500, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 500}} = hornbeam_test_http:request(get, Url, #{}).
 
 %%% ============================================================================
 %%% Header tests
@@ -346,21 +346,21 @@ test_status_500(Config) ->
 
 test_custom_headers(Config) ->
     Url = make_url(Config, <<"/headers?custom=test-value">>),
-    {ok, 200, Headers, _Body} = hackney:request(get, Url, [], <<>>, []),
-    CustomHeader = proplists:get_value(<<"x-custom-header">>, Headers),
+    {ok, #{status := 200} = Resp} = hornbeam_test_http:request(get, Url, #{}),
+    CustomHeader = livery_client:header(<<"x-custom-header">>, Resp),
     ?assertEqual(<<"test-value">>, CustomHeader).
 
 test_multiple_headers(Config) ->
     Url = make_url(Config, <<"/headers?multi=yes">>),
-    {ok, 200, Headers, _Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200} = Resp} = hornbeam_test_http:request(get, Url, #{}),
     %% Multiple headers with same name should be present
-    MultiHeaders = [V || {K, V} <- Headers, K =:= <<"x-multi">>],
+    MultiHeaders = [V || {K, V} <- livery_client:headers(Resp), string:lowercase(K) =:= <<"x-multi">>],
     ?assert(length(MultiHeaders) >= 1).
 
 test_cache_headers(Config) ->
     Url = make_url(Config, <<"/headers?cache=3600">>),
-    {ok, 200, Headers, _Body} = hackney:request(get, Url, [], <<>>, []),
-    CacheControl = proplists:get_value(<<"cache-control">>, Headers),
+    {ok, #{status := 200} = Resp} = hornbeam_test_http:request(get, Url, #{}),
+    CacheControl = livery_client:header(<<"cache-control">>, Resp),
     ?assertEqual(<<"max-age=3600">>, CacheControl).
 
 %%% ============================================================================
@@ -371,9 +371,9 @@ test_json_request(Config) ->
     Url = make_url(Config, <<"/json">>),
     ReqBody = <<"{\"key\": \"value\", \"number\": 42}">>,
     Headers = [{<<"Content-Type">>, <<"application/json">>}],
-    {ok, 200, RespHeaders, RespBody} = hackney:request(post, Url, Headers, ReqBody, []),
+    {ok, #{status := 200, body := {full, RespBody}} = Resp} = hornbeam_test_http:request(post, Url, #{headers => Headers, body => ReqBody}),
 
-    ContentType = proplists:get_value(<<"content-type">>, RespHeaders),
+    ContentType = livery_client:header(<<"content-type">>, Resp),
     ?assertEqual(<<"application/json">>, ContentType),
 
     Response = jsx:decode(RespBody, [return_maps]),
@@ -384,19 +384,19 @@ test_json_request(Config) ->
 
 test_large_body(Config) ->
     Url = make_url(Config, <<"/large?size=102400">>),  % 100KB
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(102400, byte_size(Body)).
 
 test_empty_body(Config) ->
     Url = make_url(Config, <<"/echo">>),
-    {ok, 200, _Headers, Body} = hackney:request(post, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(post, Url, #{}),
     ?assertEqual(<<>>, Body).
 
 test_unicode_body(Config) ->
     Url = make_url(Config, <<"/unicode">>),
-    {ok, 200, Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}} = Resp} = hornbeam_test_http:request(get, Url, #{}),
 
-    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    ContentType = livery_client:header(<<"content-type">>, Resp),
     ?assert(binary:match(ContentType, <<"utf-8">>) =/= nomatch),
 
     %% Check various unicode characters are present
@@ -410,7 +410,7 @@ test_unicode_body(Config) ->
 
 test_streaming_response(Config) ->
     Url = make_url(Config, <<"/streaming?chunks=3&size=50">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
 
     %% Should have 3 chunks
     ?assert(binary:match(Body, <<"Chunk 1">>) =/= nomatch),
@@ -423,5 +423,5 @@ test_streaming_response(Config) ->
 
 test_error_exception(Config) ->
     Url = make_url(Config, <<"/error?type=exception">>),
-    {ok, 500, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 500, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assert(binary:match(Body, <<"Internal Server Error">>) =/= nomatch).

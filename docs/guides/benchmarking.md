@@ -283,11 +283,12 @@ hornbeam:start("app:application", #{
 
 ### HTTP/2 for Lower Latency
 
-Enable HTTP/2 for multiplexed connections:
+Enable HTTP/2 for multiplexed connections. Listing HTTP/1.1 alongside it
+serves both from the one TLS port, chosen per connection by ALPN:
 
 ```erlang
 hornbeam:start("app:application", #{
-    http_version => ['HTTP/2', 'HTTP/1.1'],
+    http_version => ['HTTP/1.1', 'HTTP/2'],
     ssl => true,
     certfile => "server.crt",
     keyfile => "server.key"

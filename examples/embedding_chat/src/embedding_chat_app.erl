@@ -55,7 +55,7 @@ start(_StartType, _StartArgs) ->
                 pythonpath => [priv_dir(), VenvSitePackages],
                 %% /ws handled by Erlang, rest by FastAPI
                 routes => [
-                    {"/ws", embedding_chat_ws, #{}}
+                    {'_', <<"/ws">>, fun embedding_chat_ws:handle/1}
                 ]
             }),
 

@@ -41,13 +41,8 @@ cd my_app
     {vm_args, "config/vm.args"}
 ]}.
 
-{profiles, [
-    {test, [
-        {deps, [
-            {hackney, "3.0.2"}
-        ]}
-    ]}
-]}.
+%% livery (already a hornbeam dependency) provides the HTTP client
+%% used in the test suite below; no extra test dependency needed.
 ```
 
 ### Project Structure
@@ -519,18 +514,18 @@ def get_from_remote(key):
 all() -> [test_api].
 
 init_per_suite(Config) ->
-    {ok, _} = application:ensure_all_started(hackney),
     {ok, _} = application:ensure_all_started(my_app),
     Config.
 
 end_per_suite(_Config) ->
     application:stop(my_app),
-    application:stop(hackney),
     ok.
 
 test_api(_Config) ->
-    {ok, 200, _Headers, ClientRef} = hackney:request(get, <<"http://localhost:8000/">>, [], <<>>, []),
-    {ok, Body} = hackney:body(ClientRef),
+    Client = livery_client:new(#{}),
+    {ok, Resp} = livery_client:get(Client, <<"http://localhost:8000/">>),
+    200 = livery_client:status(Resp),
+    {full, Body} = livery_client:body(Resp),
     true = is_binary(Body),
     ok.
 ```

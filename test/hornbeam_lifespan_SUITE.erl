@@ -99,11 +99,11 @@ groups() ->
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(hornbeam),
-    {ok, _} = application:ensure_all_started(hackney),
+    {ok, _} = application:ensure_all_started(livery),
     Config.
 
 end_per_suite(_Config) ->
-    application:stop(hackney),
+    ok,
     application:stop(hornbeam),
     ok.
 
@@ -166,7 +166,7 @@ make_url(Config, Path) ->
 test_startup_complete(Config) ->
     %% Test that lifespan startup completed
     Url = make_url(Config, <<"/state">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     State = jsx:decode(Body, [return_maps]),
 
     %% Check module_state which tracks lifespan events
@@ -176,7 +176,7 @@ test_startup_complete(Config) ->
 test_startup_called(Config) ->
     %% Test that startup was called
     Url = make_url(Config, <<"/state">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     State = jsx:decode(Body, [return_maps]),
 
     ModuleState = maps:get(<<"module_state">>, State),
@@ -185,7 +185,7 @@ test_startup_called(Config) ->
 test_startup_time_recorded(Config) ->
     %% Test that startup time was recorded
     Url = make_url(Config, <<"/state">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     State = jsx:decode(Body, [return_maps]),
 
     ModuleState = maps:get(<<"module_state">>, State),
@@ -195,7 +195,7 @@ test_startup_time_recorded(Config) ->
 test_health_after_startup(Config) ->
     %% Test health endpoint returns OK after startup
     Url = make_url(Config, <<"/health">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(<<"OK">>, Body).
 
 %%% ============================================================================
@@ -205,7 +205,7 @@ test_health_after_startup(Config) ->
 test_lifespan_info_endpoint(Config) ->
     %% Test lifespan info endpoint
     Url = make_url(Config, <<"/lifespan-info">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     Info = jsx:decode(Body, [return_maps]),
 
     ?assertEqual(true, maps:get(<<"lifespan_supported">>, Info)),
@@ -214,7 +214,7 @@ test_lifespan_info_endpoint(Config) ->
 test_uptime_tracking(Config) ->
     %% Test that uptime is tracked
     Url = make_url(Config, <<"/lifespan-info">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     Info = jsx:decode(Body, [return_maps]),
 
     Uptime = maps:get(<<"uptime_seconds">>, Info),
@@ -228,7 +228,7 @@ test_uptime_tracking(Config) ->
 test_state_endpoint(Config) ->
     %% Test state endpoint returns state info
     Url = make_url(Config, <<"/state">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     State = jsx:decode(Body, [return_maps]),
 
     ?assert(maps:is_key(<<"module_state">>, State)).
@@ -238,12 +238,12 @@ test_request_count_increments(Config) ->
     Url = make_url(Config, <<"/counter">>),
 
     %% Make first request
-    {ok, 200, _Headers1, Body1} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body1}}} = hornbeam_test_http:request(get, Url, #{}),
     Counter1 = jsx:decode(Body1, [return_maps]),
     Count1 = maps:get(<<"counter">>, Counter1),
 
     %% Make second request
-    {ok, 200, _Headers2, Body2} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body2}}} = hornbeam_test_http:request(get, Url, #{}),
     Counter2 = jsx:decode(Body2, [return_maps]),
     Count2 = maps:get(<<"counter">>, Counter2),
 
@@ -257,7 +257,7 @@ test_request_count_increments(Config) ->
 test_counter_endpoint(Config) ->
     %% Test counter endpoint
     Url = make_url(Config, <<"/counter">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     Counter = jsx:decode(Body, [return_maps]),
 
     ?assert(maps:is_key(<<"counter">>, Counter)),
@@ -268,7 +268,7 @@ test_counter_increments_multiple_times(Config) ->
     Url = make_url(Config, <<"/counter">>),
 
     Counts = lists:map(fun(_) ->
-        {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+        {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
         Counter = jsx:decode(Body, [return_maps]),
         maps:get(<<"counter">>, Counter)
     end, lists:seq(1, 5)),
@@ -286,10 +286,10 @@ test_counter_increments_multiple_times(Config) ->
 test_root_endpoint(Config) ->
     %% Test root endpoint
     Url = make_url(Config, <<"/">>),
-    {ok, 200, _Headers, Body} = hackney:request(get, Url, [], <<>>, []),
+    {ok, #{status := 200, body := {full, Body}}} = hornbeam_test_http:request(get, Url, #{}),
     ?assertEqual(<<"Lifespan Test App">>, Body).
 
 test_not_found(Config) ->
     %% Test 404 for unknown path
     Url = make_url(Config, <<"/unknown-path">>),
-    {ok, 404, _Headers, _Body} = hackney:request(get, Url, [], <<>>, []).
+    {ok, #{status := 404}} = hornbeam_test_http:request(get, Url, #{}).
