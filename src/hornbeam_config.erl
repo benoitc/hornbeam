@@ -129,8 +129,6 @@ set_config(Key, Value) ->
 update_config(Updates) when is_map(Updates) ->
     gen_server:call(?SERVER, {update_config, Updates}).
 
-%% @doc Get default configuration.
--spec defaults() -> map().
 %% @doc The defaults for every option hornbeam has.
 %%
 %% This is the single source: `hornbeam:start/2' merges the caller's
@@ -138,6 +136,7 @@ update_config(Updates) when is_map(Updates) ->
 %% three copies of this map, which drifted - `bind' was a binary here and
 %% a string in the application env, so a reset produced a different type
 %% from the one a fresh start produced.
+-spec defaults() -> map().
 defaults() ->
     #{
         %% Server
