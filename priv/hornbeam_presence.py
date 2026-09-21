@@ -47,6 +47,11 @@ Example usage:
 from typing import Any, Dict, List, Optional
 
 
+import logging
+
+_log = logging.getLogger(__name__)
+
+
 class Presence:
     """Distributed presence tracking for a topic.
 
@@ -95,8 +100,8 @@ class Presence:
                 result = erlang.call('hornbeam_presence', 'track',
                                      self.topic, pid, key, meta)
                 return result == 'ok'
-            except Exception as e:
-                print(f"Presence track error: {e}")
+            except Exception:
+                _log.exception("presence %s failed", "track")
                 return False
 
     def untrack(self, socket: Any, key: str) -> bool:
@@ -122,8 +127,8 @@ class Presence:
             erlang.cast('hornbeam_presence', 'untrack',
                         self.topic, pid, key)
             return True
-        except Exception as e:
-            print(f"Presence untrack error: {e}")
+        except Exception:
+            _log.exception("presence %s failed", "untrack")
             return False
 
     def untrack_all(self, socket: Any) -> bool:
@@ -148,8 +153,8 @@ class Presence:
             erlang.cast('hornbeam_presence', 'untrack_all',
                         self.topic, pid)
             return True
-        except Exception as e:
-            print(f"Presence untrack_all error: {e}")
+        except Exception:
+            _log.exception("presence %s failed", "untrack_all")
             return False
 
     def update(self, socket: Any, key: str, meta: Dict[str, Any]) -> bool:
@@ -178,8 +183,8 @@ class Presence:
             result = erlang.call('hornbeam_presence', 'update',
                                  self.topic, pid, key, meta)
             return result == 'ok'
-        except Exception as e:
-            print(f"Presence update error: {e}")
+        except Exception:
+            _log.exception("presence %s failed", "update")
             return False
 
     def list(self) -> Dict[str, Dict[str, Any]]:
@@ -196,8 +201,8 @@ class Presence:
             import erlang
             result = erlang.call('hornbeam_presence', 'list', self.topic)
             return _convert_presence_list(result)
-        except Exception as e:
-            print(f"Presence list error: {e}")
+        except Exception:
+            _log.exception("presence %s failed", "list")
             return {}
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
@@ -217,8 +222,8 @@ class Presence:
             if result is None:
                 return None
             return _convert_presence_entry(result)
-        except Exception as e:
-            print(f"Presence get error: {e}")
+        except Exception:
+            _log.exception("presence %s failed", "get_by_key")
             return None
 
 

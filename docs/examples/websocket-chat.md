@@ -357,7 +357,7 @@ hornbeam:start("app:application", #{
 }).
 ```
 
-Open http://localhost:8000 in multiple browsers to test.
+Open http://localhost:8642 in multiple browsers to test.
 
 ## Features
 

@@ -52,7 +52,7 @@ start() ->
 
     %% Start the server
     hornbeam:start("embedding_service.app:application", #{
-        bind => <<"0.0.0.0:8000">>,
+        bind => <<"0.0.0.0:8642">>,
         workers => 4,
         pythonpath => [<<"examples/embedding_service">>]
     }).

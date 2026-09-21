@@ -47,7 +47,7 @@ services:
       dockerfile: examples/demo/distributed_rpc/Dockerfile
     hostname: main
     ports:
-      - "8002:8000"
+      - "8002:8642"
     environment:
       - NODE_NAME=main
       - COOKIE=demo_cluster

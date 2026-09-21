@@ -50,7 +50,7 @@ if [ "$IS_MAIN" = "true" ]; then
             worker_class => asgi,
             pythonpath => [\"/build/hornbeam/examples/demo/distributed_rpc\"]
         }),
-        io:format(\"Hornbeam started on port 8000~n\", []),
+        io:format(\"Hornbeam started on port 8642~n\", []),
         receive stop -> ok end.
     "
 else

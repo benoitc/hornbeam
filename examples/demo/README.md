@@ -51,26 +51,26 @@ docker build -f examples/demo/Dockerfile.demo \
     --build-arg EXAMPLE=ml_caching \
     -t ml_caching_demo .
 
-docker run -p 8000:8000 ml_caching_demo
+docker run -p 8642:8642 ml_caching_demo
 ```
 
 Test:
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:8642/health
 
 # First request - computes embedding
-curl -X POST http://localhost:8000/embed \
+curl -X POST http://localhost:8642/embed \
      -H "Content-Type: application/json" \
      -d '{"text": "Hello world"}'
 
 # Second request - returns cached (much faster)
-curl -X POST http://localhost:8000/embed \
+curl -X POST http://localhost:8642/embed \
      -H "Content-Type: application/json" \
      -d '{"text": "Hello world"}'
 
 # View cache metrics
-curl http://localhost:8000/metrics
+curl http://localhost:8642/metrics
 ```
 
 ### Distributed RPC Example
@@ -121,7 +121,7 @@ hornbeam:start("app:app", #{
 ```
 
 Test:
-- Open http://localhost:8000 in multiple browser tabs
+- Open http://localhost:8642 in multiple browser tabs
 - Messages broadcast to all connected clients
 - For cluster setup, start multiple nodes and connect them
 

@@ -102,7 +102,7 @@ start() ->
 
     %% Start the server
     hornbeam:start("app:app", #{
-        bind => "0.0.0.0:8000",
+        bind => "0.0.0.0:8642",
         worker_class => asgi,
         pythonpath => ["priv/python"]
     }).
@@ -388,7 +388,7 @@ handle(Req) ->
         {cache_ttl, 3600}
     ]},
     {hornbeam, [
-        {bind, "0.0.0.0:8000"},
+        {bind, "0.0.0.0:8642"},
         {workers, 8},
         {worker_class, asgi},
         {timeout, 30000}

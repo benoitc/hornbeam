@@ -20,7 +20,7 @@ services:
       args:
         EXAMPLE: ml_caching
     ports:
-      - "9001:8000"
+      - "9001:8642"
     environment:
       - HORNBEAM_APP=app:app
       - HORNBEAM_WORKER_CLASS=asgi
@@ -36,7 +36,7 @@ services:
       args:
         EXAMPLE: distributed_rpc
     ports:
-      - "9002:8000"
+      - "9002:8642"
     environment:
       - HORNBEAM_APP=app:app
       - HORNBEAM_WORKER_CLASS=asgi
@@ -52,7 +52,7 @@ services:
       args:
         EXAMPLE: realtime_chat
     ports:
-      - "9003:8000"
+      - "9003:8642"
     environment:
       - HORNBEAM_APP=app:app
       - HORNBEAM_WORKER_CLASS=asgi
@@ -67,4 +67,4 @@ services:
       context: ../..
       dockerfile: examples/demo/multi_app/Dockerfile
     ports:
-      - "9004:8000"
+      - "9004:8642"

@@ -44,6 +44,7 @@
 
 -export([
     set_hooks/1,
+    clear/0,
     get_hooks/0,
     run_on_request/1,
     run_on_response/1,
@@ -64,6 +65,17 @@ set_hooks(Hooks) when is_map(Hooks) ->
     persistent_term:put(?HOOK_ON_REQUEST, maps:get(on_request, Hooks, undefined)),
     persistent_term:put(?HOOK_ON_RESPONSE, maps:get(on_response, Hooks, undefined)),
     persistent_term:put(?HOOK_ON_ERROR, maps:get(on_error, Hooks, undefined)),
+    ok.
+
+%% @doc Forget every configured hook.
+%%
+%% Erases rather than storing `undefined': a stopped server should leave
+%% no persistent_term behind, and `get/2' already defaults for readers.
+-spec clear() -> ok.
+clear() ->
+    _ = persistent_term:erase(?HOOK_ON_REQUEST),
+    _ = persistent_term:erase(?HOOK_ON_RESPONSE),
+    _ = persistent_term:erase(?HOOK_ON_ERROR),
     ok.
 
 %% @doc Get the current hooks configuration.

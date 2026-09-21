@@ -31,8 +31,8 @@ hornbeam:start("main:app", #{worker_class => asgi}).
 
 %% With all options
 hornbeam:start("myapp:application", #{
-    bind => "0.0.0.0:8000",
-    workers => 4,
+    bind => <<"0.0.0.0:8642">>,
+    num_contexts => 4,
     worker_class => asgi,
     lifespan => auto
 }).
@@ -220,7 +220,7 @@ rebar3 shell
 ```erlang
 hornbeam:start("myapp:application", #{
     %% Server
-    bind => <<"0.0.0.0:8000">>,
+    bind => <<"0.0.0.0:8642">>,
     ssl => false,
     certfile => undefined,
     keyfile => undefined,
@@ -230,11 +230,12 @@ hornbeam:start("myapp:application", #{
     %% 'HTTP/2' and 'HTTP/3' require ssl => true
     http_version => ['HTTP/1.1'],
 
-    %% Workers
-    workers => 4,
+    %% Python contexts
+    num_contexts => 4,      % defaults to the scheduler count
+    num_acceptors => 100,
+    max_concurrent => 10000,
     timeout => 30000,
     keepalive => 2,
-    max_requests => 1000,
 
     %% ASGI
     lifespan => auto,  % auto | on | off
@@ -251,13 +252,14 @@ hornbeam:start("myapp:application", #{
 ### Via sys.config
 
 ```erlang
+%% Every option defaults in hornbeam_config:defaults/0; set a key here
+%% only to override one.
 [
     {hornbeam, [
-        {bind, "127.0.0.1:8000"},
-        {workers, 4},
+        {bind, <<"127.0.0.1:8642">>},
         {worker_class, wsgi},
         {timeout, 30000},
-        {pythonpath, ["."]}
+        {pythonpath, [<<".">>]}
     ]}
 ].
 ```

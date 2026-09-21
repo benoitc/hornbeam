@@ -42,7 +42,7 @@ start_hornbeam() ->
     io:format("ML Caching: Starting Hornbeam with app in ~s~n", [PrivDir]),
 
     hornbeam:start("app:app", #{
-        bind => "[::]:8000",
+        bind => "[::]:8642",
         worker_class => asgi,
         pythonpath => [PrivDir],
         lifespan_timeout => 120000

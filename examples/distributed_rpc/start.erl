@@ -34,9 +34,9 @@
 %%%
 %%% Test:
 %%% ```
-%%% $ curl http://localhost:8000/cluster
-%%% $ curl http://localhost:8000/nodes
-%%% $ curl -X POST http://localhost:8000/rpc \
+%%% $ curl http://localhost:8642/cluster
+%%% $ curl http://localhost:8642/nodes
+%%% $ curl -X POST http://localhost:8642/rpc \
 %%%        -H "Content-Type: application/json" \
 %%%        -d '{"node": "worker@yourhost", "module": "erlang",
 %%%             "function": "system_info", "args": ["process_count"]}'
@@ -57,7 +57,7 @@ start_web() ->
 
     %% Start hornbeam with the distributed RPC example app
     hornbeam:start("app:application", #{
-        bind => <<"0.0.0.0:8000">>,
+        bind => <<"0.0.0.0:8642">>,
         pythonpath => [<<"examples/distributed_rpc">>]
     }).
 

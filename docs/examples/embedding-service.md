@@ -286,30 +286,30 @@ hornbeam:start("app:app", #{
 
 ```bash
 # Index documents
-curl -X POST http://localhost:8000/index \
+curl -X POST http://localhost:8642/index \
   -H "Content-Type: application/json" \
   -d '{"id": "1", "text": "Python is a programming language", "metadata": {"category": "tech"}}'
 
-curl -X POST http://localhost:8000/index \
+curl -X POST http://localhost:8642/index \
   -H "Content-Type: application/json" \
   -d '{"id": "2", "text": "Erlang is great for concurrent systems"}'
 
-curl -X POST http://localhost:8000/index \
+curl -X POST http://localhost:8642/index \
   -H "Content-Type: application/json" \
   -d '{"id": "3", "text": "Machine learning uses neural networks"}'
 
 # Search
-curl -X POST http://localhost:8000/search \
+curl -X POST http://localhost:8642/search \
   -H "Content-Type: application/json" \
   -d '{"query": "programming languages", "top_k": 5}'
 
 # Direct embedding
-curl -X POST http://localhost:8000/embed \
+curl -X POST http://localhost:8642/embed \
   -H "Content-Type: application/json" \
   -d '{"texts": ["Hello world", "How are you?"]}'
 
 # Check stats
-curl http://localhost:8000/stats
+curl http://localhost:8642/stats
 ```
 
 ## Requirements

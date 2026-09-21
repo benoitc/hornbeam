@@ -24,8 +24,8 @@ Run with Hornbeam cluster:
     > net_adm:ping('main@hostname').
 
 Test:
-    curl http://localhost:8000/cluster
-    curl -X POST http://localhost:8000/infer \
+    curl http://localhost:8642/cluster
+    curl -X POST http://localhost:8642/infer \
          -H "Content-Type: application/json" \
          -d '{"prompts": ["Hello", "World", "Test"]}'
 """

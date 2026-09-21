@@ -9,16 +9,11 @@
     livery,
     erlang_python
    ]},
-  {env,[
-    {bind, "127.0.0.1:8000"},
-    {workers, 4},
-    {worker_class, wsgi},
-    {timeout, 30000},
-    {keepalive, 2},
-    {max_requests, 1000},
-    {preload_app, false},
-    {pythonpath, ["."]}
-  ]},
+  %% No defaults here on purpose: hornbeam_config:defaults/0 is the one
+  %% source, and duplicating values in the env is how they drifted -
+  %% `bind' was a string here and a binary there, so a reset produced a
+  %% different type from a fresh start. The env is for overrides only.
+  {env,[]},
   {modules, []},
   {licenses, ["Apache-2.0"]},
   {links, [

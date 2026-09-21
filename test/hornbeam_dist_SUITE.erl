@@ -39,7 +39,10 @@
     test_rpc_cast_local/1,
     test_atom_conversion/1,
     test_binary_conversion/1,
-    test_list_conversion/1
+    test_list_conversion/1,
+    test_unknown_module_refused/1,
+    test_unknown_name_creates_no_atom/1,
+    test_invalid_node_name_refused/1
 ]).
 
 all() ->
@@ -56,7 +59,10 @@ groups() ->
         test_rpc_cast_local,
         test_atom_conversion,
         test_binary_conversion,
-        test_list_conversion
+        test_list_conversion,
+        test_unknown_module_refused,
+        test_unknown_name_creates_no_atom,
+        test_invalid_node_name_refused
     ]}].
 
 init_per_suite(Config) ->
@@ -184,3 +190,42 @@ test_list_conversion(_Config) ->
     %% RPC call with list node name
     {ok, Result} = hornbeam_dist:rpc_call(NodeList, "erlang", "node", [], 5000),
     ?assertEqual(Node, Result).
+
+%%% ============================================================================
+%%% Caller-supplied names must not grow the atom table
+%%%
+%%% These names arrive from Python, and the atom table is node-wide and
+%%% never collected, so converting them with binary_to_atom/2 is an
+%%% exhaustion path.
+%%% ============================================================================
+
+%% A module nothing has loaded names nothing callable, so it is refused
+%% rather than minted.
+test_unknown_module_refused(_Config) ->
+    Node = hornbeam_dist:node(),
+    Unknown = <<"hb_no_such_module_9f3a">>,
+    ?assertEqual({error, {unknown_name, Unknown}},
+                 hornbeam_dist:rpc_call(Node, Unknown, <<"node">>, [], 5000)),
+    ?assertEqual({error, {unknown_name, Unknown}},
+                 hornbeam_dist:rpc_cast(Node, Unknown, <<"node">>, [])).
+
+%% The property itself: a thousand distinct unknown names, and the atom
+%% table does not grow. This fails outright on binary_to_atom/2.
+test_unknown_name_creates_no_atom(_Config) ->
+    Node = hornbeam_dist:node(),
+    Before = erlang:system_info(atom_count),
+    lists:foreach(fun(N) ->
+        Name = iolist_to_binary(io_lib:format("hb_atom_probe_~p", [N])),
+        _ = hornbeam_dist:rpc_call(Node, Name, <<"node">>, [], 5000)
+    end, lists:seq(1, 1000)),
+    After = erlang:system_info(atom_count),
+    ?assertEqual(Before, After).
+
+%% Node names may legitimately be new, so they are shape-checked and
+%% capped rather than refused outright.
+test_invalid_node_name_refused(_Config) ->
+    ?assertEqual(pang, hornbeam_dist:ping(<<"no-at-sign">>)),
+    ?assertEqual(false, hornbeam_dist:connect(<<"no-at-sign">>)),
+    ?assertEqual(false, hornbeam_dist:disconnect(<<"never@named">>)),
+    %% A well-formed name is accepted, and pang because nothing is there.
+    ?assertEqual(pang, hornbeam_dist:ping(<<"hbprobe@127.0.0.1">>)).

@@ -34,9 +34,12 @@ Example usage:
         return ('noreply', socket)
 """
 
+import logging
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+
+_log = logging.getLogger(__name__)
 
 
 # Registry of channel handlers
@@ -204,9 +207,12 @@ class Channel:
         except ImportError:
             # Not running under Erlang, skip registration
             pass
-        except Exception as e:
-            # Log but don't fail - might not be running yet
-            print(f"Warning: Could not register channel {self.pattern}: {e}")
+        except Exception:
+            # Registration failing means this channel never receives
+            # joins, so it is reported with a traceback rather than a
+            # bare print: a print here hid a missing Erlang-side
+            # registration for as long as it existed.
+            _log.exception("could not register channel %s", self.pattern)
 
     def on_join(self, func: Callable) -> Callable:
         """Decorator for the join handler.

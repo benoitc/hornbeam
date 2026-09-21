@@ -87,18 +87,18 @@ setup_and_start() ->
                 pythonpath => [FrontendDir]
             }}
         ],
-        bind => "[::]:8000"
+        bind => "[::]:8642"
     }),
 
     case Result of
         ok ->
-            io:format("Server started at http://localhost:8000~n"),
+            io:format("Server started at http://localhost:8642~n"),
             io:format("~n"),
             io:format("Try:~n"),
-            io:format("  curl http://localhost:8000/          # Frontend~n"),
-            io:format("  curl http://localhost:8000/api       # API root~n"),
-            io:format("  curl http://localhost:8000/api/items # List items~n"),
-            io:format("  curl http://localhost:8000/admin     # Admin root~n"),
+            io:format("  curl http://localhost:8642/          # Frontend~n"),
+            io:format("  curl http://localhost:8642/api       # API root~n"),
+            io:format("  curl http://localhost:8642/api/items # List items~n"),
+            io:format("  curl http://localhost:8642/admin     # Admin root~n"),
             io:format("~n"),
             ok;
         {error, _} = Error ->

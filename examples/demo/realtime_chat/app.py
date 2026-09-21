@@ -13,7 +13,7 @@ Run with Hornbeam:
     }).
 
 Test:
-    Open http://localhost:8000 in multiple browser tabs
+    Open http://localhost:8642 in multiple browser tabs
     Messages broadcast to all connected clients
 
 For cluster setup:

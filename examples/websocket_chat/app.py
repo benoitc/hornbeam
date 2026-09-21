@@ -12,7 +12,7 @@ Run with:
     hornbeam:start("websocket_chat.app:app", #{worker_class => asgi}).
 
 Test with:
-    websocat ws://localhost:8000/chat/general
+    websocat ws://localhost:8642/chat/general
 
 Message format:
     {"type": "message", "text": "Hello everyone!"}

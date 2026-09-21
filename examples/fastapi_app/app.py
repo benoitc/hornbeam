@@ -12,9 +12,9 @@ Run with:
     hornbeam:start("fastapi_app.app:app", #{worker_class => asgi, lifespan => on}).
 
 Test with:
-    curl http://localhost:8000/
-    curl http://localhost:8000/items/42
-    curl -X POST http://localhost:8000/items -d '{"name": "Widget", "price": 9.99}'
+    curl http://localhost:8642/
+    curl http://localhost:8642/items/42
+    curl -X POST http://localhost:8642/items -d '{"name": "Widget", "price": 9.99}'
 """
 
 from contextlib import asynccontextmanager

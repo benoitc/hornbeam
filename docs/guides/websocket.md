@@ -348,7 +348,7 @@ app = Starlette(routes=[
 ### Using websocat
 
 ```bash
-websocat ws://localhost:8000/ws
+websocat ws://localhost:8642/ws
 ```
 
 ### Using Python
@@ -358,7 +358,7 @@ import asyncio
 import websockets
 
 async def test():
-    async with websockets.connect('ws://localhost:8000/ws') as ws:
+    async with websockets.connect('ws://localhost:8642/ws') as ws:
         await ws.send('Hello!')
         response = await ws.recv()
         print(response)

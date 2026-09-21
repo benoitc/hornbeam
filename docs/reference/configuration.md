@@ -13,7 +13,7 @@ This document covers all Hornbeam configuration options.
 ```erlang
 %% Single application
 hornbeam:start("myapp:application", #{
-    bind => "0.0.0.0:8000",
+    bind => "0.0.0.0:8642",
     workers => 4,
     worker_class => asgi
 }).
@@ -24,7 +24,7 @@ hornbeam:start(#{
         {"/api", "api:app", #{worker_class => asgi}},
         {"/", "frontend:app", #{worker_class => wsgi}}
     ],
-    bind => "0.0.0.0:8000"
+    bind => "0.0.0.0:8642"
 }).
 ```
 
@@ -72,7 +72,7 @@ hornbeam:start(#{
         {"/health", health_handler, #{}},
         {"/metrics", metrics_handler, #{}}
     ],
-    bind => "0.0.0.0:8000",
+    bind => "0.0.0.0:8642",
     pythonpath => [".", "apps"]
 }).
 ```
@@ -83,7 +83,7 @@ See [Multi-App Guide](/docs/guides/multi-app) for detailed usage.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `bind` | binary/string | `"127.0.0.1:8000"` | Address and port to bind to |
+| `bind` | binary/string | `"127.0.0.1:8642"` | Address and port to bind to |
 | `ssl` | boolean | `false` | Enable SSL/TLS |
 | `certfile` | binary | `undefined` | Path to SSL certificate (PEM) |
 | `keyfile` | binary | `undefined` | Path to SSL private key (PEM) |
@@ -381,7 +381,7 @@ Configure via sys.config for releases:
 %% config/sys.config
 [
     {hornbeam, [
-        {bind, "0.0.0.0:8000"},
+        {bind, "0.0.0.0:8642"},
         {workers, 8},
         {worker_class, asgi},
         {timeout, 30000},
@@ -402,7 +402,7 @@ hornbeam:start("app:application").
 
 ```bash
 # Set via environment
-export HORNBEAM_BIND="0.0.0.0:8000"
+export HORNBEAM_BIND="0.0.0.0:8642"
 export HORNBEAM_WORKERS=8
 export HORNBEAM_TIMEOUT=30000
 ```
@@ -410,7 +410,7 @@ export HORNBEAM_TIMEOUT=30000
 ```erlang
 %% Read from environment
 hornbeam:start("app:application", #{
-    bind => os:getenv("HORNBEAM_BIND", "127.0.0.1:8000"),
+    bind => os:getenv("HORNBEAM_BIND", "127.0.0.1:8642"),
     workers => list_to_integer(os:getenv("HORNBEAM_WORKERS", "4"))
 }).
 ```

@@ -21,7 +21,7 @@ Run as part of ml_caching OTP app:
     > hornbeam:start("app:app", #{worker_class => asgi}).
 
 Test:
-    curl -X POST http://localhost:8000/embed \
+    curl -X POST http://localhost:8642/embed \
          -H "Content-Type: application/json" \
          -d '{"text": "Hello world"}'
 """

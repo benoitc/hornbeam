@@ -214,30 +214,30 @@ gunicorn app:application
 
 ```bash
 # Create items
-curl -X POST http://localhost:8000/api/items \
+curl -X POST http://localhost:8642/api/items \
   -H "Content-Type: application/json" \
   -d '{"name": "Item 1", "description": "First item"}'
 
-curl -X POST http://localhost:8000/api/items \
+curl -X POST http://localhost:8642/api/items \
   -H "Content-Type: application/json" \
   -d '{"name": "Item 2", "description": "Second item"}'
 
 # List items (first call - not cached)
-curl http://localhost:8000/api/items
+curl http://localhost:8642/api/items
 # {"items": [...], "cached": false}
 
 # List items (second call - cached)
-curl http://localhost:8000/api/items
+curl http://localhost:8642/api/items
 # {"items": [...], "cached": true}
 
 # Get single item
-curl http://localhost:8000/api/items/1
+curl http://localhost:8642/api/items/1
 
 # Check metrics
-curl http://localhost:8000/metrics
+curl http://localhost:8642/metrics
 
 # Test rate limiting
-for i in {1..105}; do curl http://localhost:8000/api/limited; done
+for i in {1..105}; do curl http://localhost:8642/api/limited; done
 ```
 
 ## Requirements
