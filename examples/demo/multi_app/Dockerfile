@@ -41,7 +41,7 @@ RUN python3 -m venv priv/admin/venv && \
 RUN rebar3 release
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8642
 
 # Start the release
 CMD ["/build/hornbeam/examples/demo/multi_app/_build/default/rel/multi_app/bin/multi_app", "foreground"]

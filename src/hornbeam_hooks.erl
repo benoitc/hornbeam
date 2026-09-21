@@ -54,7 +54,8 @@
     stream_ref/4,
     stream_next_ref/1,
     find/1,
-    all/0
+    all/0,
+    clear/0
 ]).
 
 %% Response helpers
@@ -225,6 +226,16 @@ ensure_gen_table() ->
         _ -> ok
     end.
 
+%% @doc Unregister every hook.
+%%
+%% Each registration is a persistent_term, so leaving them behind after
+%% `hornbeam:stop/0' means a later run answers with the previous run's
+%% handlers. Goes through the server so it serialises with `reg' and
+%% `unreg' rather than racing them.
+-spec clear() -> ok.
+clear() ->
+    gen_server:call(?SERVER, clear).
+
 %%% ============================================================================
 %%% gen_server callbacks
 %%% ============================================================================
@@ -233,6 +244,18 @@ init([]) ->
     %% Initialize the hooks list
     persistent_term:put(?HOOKS_LIST, []),
     {ok, #state{}}.
+
+handle_call(clear, _From, State) ->
+    _ = [persistent_term:erase(?HOOK_KEY(AppPath))
+         || AppPath <- persistent_term:get(?HOOKS_LIST, [])],
+    persistent_term:put(?HOOKS_LIST, []),
+    %% The generator table is public and created lazily; empty it rather
+    %% than deleting it, so a concurrent ensure_gen_table/0 stays valid.
+    _ = case ets:info(?GEN_TABLE) of
+        undefined -> ok;
+        _ -> ets:delete_all_objects(?GEN_TABLE)
+    end,
+    {reply, ok, State};
 
 handle_call({reg, AppPath, Handler}, _From, State) ->
     %% Store in persistent_term for fast lookup

@@ -110,7 +110,7 @@ hornbeam:start(#{
             worker_class => wsgi
         }}
     ],
-    bind => "0.0.0.0:8000"
+    bind => "0.0.0.0:8642"
 }).
 ```
 
@@ -135,7 +135,7 @@ hornbeam:start(#{
     ],
 
     %% Global options
-    bind => "0.0.0.0:8000",
+    bind => "0.0.0.0:8642",
     pythonpath => [".", "apps"],
     venv => "/path/to/venv",
     ssl => true,

@@ -56,7 +56,7 @@ hornbeam:start("myapp:application").
 ### 3. Test It
 
 ```bash
-curl http://localhost:8000
+curl http://localhost:8642
 # Hello from Hornbeam!
 ```
 
@@ -140,7 +140,7 @@ Basic configuration options:
 ```erlang
 hornbeam:start("myapp:application", #{
     %% Server binding
-    bind => "0.0.0.0:8000",
+    bind => "0.0.0.0:8642",
 
     %% Protocol: wsgi or asgi
     worker_class => wsgi,

@@ -34,7 +34,8 @@
     update/4,
     list/1,
     get_by_key/2,
-    dirty_list/1
+    dirty_list/1,
+    clear/0
 ]).
 
 %% Internal - for channel use
@@ -82,7 +83,7 @@
 -record(topic_state, {
     orswot = #orswot{} :: #orswot{},
     pending_delta = #delta{} :: #delta{},
-    monitors = #{} :: map()  % #{Pid => [{Key, HbRef}]}
+    monitors = #{} :: map()  % #{Pid => {MonRef, [{Key, HbRef}]}}
 }).
 
 -record(state, {
@@ -95,6 +96,15 @@
 %%% ============================================================================
 %%% API
 %%% ============================================================================
+
+%% @doc Drop every tracked presence on this node.
+%%
+%% The CRDT state is per-node and rebuilt by tracking, so a stopped
+%% server should not keep answering `list/1' with the previous run's
+%% members. Remote state arrives again on the next sync.
+-spec clear() -> ok.
+clear() ->
+    gen_server:call(?SERVER, clear).
 
 %% @doc Start the presence server.
 start_link() ->
@@ -166,6 +176,15 @@ init([]) ->
         sync_timer = SyncTimer,
         clock_timer = ClockTimer
     }}.
+
+handle_call(clear, _From, #state{topics = Topics} = State) ->
+    %% Release every monitor before dropping the topics that hold them,
+    %% or the refs become unreachable and the DOWNs arrive for state
+    %% that no longer exists.
+    _ = [demonitor_pid(Pid, Monitors)
+         || #topic_state{monitors = Monitors} <- maps:values(Topics),
+            Pid <- maps:keys(Monitors)],
+    {reply, ok, State#state{topics = #{}}};
 
 handle_call({track, Topic, Pid, Key, Meta}, _From, State) ->
     {Reply, NewState} = do_track(Topic, Pid, Key, Meta, State),
@@ -320,7 +339,7 @@ do_untrack(Topic, Pid, Key, #state{topics = Topics} = State) ->
             #topic_state{orswot = Orswot, pending_delta = Delta, monitors = Monitors} = TopicState,
 
             %% Find HbRefs for this Pid+Key
-            PidEntries = maps:get(Pid, Monitors, []),
+            PidEntries = pid_entries(Pid, Monitors),
             HbRefs = [Ref || {K, Ref} <- PidEntries, K =:= Key],
 
             case HbRefs of
@@ -335,10 +354,11 @@ do_untrack(Topic, Pid, Key, #state{topics = Topics} = State) ->
                     NewMonitors = case NewPidEntries of
                         [] ->
                             %% No more entries for this pid, demonitor
-                            catch demonitor_pid(Pid, Monitors),
+                            ok = demonitor_pid(Pid, Monitors),
                             maps:remove(Pid, Monitors);
                         _ ->
-                            Monitors#{Pid => NewPidEntries}
+                            {MonRef, _} = maps:get(Pid, Monitors),
+                            Monitors#{Pid => {MonRef, NewPidEntries}}
                     end,
 
                     NewTopicState = TopicState#topic_state{
@@ -363,7 +383,7 @@ do_untrack_all(Topic, Pid, #state{topics = Topics} = State) ->
         TopicState ->
             #topic_state{orswot = Orswot, pending_delta = Delta, monitors = Monitors} = TopicState,
 
-            PidEntries = maps:get(Pid, Monitors, []),
+            PidEntries = pid_entries(Pid, Monitors),
             case PidEntries of
                 [] ->
                     State;
@@ -381,7 +401,7 @@ do_untrack_all(Topic, Pid, #state{topics = Topics} = State) ->
                     end, {Orswot, [], Delta}, ByKey),
 
                     %% Demonitor
-                    catch demonitor_pid(Pid, Monitors),
+                    ok = demonitor_pid(Pid, Monitors),
                     NewMonitors = maps:remove(Pid, Monitors),
 
                     NewTopicState = TopicState#topic_state{
@@ -459,23 +479,33 @@ do_get_by_key(Topic, Key, #state{topics = Topics}) ->
 %%% Internal Functions - Monitoring
 %%% ============================================================================
 
+%% One monitor per pid per topic, and the ref is kept so it can be
+%% released. Monitoring the same pid from several topics is deliberate:
+%% each topic then owns a ref it can drop without disturbing the others.
 add_monitor(Pid, Key, HbRef, Monitors) ->
-    case maps:is_key(Pid, Monitors) of
-        false ->
-            %% New pid, set up monitor
-            erlang:monitor(process, Pid),
-            Monitors#{Pid => [{Key, HbRef}]};
-        true ->
-            Entries = maps:get(Pid, Monitors),
-            Monitors#{Pid => [{Key, HbRef} | Entries]}
+    case maps:get(Pid, Monitors, undefined) of
+        undefined ->
+            MonRef = erlang:monitor(process, Pid),
+            Monitors#{Pid => {MonRef, [{Key, HbRef}]}};
+        {MonRef, Entries} ->
+            Monitors#{Pid => {MonRef, [{Key, HbRef} | Entries]}}
     end.
 
+%% @private Entries for a pid, or [] when it is not tracked here.
+pid_entries(Pid, Monitors) ->
+    case maps:get(Pid, Monitors, undefined) of
+        undefined -> [];
+        {_MonRef, Entries} -> Entries
+    end.
+
+%% @private Release the monitor for a pid. `flush' drops a DOWN that is
+%% already in the mailbox, so a later untrack cannot be re-driven by a
+%% message for a monitor nobody holds any more.
 demonitor_pid(Pid, Monitors) ->
     case maps:get(Pid, Monitors, undefined) of
         undefined -> ok;
-        _Entries ->
-            %% Find the monitor ref (we don't store it, so we can't demonitor)
-            %% This is fine - when the process dies we'll clean up anyway
+        {MonRef, _Entries} ->
+            _ = erlang:demonitor(MonRef, [flush]),
             ok
     end.
 

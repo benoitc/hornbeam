@@ -32,7 +32,8 @@
     find_handler/1,
     parse_topic_params/2,
     call_handler/3,
-    list_handlers/0
+    list_handlers/0,
+    clear/0
 ]).
 
 -export([
@@ -112,10 +113,19 @@ list_handlers() ->
 %%% gen_server callbacks
 %%% ============================================================================
 
+%% @doc Forget every registered channel handler.
+-spec clear() -> ok.
+clear() ->
+    gen_server:call(?SERVER, clear).
+
 init([]) ->
     %% Create ETS table for handlers
     _ = ets:new(?TABLE, [named_table, protected, set, {keypos, 2}]),
     {ok, #{}}.
+
+handle_call(clear, _From, State) ->
+    true = ets:delete_all_objects(?TABLE),
+    {reply, ok, State};
 
 handle_call({register, Pattern, HandlerInfo}, _From, State) ->
     Handler = make_handler(Pattern, HandlerInfo),

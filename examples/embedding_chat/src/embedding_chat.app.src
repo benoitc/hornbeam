@@ -10,7 +10,7 @@
     ]},
     {env, [
         {model_name, "all-MiniLM-L6-v2"},
-        {port, 8000},
+        {port, 8642},
         {bind, "0.0.0.0"}
     ]},
     {modules, []},

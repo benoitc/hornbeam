@@ -52,7 +52,7 @@ COPY examples/demo/distributed_rpc/start_node.sh /app/start_node.sh
 RUN chmod +x /app/start_node.sh
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8642
 
 # Start the node
 WORKDIR /build/hornbeam

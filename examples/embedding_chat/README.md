@@ -30,7 +30,7 @@ erl -pa _build/default/lib/*/ebin
 > application:ensure_all_started(embedding_chat).
 ```
 
-The server starts on http://localhost:8000
+The server starts on http://localhost:8642
 
 ## Endpoints
 
@@ -46,18 +46,18 @@ The server starts on http://localhost:8000
 
 ```bash
 # Get embeddings
-curl -X POST http://localhost:8000/embed \
+curl -X POST http://localhost:8642/embed \
   -H "Content-Type: application/json" \
   -d '{"texts": ["Hello world", "How are you?"]}'
 
 # Compute similarity
-curl -X POST http://localhost:8000/similarity \
+curl -X POST http://localhost:8642/similarity \
   -H "Content-Type: application/json" \
   -d '{"text1": "I love cats", "text2": "I adore kittens"}'
 # Returns: {"similarity": 0.82, "interpretation": "Very similar"}
 
 # Find similar
-curl -X POST http://localhost:8000/find_similar \
+curl -X POST http://localhost:8642/find_similar \
   -H "Content-Type: application/json" \
   -d '{
     "query": "programming language",
@@ -66,10 +66,10 @@ curl -X POST http://localhost:8000/find_similar \
 # Returns: {"index": 0, "score": 0.67, "match": "Python is great"}
 
 # Open chat UI
-open http://localhost:8000/chat
+open http://localhost:8642/chat
 
 # Test WebSocket
-websocat ws://localhost:8000/ws
+websocat ws://localhost:8642/ws
 ```
 
 ## Architecture
@@ -109,7 +109,7 @@ In `src/embedding_chat.app.src`:
 ```erlang
 {env, [
     {model_name, "all-MiniLM-L6-v2"},  % sentence-transformers model
-    {port, 8000},                       % HTTP port
+    {port, 8642},                       % HTTP port
     {bind, "0.0.0.0"}                   % Bind address
 ]}
 ```

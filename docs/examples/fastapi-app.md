@@ -323,35 +323,35 @@ hornbeam:start("app:app", #{
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:8642/health
 
 # Create items
-curl -X POST http://localhost:8000/items/ \
+curl -X POST http://localhost:8642/items/ \
   -H "Content-Type: application/json" \
   -d '{"name": "Laptop", "description": "High-performance laptop", "price": 999.99}'
 
-curl -X POST http://localhost:8000/items/ \
+curl -X POST http://localhost:8642/items/ \
   -H "Content-Type: application/json" \
   -d '{"name": "Phone", "description": "Smartphone with great camera", "price": 699.99}'
 
 # List items
-curl http://localhost:8000/items/
+curl http://localhost:8642/items/
 
 # Generate embedding
-curl -X POST http://localhost:8000/embed \
+curl -X POST http://localhost:8642/embed \
   -H "Content-Type: application/json" \
   -d '{"text": "high quality electronics"}'
 
 # Semantic search
-curl -X POST http://localhost:8000/search \
+curl -X POST http://localhost:8642/search \
   -H "Content-Type: application/json" \
   -d '{"query": "computing device", "top_k": 2}'
 
 # Stream events
-curl http://localhost:8000/stream
+curl http://localhost:8642/stream
 
 # Metrics
-curl http://localhost:8000/metrics
+curl http://localhost:8642/metrics
 ```
 
 ### WebSocket Testing
@@ -361,7 +361,7 @@ import asyncio
 import websockets
 
 async def test_ws():
-    async with websockets.connect('ws://localhost:8000/ws') as ws:
+    async with websockets.connect('ws://localhost:8642/ws') as ws:
         await ws.send('{"message": "Hello!"}')
         response = await ws.recv()
         print(response)

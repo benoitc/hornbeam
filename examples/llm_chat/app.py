@@ -12,7 +12,7 @@ Run with:
     hornbeam:start("llm_chat.app:app", #{worker_class => asgi, lifespan => on}).
 
 Test with:
-    curl -X POST http://localhost:8000/chat \
+    curl -X POST http://localhost:8642/chat \
          -H "Content-Type: application/json" \
          -d '{"prompt": "Hello, how are you?"}'
 """

@@ -20,7 +20,7 @@
 %%% == Configuration Options ==
 %%%
 %%% === Server ===
-%%% - bind: Address to bind to (default: "127.0.0.1:8000")
+%%% - bind: Address to bind to (default: "127.0.0.1:8642")
 %%% - ssl: Enable SSL/TLS (default: false)
 %%% - certfile: Path to SSL certificate file
 %%% - keyfile: Path to SSL private key file
@@ -66,7 +66,11 @@
     set_config/1,
     set_config/2,
     update_config/1,
-    defaults/0
+    reset/0,
+    defaults/0,
+    multi_defaults/0,
+    default_bind/0,
+    env_keys/0
 ]).
 
 -export([
@@ -125,12 +129,19 @@ set_config(Key, Value) ->
 update_config(Updates) when is_map(Updates) ->
     gen_server:call(?SERVER, {update_config, Updates}).
 
-%% @doc Get default configuration.
+%% @doc The defaults for every option hornbeam has.
+%%
+%% This is the single source: `hornbeam:start/2' merges the caller's
+%% options over it, and `multi_defaults/0' is a subset of it. There were
+%% three copies of this map, which drifted - `bind' was a binary here and
+%% a string in the application env, so a reset produced a different type
+%% from the one a fresh start produced.
 -spec defaults() -> map().
 defaults() ->
     #{
         %% Server
-        bind => <<"127.0.0.1:8000">>,
+        bind => <<"127.0.0.1:8642">>,
+        num_acceptors => 100,
         ssl => false,
         certfile => undefined,
         keyfile => undefined,
@@ -146,8 +157,7 @@ defaults() ->
         %% num_contexts defaults to schedulers in hornbeam.erl
         timeout => 30000,
         keepalive => 2,
-        max_requests => 1000,
-        preload_app => true,
+        max_concurrent => 10000,  % concurrent requests queued
 
         %% Request limits
         max_request_line_size => 4094,
@@ -155,7 +165,6 @@ defaults() ->
         max_headers => 100,
 
         %% ASGI
-        root_path => <<>>,
         lifespan => auto,
         lifespan_timeout => 30000,  %% Lifespan startup/shutdown timeout in ms
 
@@ -168,6 +177,32 @@ defaults() ->
         pythonpath => [<<".">>, <<"examples">>],
         venv => undefined
     }.
+
+%% @doc The default bind address, for the few places that need a
+%% fallback without merging the whole map. 8642 rather than 8000: the
+%% latter collides with Django, `python -m http.server' and most other
+%% local dev servers, so a first run failed on a busy machine.
+-spec default_bind() -> binary().
+default_bind() ->
+    maps:get(bind, defaults()).
+
+%% @doc The subset of `defaults/0' that multi-app mode configures
+%% globally. Per-mount options come from the mount spec instead.
+-spec multi_defaults() -> map().
+multi_defaults() ->
+    maps:with([bind, num_acceptors, max_concurrent, pythonpath, venv],
+              defaults()).
+
+%% @doc Reset the running configuration to what a fresh node would hold.
+%%
+%% Defaults merged with the application env, exactly as `init/1' does.
+%% Called by `hornbeam:stop/0' so a later `start/2' does not inherit the
+%% previous run's options: the table outlives a service, because this
+%% gen_server is supervised by the application rather than by the
+%% listener.
+-spec reset() -> ok.
+reset() ->
+    gen_server:call(?SERVER, reset).
 
 %%% ============================================================================
 %%% gen_server callbacks
@@ -188,6 +223,10 @@ init([]) ->
     ets:insert(?TABLE, {config, Config}),
 
     {ok, #state{}}.
+
+handle_call(reset, _From, State) ->
+    ets:insert(?TABLE, {config, maps:merge(defaults(), load_app_env())}),
+    {reply, ok, State};
 
 handle_call({set_config, Config}, _From, State) ->
     %% Merge with defaults to ensure all keys present
@@ -226,26 +265,54 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%% ============================================================================
 
+%% Options an operator may set in the application env. Every key here
+%% must exist in defaults/0, which the suite asserts: an env key with no
+%% default is one nothing reads.
+-define(ENV_KEYS, [
+    %% Server
+    bind, num_acceptors, ssl, certfile, keyfile, cacertfile, http3_port,
+    %% Protocol
+    worker_class, http_version,
+    %% Contexts
+    num_contexts, timeout, keepalive, max_concurrent,
+    %% Request limits
+    max_request_line_size, max_header_size, max_headers,
+    %% ASGI
+    lifespan, lifespan_timeout,
+    %% WebSocket
+    websocket_timeout, websocket_max_frame_size, websocket_compress,
+    %% Python
+    pythonpath, venv
+]).
+
+%% @doc The keys an operator may set in the application env.
+-spec env_keys() -> [atom()].
+env_keys() -> ?ENV_KEYS.
+
 load_app_env() ->
-    Keys = [
-        %% Server
-        bind, ssl, certfile, keyfile, cacertfile, http3_port,
-        %% Protocol
-        worker_class, http_version,
-        %% Contexts
-        num_contexts, timeout, keepalive, max_requests, preload_app,
-        %% Request limits
-        max_request_line_size, max_header_size, max_headers,
-        %% ASGI
-        root_path, lifespan, lifespan_timeout,
-        %% WebSocket
-        websocket_timeout, websocket_max_frame_size, websocket_compress,
-        %% Python
-        pythonpath, venv
-    ],
     lists:foldl(fun(Key, Acc) ->
         case application:get_env(hornbeam, Key) of
-            {ok, Value} -> Acc#{Key => Value};
+            {ok, Value} -> Acc#{Key => normalise(Key, Value)};
             undefined -> Acc
         end
-    end, #{}, Keys).
+    end, #{}, ?ENV_KEYS).
+
+%% sys.config and .app files are commonly written with strings, while
+%% every default here is a binary. Normalising at the edge means one type
+%% reaches the rest of the system whichever spelling an operator used.
+normalise(Key, Value) when Key =:= bind;
+                           Key =:= certfile;
+                           Key =:= keyfile;
+                           Key =:= cacertfile ->
+    to_binary(Value);
+normalise(pythonpath, Paths) when is_list(Paths) ->
+    case io_lib:printable_unicode_list(Paths) of
+        true -> [to_binary(Paths)];            %% a single path as a string
+        false -> [to_binary(P) || P <- Paths]
+    end;
+normalise(_Key, Value) ->
+    Value.
+
+to_binary(V) when is_binary(V) -> V;
+to_binary(V) when is_list(V) -> unicode:characters_to_binary(V);
+to_binary(V) -> V.

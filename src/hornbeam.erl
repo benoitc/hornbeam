@@ -25,7 +25,7 @@
 %%%
 %%% %% Start with options
 %%% hornbeam:start("myapp:application", #{
-%%%     bind => "0.0.0.0:8000",
+%%%     bind => <<"0.0.0.0:8642">>,
 %%%     num_contexts => 4
 %%% }).
 %%%
@@ -75,9 +75,7 @@
     context_mode => worker | owngil,
     timeout => pos_integer(),
     keepalive => pos_integer(),
-    max_requests => pos_integer(),
     max_concurrent => pos_integer(),
-    preload_app => boolean(),
     pythonpath => [string() | binary()],
     venv => string() | binary() | undefined,
     lifespan => auto | on | off,
@@ -149,7 +147,7 @@ start(AppSpec) when is_list(AppSpec); is_binary(AppSpec) ->
 %%
 %% Options:
 %% <ul>
-%%   <li>`bind' - Address to bind to (default: "127.0.0.1:8000")</li>
+%%   <li>`bind' - Address to bind to (default: "127.0.0.1:8642")</li>
 %%   <li>`num_contexts' - Number of Python contexts (default: schedulers)</li>
 %%   <li>`num_acceptors' - Number of HTTP acceptor processes (default: 100)</li>
 %%   <li>`worker_class' - wsgi or asgi (default: wsgi)</li>
@@ -159,9 +157,7 @@ start(AppSpec) when is_list(AppSpec); is_binary(AppSpec) ->
 %%       `'HTTP/3'' adds a QUIC listener on the same port number over UDP</li>
 %%   <li>`timeout' - Request timeout in ms (default: 30000)</li>
 %%   <li>`keepalive' - Keep-alive timeout in seconds (default: 2)</li>
-%%   <li>`max_requests' - Max requests per worker before restart (default: 1000)</li>
 %%   <li>`max_concurrent' - Max concurrent requests queued (default: 10000)</li>
-%%   <li>`preload_app' - Preload app in all contexts at startup (default: true)</li>
 %%   <li>`pythonpath' - Additional Python paths (default: ["."])</li>
 %%   <li>`venv' - Virtual environment path (default: undefined)</li>
 %%   <li>`lifespan' - Lifespan protocol: auto, on, off (default: auto)</li>
@@ -176,7 +172,7 @@ start(AppSpec, Options) ->
     case parse_app_spec(AppSpec) of
         {ok, Module, Callable} ->
             %% Store configuration
-            Config = maps:merge(default_config(), Options),
+            Config = maps:merge(hornbeam_config:defaults(), Options),
             Config1 = Config#{
                 app_module => Module,
                 app_callable => Callable
@@ -222,15 +218,41 @@ start(AppSpec, Options) ->
             Error
     end.
 
-%% @doc Stop hornbeam server.
+%% @doc Stop hornbeam server and release everything `start/2' set up.
+%%
+%% The gen_servers holding this state are supervised by the application,
+%% not by the listener, so their tables and persistent_terms outlive a
+%% service. Without this teardown a second `start/2' in the same VM
+%% inherits the first run's config, hooks, channel handlers and presence,
+%% which is why restarting in one VM did not work.
+%%
+%% Ordered outside-in: stop taking requests, then run the app's shutdown,
+%% then drop the state those requests used. Every step is wrapped, so one
+%% failure cannot strand the rest.
 -spec stop() -> ok.
 stop() ->
-    %% Run lifespan shutdown first
-    _ = hornbeam_lifespan:shutdown(),
-
-    %% Stop the HTTP listener
-    _ = hornbeam_listener:stop_service(),
+    %% Outside-in: stop accepting, then let the app shut down, then drop
+    %% the state those requests used. The list is the order.
+    _ = [safe(Step) || Step <- [
+        fun hornbeam_listener:stop_service/0,
+        fun hornbeam_lifespan:shutdown/0,
+        fun hornbeam_http_hooks:clear/0,
+        fun hornbeam_hooks:clear/0,
+        fun hornbeam_channel_registry:clear/0,
+        fun hornbeam_presence:clear/0,
+        fun hornbeam_state:clear/0,
+        fun hornbeam_config:reset/0
+    ]],
     ok.
+
+%% @private Run a teardown step, swallowing a crash or a dead server.
+%% Stopping must be idempotent and must not depend on what is still up.
+safe(F) ->
+    try F()
+    catch Class:Reason ->
+        logger:debug("hornbeam stop step failed: ~p:~p", [Class, Reason]),
+        ok
+    end.
 
 %% @doc Listener status: `#{running := boolean(), listeners := map()}'.
 %%
@@ -352,13 +374,7 @@ add_to_sys_path(Path) ->
 %% @private
 %% Default config for multi-app mode (global settings only)
 default_multi_config() ->
-    #{
-        bind => <<"127.0.0.1:8000">>,
-        num_acceptors => 100,
-        max_concurrent => 10000,
-        pythonpath => [<<".">>, <<"examples">>],
-        venv => undefined
-    }.
+    hornbeam_config:multi_defaults().
 
 %% @private
 %% Validate and normalize mount specs into mount records
@@ -512,25 +528,6 @@ start_listener_multi(Config) ->
     },
     start_service(Config, HandlerState).
 
-default_config() ->
-    #{
-        bind => <<"127.0.0.1:8000">>,
-        %% num_contexts defaults to erlang:system_info(schedulers) in ensure_python_runtime
-        num_acceptors => 100,
-        worker_class => wsgi,
-        http_version => ['HTTP/1.1'],
-        timeout => 30000,
-        keepalive => 2,
-        max_requests => 1000,
-        max_concurrent => 10000,  % High limit for concurrent requests queued
-        preload_app => true,
-        pythonpath => [<<".">>, <<"examples">>],
-        venv => undefined,
-        lifespan => auto,
-        websocket_timeout => 60000,
-        websocket_max_frame_size => 16777216  % 16MB
-    }.
-
 parse_app_spec(AppSpec) when is_list(AppSpec) ->
     parse_app_spec(list_to_binary(AppSpec));
 parse_app_spec(AppSpec) when is_binary(AppSpec) ->
@@ -660,7 +657,7 @@ start_listener(Config) ->
 %% the supervised hornbeam_listener owner. The handler state is exposed to
 %% request handlers via livery_req:config/1.
 start_service(Config, HandlerState0) ->
-    {Ip, Port} = parse_bind(maps:get(bind, Config, <<"127.0.0.1:8000">>)),
+    {Ip, Port} = parse_bind(maps:get(bind, Config, hornbeam_config:default_bind())),
     Ssl = maps:get(ssl, Config, false),
     Versions = maps:get(http_version, Config, ['HTTP/1.1']),
     BaseOpts = #{
@@ -956,8 +953,10 @@ parse_bind(Bind) when is_binary(Bind) ->
                     IpTuple = parse_ip(Ipv6),
                     {IpTuple, Port};
                 _ ->
-                    %% Invalid format, default to IPv4 any
-                    {{0, 0, 0, 0}, 8000}
+                    %% Invalid format, default to IPv4 any on the
+                    %% configured default port rather than a literal.
+                    {_, DefPort} = parse_bind(hornbeam_config:default_bind()),
+                    {{0, 0, 0, 0}, DefPort}
             end;
         _ ->
             %% IPv4 format: ip:port or just port
@@ -1036,7 +1035,65 @@ register_python_callbacks() ->
     py:register_function(hornbeam_pubsub, fun([Action, Payload]) ->
         dispatch_pubsub_action(Action, Payload)
     end),
+    %% Presence. priv/hornbeam_presence.py calls
+    %% erlang.call('hornbeam_presence', Action, Args...), so the fun
+    %% receives [Action | Args]. Without this registration every call
+    %% raised on the Python side and hornbeam_channels.py swallowed it
+    %% with a print, so presence from Python silently did nothing.
+    py:register_function(hornbeam_presence, fun(Args) ->
+        dispatch_presence_action(Args)
+    end),
+    %% Channel handler registration. priv/hornbeam_channels.py calls this
+    %% when a @channel class is defined.
+    py:register_function(hornbeam_channel_registry, fun(Args) ->
+        dispatch_channel_registry_action(Args)
+    end),
+    %% Pushing an event to a channel socket.
+    py:register_function(hornbeam_channel, fun(Args) ->
+        dispatch_channel_action(Args)
+    end),
     ok.
+
+%% Dispatch presence actions from Python.
+%%
+%% Answers `ok' rather than `{ok, _}' for the mutating calls because
+%% priv/hornbeam_presence.py compares the result against the atom `ok'.
+dispatch_presence_action([<<"track">>, Topic, Pid, Key, Meta]) when is_pid(Pid) ->
+    hornbeam_presence:track(Topic, Pid, Key, Meta);
+dispatch_presence_action([<<"update">>, Topic, Pid, Key, Meta]) when is_pid(Pid) ->
+    hornbeam_presence:update(Topic, Pid, Key, Meta);
+dispatch_presence_action([<<"untrack">>, Topic, Pid, Key]) when is_pid(Pid) ->
+    hornbeam_presence:untrack(Topic, Pid, Key);
+dispatch_presence_action([<<"untrack_all">>, Topic, Pid]) when is_pid(Pid) ->
+    hornbeam_presence:untrack_all(Topic, Pid);
+dispatch_presence_action([<<"list">>, Topic]) ->
+    hornbeam_presence:list(Topic);
+dispatch_presence_action([<<"get_by_key">>, Topic, Key]) ->
+    hornbeam_presence:get_by_key(Topic, Key);
+dispatch_presence_action(Args) ->
+    {error, {unknown_presence_action, action_of(Args)}}.
+
+%% Dispatch channel-registry actions from Python.
+dispatch_channel_registry_action([<<"register">>, Pattern, HandlerInfo])
+        when is_binary(Pattern), is_map(HandlerInfo) ->
+    hornbeam_channel_registry:register(Pattern, HandlerInfo);
+dispatch_channel_registry_action([<<"unregister">>, Pattern])
+        when is_binary(Pattern) ->
+    hornbeam_channel_registry:unregister(Pattern);
+dispatch_channel_registry_action(Args) ->
+    {error, {unknown_channel_registry_action, action_of(Args)}}.
+
+%% Dispatch channel actions from Python.
+dispatch_channel_action([<<"push">>, Pid, Topic, Event, Payload])
+        when is_pid(Pid), is_map(Payload) ->
+    hornbeam_channel:push(Pid, Topic, Event, Payload);
+dispatch_channel_action(Args) ->
+    {error, {unknown_channel_action, action_of(Args)}}.
+
+%% @private The action name from a dispatch list, for an error that says
+%% which call was refused rather than echoing the arguments back.
+action_of([Action | _]) -> Action;
+action_of(_) -> undefined.
 
 %% Dispatch hornbeam_callbacks actions from Python
 dispatch_callbacks_action(<<"call">>, [Name, Args]) ->

@@ -210,7 +210,7 @@ function leaveRoom() {
 hornbeam run examples/channels_chat:app
 ```
 
-Open http://localhost:8000 in multiple browser windows to test.
+Open http://localhost:8642 in multiple browser windows to test.
 
 ### With Docker
 

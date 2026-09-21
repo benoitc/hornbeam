@@ -82,7 +82,7 @@ my_app/
         hornbeam
     ]},
     {env, [
-        {http_port, 8000},
+        {http_port, 8642},
         {python_app, "app:application"},
         {worker_class, wsgi}
     ]},
@@ -287,7 +287,7 @@ init_hooks() ->
 %% config/sys.config
 [
     {my_app, [
-        {http_port, 8000},
+        {http_port, 8642},
         {python_app, "app:application"},
         {worker_class, asgi},
         {api_key, "${API_KEY}"},
@@ -464,7 +464,7 @@ COPY --from=builder /app/_build/prod/rel/my_app /app
 COPY priv/python/requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 WORKDIR /app
-EXPOSE 8000
+EXPOSE 8642
 CMD ["bin/my_app", "foreground"]
 ```
 
@@ -523,7 +523,7 @@ end_per_suite(_Config) ->
 
 test_api(_Config) ->
     Client = livery_client:new(#{}),
-    {ok, Resp} = livery_client:get(Client, <<"http://localhost:8000/">>),
+    {ok, Resp} = livery_client:get(Client, <<"http://localhost:8642/">>),
     200 = livery_client:status(Resp),
     {full, Body} = livery_client:body(Resp),
     true = is_binary(Body),

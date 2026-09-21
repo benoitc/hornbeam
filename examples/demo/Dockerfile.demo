@@ -54,7 +54,7 @@ RUN if [ "${EXAMPLE}" = "ml_caching" ]; then \
 RUN rebar3 release
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8642
 
 # Start the release
 CMD EXAMPLE=$(cat /app/example_name) && \
