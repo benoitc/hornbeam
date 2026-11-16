@@ -87,9 +87,10 @@ build_asgi_scope(Req, State) ->
     RootPath = maps:get(script_name, State, <<>>),
     ScopePath = maps:get(path_info, State, Path),
 
-    %% Convert headers to ASGI format [[name, value], ...] preserving
-    %% duplicates and wire order
-    HeaderList = [[Name, Value] || {Name, Value} <- livery_req:headers(Req)],
+    %% Force ASGI byte fields through the native converter without its
+    %% UTF-8-to-str auto-detection. Preserve duplicate headers and wire order.
+    HeaderList = [[{bytes, Name}, {bytes, Value}] ||
+                  {Name, Value} <- livery_req:headers(Req)],
 
     %% Get mount_id for per-mount state isolation (multi-app mode)
     MountId = maps:get(mount_id, State, undefined),
@@ -106,8 +107,8 @@ build_asgi_scope(Req, State) ->
         method => livery_req:method(Req),
         scheme => scheme(State),
         path => ScopePath,
-        raw_path => ScopePath,
-        query_string => livery_req:query(Req),
+        raw_path => {bytes, Path},
+        query_string => {bytes, livery_req:query(Req)},
         root_path => RootPath,
         headers => HeaderList,
         server => {Host, Port},
