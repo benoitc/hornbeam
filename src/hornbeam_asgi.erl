@@ -62,32 +62,37 @@ handle(Req, HandlerState) ->
         {true, empty} ->
             {empty, undefined};
         {true, {buffered, Data}} ->
-            {{body, iolist_to_binary(Data)}, undefined};
+            {{body, {bytes, iolist_to_binary(Data)}}, undefined};
         {true, {stream, Reader}} when is_integer(ContentLength),
                                       ContentLength =< ?ASGI_BODY_BUFFER_THRESHOLD ->
             case livery_body:read_all(Reader, TimeoutMs, infinity) of
                 {ok, Body, _Reader1} ->
-                    {{body, Body}, undefined};
+                    {{body, {bytes, Body}}, undefined};
                 {error, _Reason, _Reader1} ->
                     %% Truncated client body: hand Python what we have
-                    {{body, <<>>}, undefined}
+                    {{body, {bytes, <<>>}}, undefined}
             end;
         {true, {stream, Reader}} ->
             {ok, Ch} = py_byte_channel:new(),
             {{channel, Ch}, livery_body:ref(Reader)}
     end,
 
+    %% Body EOF is independent of request termination. Keep a separate
+    %% close-only channel so even empty/inline bodies can observe disconnect.
+    {ok, DisconnectChannel} = py_byte_channel:new(),
+
     %% Submit task to event loop pool for parallel distribution
     {ok, LoopRef} = py_event_loop_pool:get_loop(),
     TaskRef = make_ref(),
     ok = py_nif:submit_task(LoopRef, self(), TaskRef,
         <<"hornbeam_asgi_worker">>, <<"handle_asgi">>,
-        [self(), AppModule, AppCallable, Scope, BodyArg], #{}),
+        [self(), AppModule, AppCallable, Scope, BodyArg, DisconnectChannel], #{}),
 
     St = #{
         req => Req,
         req_info => ReqInfo1,
         channel => body_channel(BodyArg),
+        disconnect_channel => DisconnectChannel,
         body_ref => BodyRef,
         timeout_ms => TimeoutMs
     },
@@ -101,8 +106,11 @@ wait_response(#{req_info := ReqInfo, timeout_ms := TimeoutMs} = St) ->
     BodyRef = pump_ref(St),
     receive
         {livery_body, BodyRef, {data, Data}} ->
-            ok = push_to_channel(maps:get(channel, St), Data),
-            wait_response(St);
+            case push_to_channel(St, Data) of
+                ok -> wait_response(St);
+                {error, interrupted} -> wait_response(St#{body_ref := undefined});
+                {error, Reason} -> hornbeam_handler:error_decision(Reason, ReqInfo)
+            end;
         {livery_body, BodyRef, _EofOrError} ->
             %% eof/trailers/reset/error all end the request body; a reset
             %% surfaces to Python as EOF on its body reads
@@ -120,6 +128,9 @@ wait_response(#{req_info := ReqInfo, timeout_ms := TimeoutMs} = St) ->
             _ = livery_req:inform(103, hornbeam_handler:convert_headers(Headers),
                                   maps:get(req, St)),
             wait_response(St);
+        <<"fin">> ->
+            cleanup(St),
+            hornbeam_handler:error_decision(response_finished, ReqInfo);
         {<<"error">>, Reason} ->
             cleanup(St),
             hornbeam_handler:error_decision(Reason, ReqInfo);
@@ -158,8 +169,11 @@ stream_loop(Emit, #{timeout_ms := TimeoutMs} = St) ->
     BodyRef = pump_ref(St),
     receive
         {livery_body, BodyRef, {data, Data}} ->
-            ok = push_to_channel(maps:get(channel, St), Data),
-            stream_loop(Emit, St);
+            case push_to_channel(St, Data) of
+                ok -> stream_loop(Emit, St);
+                {error, interrupted} -> stream_loop(Emit, St#{body_ref := undefined});
+                {error, Reason} -> {error, Reason}
+            end;
         {livery_body, BodyRef, _EofOrError} ->
             maybe_close_channel(maps:get(channel, St)),
             stream_loop(Emit, St#{body_ref := undefined});
@@ -174,10 +188,13 @@ stream_loop(Emit, #{timeout_ms := TimeoutMs} = St) ->
         {<<"early_hints">>, _} ->
             %% Too late: the final response head is already on the wire
             stream_loop(Emit, St);
-        {<<"error">>, _Reason} ->
-            %% Response already started: truncate the stream
+        {<<"error">>, Reason} ->
+            %% Response already started: truncate the stream explicitly.
             cleanup(St),
-            ok;
+            {error, Reason};
+        {async_result, _Ref, {error, Reason}} ->
+            cleanup(St),
+            {error, Reason};
         {async_result, _Ref, _} ->
             stream_loop(Emit, St);
         {livery_disconnect, _Ref, _Reason} ->
@@ -214,18 +231,44 @@ body_channel(_) -> undefined.
 
 %% @private
 cleanup(St) ->
+    maybe_close_channel(maps:get(disconnect_channel, St, undefined)),
     maybe_close_channel(maps:get(channel, St)).
 
-push_to_channel(Channel, Data) ->
+%% A full body channel must not trap the request process indefinitely.
+%% Preserve terminal messages for the normal resolver/producer receive loop.
+%% The monotonic deadline covers all retries, rather than resetting per retry.
+push_to_channel(#{timeout_ms := TimeoutMs} = St, Data) ->
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    Result = push_to_channel(St, Data, Deadline),
+    case Result of
+        ok -> ok;
+        {error, _} -> cleanup(St), Result
+    end.
+
+push_to_channel(#{channel := Channel} = St, Data, Deadline) ->
     case py_byte_channel:send(Channel, Data) of
         ok -> ok;
-        busy ->
-            %% Channel full - wait a bit and retry
-            timer:sleep(1),
-            push_to_channel(Channel, Data);
-        {error, closed} ->
-            ok
+        busy -> wait_body_capacity(St, Data, Deadline);
+        {error, Reason} -> {error, {body_channel, Reason}}
     end.
+
+wait_body_capacity(St, Data, Deadline) ->
+    Remaining = Deadline - erlang:monotonic_time(millisecond),
+    receive
+        {livery_disconnect, _, _} = Msg -> body_interrupted(Msg);
+        <<"fin">> = Msg -> body_interrupted(Msg);
+        {<<"error">>, _} = Msg -> body_interrupted(Msg);
+        {async_result, _, {error, _}} = Msg -> body_interrupted(Msg)
+    after max(0, min(10, Remaining)) ->
+        case erlang:monotonic_time(millisecond) >= Deadline of
+            true -> {error, body_channel_timeout};
+            false -> push_to_channel(St, Data, Deadline)
+        end
+    end.
+
+body_interrupted(Msg) ->
+    self() ! Msg,
+    {error, interrupted}.
 
 maybe_close_channel(undefined) -> ok;
 maybe_close_channel(Channel) ->
